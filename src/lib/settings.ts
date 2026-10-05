@@ -32,7 +32,8 @@ export const DEFAULT_PRESETS: Preset[] = [
 
 const ACTIVE_SESSION_KEY = 'activeSessionId';
 const PRESETS_KEY = 'presets';
-const JOB_SETTINGS_KEY = 'jobSettings';
+/** One key per session, so saving one session's settings never rewrites another's. */
+const JOB_SETTINGS_PREFIX = 'jobSettings.';
 
 export async function getActiveSessionId(): Promise<string> {
   const stored = await browser.storage.local.get(ACTIVE_SESSION_KEY);
@@ -81,14 +82,30 @@ function cleanJobSettings(value: unknown): JobSettings {
 }
 
 export async function getJobSettings(sessionId: string): Promise<JobSettings> {
-  const stored = await browser.storage.local.get(JOB_SETTINGS_KEY);
-  const all = stored[JOB_SETTINGS_KEY] as Record<string, unknown> | undefined;
-  return all?.[sessionId] ? cleanJobSettings(all[sessionId]) : { ...DEFAULT_JOB_SETTINGS };
+  const key = JOB_SETTINGS_PREFIX + sessionId;
+  const stored = await browser.storage.local.get(key);
+  return stored[key] ? cleanJobSettings(stored[key]) : { ...DEFAULT_JOB_SETTINGS };
 }
 
 export async function saveJobSettings(sessionId: string, settings: JobSettings): Promise<void> {
-  const stored = await browser.storage.local.get(JOB_SETTINGS_KEY);
-  const all = { ...((stored[JOB_SETTINGS_KEY] as Record<string, unknown> | undefined) ?? {}) };
-  all[sessionId] = cleanJobSettings(settings);
-  await browser.storage.local.set({ [JOB_SETTINGS_KEY]: all });
+  await browser.storage.local.set({ [JOB_SETTINGS_PREFIX + sessionId]: cleanJobSettings(settings) });
+}
+
+/** Research Job settings of every session, keyed by session ID (for backups). */
+export async function getAllJobSettings(): Promise<Record<string, JobSettings>> {
+  const stored = await browser.storage.local.get(null);
+  const all: Record<string, JobSettings> = {};
+  for (const [key, value] of Object.entries(stored)) {
+    if (key.startsWith(JOB_SETTINGS_PREFIX)) all[key.slice(JOB_SETTINGS_PREFIX.length)] = cleanJobSettings(value);
+  }
+  return all;
+}
+
+/** Replaces the Research Job settings of all sessions (restore): sessions missing from `all` get defaults. */
+export async function replaceAllJobSettings(all: Record<string, JobSettings>): Promise<void> {
+  const stored = await browser.storage.local.get(null);
+  const obsolete = Object.keys(stored).filter((k) => k.startsWith(JOB_SETTINGS_PREFIX) && !(k.slice(JOB_SETTINGS_PREFIX.length) in all));
+  if (obsolete.length) await browser.storage.local.remove(obsolete);
+  const entries = Object.entries(all).map(([id, s]) => [JOB_SETTINGS_PREFIX + id, cleanJobSettings(s)] as const);
+  if (entries.length) await browser.storage.local.set(Object.fromEntries(entries));
 }

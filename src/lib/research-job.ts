@@ -121,7 +121,8 @@ export function escapeInline(text: string): string {
 
 /** Fenced block whose fence is longer than any backtick run inside, so the content cannot close it early. */
 export function fenced(text: string, info = 'text'): string[] {
-  const longest = Math.max(0, ...Array.from(text.matchAll(/`+/g), (m) => m[0].length));
+  let longest = 0;
+  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
   const fence = '`'.repeat(Math.max(3, longest + 1));
   return [`${fence}${info}`, text, fence];
 }

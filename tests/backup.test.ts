@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { createBackup, validateBackup } from '../src/lib/backup';
+import type { Backup } from '../src/lib/backup';
+import { createBackup, restoreBackup, validateBackup } from '../src/lib/backup';
 import { commitCapture, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
@@ -17,7 +18,11 @@ async function populated() {
   return db;
 }
 
-const settings = { active_session_id: INBOX_SESSION_ID, presets: DEFAULT_PRESETS };
+const settings = {
+  active_session_id: INBOX_SESSION_ID,
+  presets: DEFAULT_PRESETS,
+  job_settings: { [INBOX_SESSION_ID]: { ...DEFAULT_JOB_SETTINGS, context_mode: 'links' as const, max_chars_per_source: 5000 } },
+};
 
 describe('backup and restore', () => {
   it('restores all records, relations and S-ID counters exactly', async () => {
@@ -29,6 +34,8 @@ describe('backup and restore', () => {
     expect(check.ok).toBe(true);
     if (!check.ok) return;
     expect(check.summary).toMatchObject({ sessions: 1, sources: 2, captures: 3, snapshots: 2, jobs: 1 });
+
+    expect(check.backup.settings.job_settings).toEqual(settings.job_settings);
 
     const target = await freshDb();
     await commitCapture(target, await pageDraft('https://other.example/z', 'to be replaced', '2026-10-05T09:00:00.000Z'));
@@ -57,6 +64,49 @@ describe('backup and restore', () => {
     expect((await validateBackup(JSON.stringify(orphan))).ok).toBe(false);
 
     expect(await readAllData(db)).toEqual(data);
+  });
+
+  it('rejects records and Research Jobs that break the data contract', async () => {
+    const db = await populated();
+    const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z');
+    const broken = (change: (b: Backup) => void) => {
+      const copy = structuredClone(backup);
+      change(copy);
+      return validateBackup(JSON.stringify(copy));
+    };
+    type R = Record<string, unknown>;
+    const job = (b: Backup) => b.data.jobs[0] as R;
+    const okSnapshot = (b: Backup) => b.data.snapshots.find((s) => (s as R).status === 'ok') as R;
+    const cases: Array<[string, (b: Backup) => void]> = [
+      ['job without stats', (b) => delete job(b).stats],
+      ['job stats not matching its text', (b) => ((job(b).stats as R).character_count = 1)],
+      ['job source with a javascript: URL', (b) => (((job(b).sources as R[])[0] as R).url = 'javascript:alert(1)')],
+      ['job settings with an unknown mode', (b) => ((job(b).settings as R).context_mode = 'everything')],
+      ['source with a javascript: URL', (b) => ((b.data.sources[0] as R).dedup_url = 'javascript:alert(1)')],
+      ['source URL that is not normalized', (b) => ((b.data.sources[0] as R).dedup_url = 'https://example.com/a?utm_source=x')],
+      ['snapshot with original_character_count 0', (b) => (okSnapshot(b).original_character_count = 0)],
+      ['snapshot marked truncated with equal counts', (b) => (okSnapshot(b).truncated = true)],
+      ['job settings of an unknown session', (b) => (b.settings.job_settings = { nope: DEFAULT_JOB_SETTINGS })],
+    ];
+    for (const [name, change] of cases) {
+      expect((await broken(change)).ok, name).toBe(false);
+    }
+  });
+
+  it('reports whether data was replaced when a restore step fails', async () => {
+    const db = await populated();
+    const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z');
+    const fail = () => Promise.reject(new Error('storage refused'));
+    const ok = () => Promise.resolve();
+    expect(await restoreBackup(backup, { replaceData: fail, applySettings: ok })).toMatchObject({
+      ok: false,
+      dataReplaced: false,
+      message: expect.stringContaining('current data is unchanged'),
+    });
+    const settingsFailed = await restoreBackup(backup, { replaceData: ok, applySettings: fail });
+    expect(settingsFailed).toMatchObject({ ok: false, dataReplaced: true });
+    expect(settingsFailed.message).toContain('Research data was restored');
+    expect(settingsFailed.message).not.toContain('unchanged');
   });
 
   it('leaves existing data untouched when a restore write fails', async () => {

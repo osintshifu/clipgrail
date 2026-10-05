@@ -1,6 +1,7 @@
 import { Readability } from '@mozilla/readability';
 import type { ExtractionMethod, FallbackReason, PageExtraction } from './model';
 import { MAX_SNAPSHOT_CHARACTERS, elementToText, normalizeText, truncateToCharacters } from './text';
+import { isCapturableUrl } from './url';
 
 /** Pages with more elements skip Readability and use page text, to keep capture responsive. */
 export const MAX_READABILITY_ELEMENTS = 200_000;
@@ -91,7 +92,7 @@ export function extractPage(doc: Document, httpStatus: number | null): PageExtra
       site_name: siteName,
       lang,
       published_time: publishedTime,
-      canonical_url: canonical?.href || null,
+      canonical_url: canonical?.href && isCapturableUrl(canonical.href) ? canonical.href : null,
       page_url: pageUrl,
       http_status: httpStatus,
     };

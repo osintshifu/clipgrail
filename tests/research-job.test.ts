@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { commitCapture, createSession, loadSessionView, saveJob, latestJob, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import type { JobSettings } from '../src/lib/research-job';
-import { DEFAULT_JOB_SETTINGS, buildResearchJob, isJobOutdated, researchJobToJson } from '../src/lib/research-job';
+import { DEFAULT_JOB_SETTINGS, buildResearchJob, fenced, isJobOutdated, researchJobToJson } from '../src/lib/research-job';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 async function sessionWithMaterial() {
@@ -104,6 +104,13 @@ describe('buildResearchJob', () => {
     const job = buildResearchJob({ view, settings: settings(), id: 'j', createdAt: 'now' });
     expect(job.text).toContain('## [S1] Hello \\!\\[img\\](https://tracker.example/p.png) \\<script\\>');
     expect(job.text).toContain('````text\nCode: ```js\nalert(1)\n```\n````');
+  });
+});
+
+describe('fenced', () => {
+  it('handles text with very many backtick runs and keeps the fence longer than any run', () => {
+    expect(fenced('`x'.repeat(150_000))[0]).toBe('```text');
+    expect(fenced('a ````` b')[0]).toBe('``````text');
   });
 });
 

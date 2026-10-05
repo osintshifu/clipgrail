@@ -38,6 +38,15 @@ function isTrackingParam(name: string, host: string): boolean {
   return HOST_TRACKING_PARAMS.some((rule) => rule.hosts.test(host) && rule.params.has(key));
 }
 
+/** Returns true for addresses kept as provenance (the page a link was found on): http, https and file. */
+export function isProvenanceUrl(url: string): boolean {
+  try {
+    return ['http:', 'https:', 'file:'].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** Returns true for URLs ClipGrail can capture (http and https). */
 export function isCapturableUrl(url: string): boolean {
   try {

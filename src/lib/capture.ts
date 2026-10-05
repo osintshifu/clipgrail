@@ -6,7 +6,7 @@ import { sourceLabel } from './model';
 import { describeFailure } from './selection';
 import type { SnapshotDraft } from './snapshot';
 import { buildFragment, buildSnapshotDraft, failedSnapshotDraft } from './snapshot';
-import { normalizeUrl } from './url';
+import { isProvenanceUrl, normalizeUrl } from './url';
 
 /** Longest wait for the extractor before the capture is saved as failed (timeout). */
 export const EXTRACTION_TIMEOUT_MS = 30_000;
@@ -18,6 +18,7 @@ export type NotSavedReason =
   | 'tab_gone'
   | 'empty_selection'
   | 'unsupported_link'
+  | 'page_changed'
   | 'storage_error';
 
 export type CaptureOutcome =
@@ -64,6 +65,7 @@ async function notSaved(reason: NotSavedReason, detail?: string): Promise<Captur
     tab_gone: 'The tab was closed or navigated away before the capture finished. Nothing was saved.',
     empty_selection: 'Nothing is selected on this page.',
     unsupported_link: 'Only http and https links can be saved.',
+    page_changed: 'The page changed while it was being clipped, so nothing was saved. Clip it again.',
     storage_error: `Capture not saved: the browser refused to store it${detail ? ` (${detail})` : ''}. Existing data is unchanged.`,
   };
   return { saved: false, reason, message: messages[reason] };
@@ -139,6 +141,9 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
       EXTRACTION_TIMEOUT_MS,
     );
     const value: unknown = results[0]?.result;
+    // The text must come from the document the source URL was taken from; a navigation in between would
+    // attach another page's text to this source.
+    if (isPageExtraction(value) && normalizeUrl(value.page_url) !== dedupUrl) return notSaved('page_changed');
     snapshot = isPageExtraction(value)
       ? await buildSnapshotDraft(value, new Date().toISOString())
       : failedSnapshotDraft('extraction_error', 'The extractor returned no result.', new Date().toISOString());
@@ -189,12 +194,16 @@ export async function captureSelection(
 
   let text = '';
   let method: 'dom-selection' | 'menu-selection-text' = 'dom-selection';
+  const frameId = options.frameId ?? 0;
   try {
     const results = await browser.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [options.frameId ?? 0] },
-      func: () => window.getSelection()?.toString() ?? '',
+      target: { tabId: tab.id, frameIds: [frameId] },
+      func: () => ({ text: window.getSelection()?.toString() ?? '', url: document.URL }),
     });
-    text = typeof results[0]?.result === 'string' ? results[0].result : '';
+    const value = results[0]?.result as { text?: unknown; url?: unknown } | undefined;
+    // In the top frame the selection must come from the page the source URL was taken from.
+    if (frameId === 0 && value && normalizeUrl(String(value.url)) !== dedupUrl) return notSaved('page_changed');
+    text = typeof value?.text === 'string' ? value.text : '';
   } catch (error) {
     const kind = classifyScriptError(error);
     if (kind === 'tab_gone') return notSaved('tab_gone');
@@ -268,7 +277,7 @@ export async function captureLink(
     captured_at: capturedAt,
     original_url: link.url,
     tab_title: '',
-    found_on: link.pageUrl ?? tab?.url ?? null,
+    found_on: [link.pageUrl, tab?.url].find((u): u is string => !!u && isProvenanceUrl(u)) ?? null,
     anchor_text: anchorText,
     fragment: null,
     snapshot: { status: 'pending' },

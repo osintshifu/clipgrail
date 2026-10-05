@@ -1,6 +1,6 @@
 import './style.css';
 import { browser } from 'wxt/browser';
-import { backupFileName, createBackup, summarize, validateBackup } from '../../lib/backup';
+import { backupFileName, createBackup, restoreBackup, summarize, validateBackup } from '../../lib/backup';
 import type { Backup } from '../../lib/backup';
 import {
   createSession,
@@ -32,8 +32,10 @@ import type { Preset } from '../../lib/settings';
 import {
   getActiveSessionId,
   getJobSettings,
+  getAllJobSettings,
   getPresets,
   saveJobSettings,
+  replaceAllJobSettings,
   savePresets,
   setActiveSessionId,
 } from '../../lib/settings';
@@ -77,12 +79,14 @@ function fmtBytes(bytes: number): string {
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-function debounce<A extends unknown[]>(fn: (...args: A) => void, ms: number): (...args: A) => void {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return (...args: A) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
+/**
+ * Edits are written on every change, without a delay: IndexedDB runs read-write
+ * transactions on the same store in the order they were created and
+ * chrome.storage applies writes in call order, so the last edit always wins and
+ * nothing waits in a timer when the panel closes or the session changes.
+ */
+function reportSaveError(what: string): (error: unknown) => void {
+  return (error) => showToast(`${what} not saved: ${errorText(error)}`, { level: 'error' });
 }
 
 const STATUS_LABELS: Record<SourceStatus, string> = {
@@ -285,9 +289,6 @@ function closeDetail(): void {
   (items[index] ?? items[0])?.focus();
 }
 
-const saveNote = debounce((captureId: string, note: string) => {
-  updateCaptureNote(db, captureId, note).catch((error: unknown) => showToast(`Note not saved: ${errorText(error)}`, { level: 'error' }));
-}, 500);
 
 function captureBlock(capture: Capture, entry: SourceEntry, index: number): HTMLElement {
   const snapshot = entry.captures[index]?.snapshot;
@@ -315,7 +316,8 @@ function captureBlock(capture: Capture, entry: SourceEntry, index: number): HTML
       area.value = capture.note;
       area.addEventListener('input', () => {
         capture.note = area.value;
-        saveNote(capture.id, area.value);
+        updateCaptureNote(db, capture.id, area.value).catch(reportSaveError('Note'));
+        renderJob();
       });
       return area;
     })(),
@@ -402,9 +404,9 @@ function readJobForm(): void {
   };
 }
 
-const persistSettings = debounce((sessionId: string, value: JobSettings) => {
-  saveJobSettings(sessionId, value).catch((error: unknown) => showToast(`Settings not saved: ${errorText(error)}`, { level: 'error' }));
-}, 300);
+function persistSettings(sessionId: string, value: JobSettings): void {
+  saveJobSettings(sessionId, value).catch(reportSaveError('Settings'));
+}
 
 function settingsChanged(): void {
   readJobForm();
@@ -412,9 +414,9 @@ function settingsChanged(): void {
   renderJob();
 }
 
-const persistPrompt = debounce((sessionId: string, prompt: string) => {
-  updateSessionText(db, sessionId, { prompt }).catch((error: unknown) => showToast(`Prompt not saved: ${errorText(error)}`, { level: 'error' }));
-}, 400);
+function persistPrompt(sessionId: string, prompt: string): void {
+  updateSessionText(db, sessionId, { prompt }).catch(reportSaveError('Prompt'));
+}
 
 function setPrompt(prompt: string): void {
   if (!view) return;
@@ -569,7 +571,6 @@ function renderJob(): void {
 
 async function generateJob(): Promise<void> {
   if (!view) return;
-  persistPrompt(activeId, view.session.prompt);
   try {
     await updateSessionText(db, activeId, { prompt: view.session.prompt });
     const fresh = buildResearchJob({ view, settings, id: crypto.randomUUID(), createdAt: new Date().toISOString() });
@@ -601,8 +602,16 @@ const deliveryEnvironment: DeliveryEnvironment = {
 };
 
 async function deliver(id: DestinationId): Promise<void> {
-  if (!job || !draft || isJobOutdated(job, draft)) return;
   const status = $('delivery-status');
+  // Re-read the session first: notes or captures may have changed here or in another window.
+  await refreshData();
+  if (!job || !draft || isJobOutdated(job, draft)) {
+    status.textContent = 'Settings changed. Generate a new Research Job.';
+    status.classList.add('error');
+    status.setAttribute('role', 'alert');
+    status.hidden = false;
+    return;
+  }
   const result = await deliverJob(id, job, deliveryEnvironment);
   status.textContent = result.message;
   status.classList.toggle('error', !result.ok);
@@ -624,7 +633,10 @@ async function backup(): Promise<void> {
   try {
     const createdAt = new Date().toISOString();
     const data = await readAllData(db);
-    const content = JSON.stringify(createBackup(data, { active_session_id: activeId, presets }, createdAt), null, 1);
+    const sessionIds = new Set((data.sessions as Session[]).map((s) => s.id));
+    const jobSettings = Object.fromEntries(Object.entries(await getAllJobSettings()).filter(([id]) => sessionIds.has(id)));
+    const settings = { active_session_id: activeId, presets, job_settings: jobSettings };
+    const content = JSON.stringify(createBackup(data, settings, createdAt), null, 1);
     const name = backupFileName(createdAt);
     await saveFile(name, 'application/json;charset=utf-8', content);
     const s = summarize(data, createdAt);
@@ -666,22 +678,27 @@ async function checkRestoreFile(file: File): Promise<void> {
 async function confirmRestore(): Promise<void> {
   const backupData = pendingRestore;
   if (!backupData) return;
+  closeRestorePanel();
+  const result = await restoreBackup(backupData, {
+    replaceData: (data) => replaceAllData(db, data),
+    applySettings: async (s) => {
+      await savePresets(s.presets);
+      await replaceAllJobSettings(s.job_settings);
+      await setActiveSessionId(s.active_session_id);
+    },
+  });
+  detailSourceId = null;
   try {
-    await replaceAllData(db, backupData.data);
-    await savePresets(backupData.settings.presets);
     presets = await getPresets();
-    activeId = backupData.settings.active_session_id;
-    await setActiveSessionId(activeId);
-    closeRestorePanel();
-    detailSourceId = null;
+    activeId = await getActiveSessionId();
     renderPresets();
     await loadActiveSession();
-    showToast('Backup restored.');
   } catch (error) {
-    closeRestorePanel();
-    showToast(`Restore failed, current data is unchanged: ${errorText(error)}`, { level: 'error' });
-    await loadActiveSession();
+    const state = !result.ok && !result.dataReplaced ? 'Restore failed and current data is unchanged' : 'The backup was restored';
+    showToast(`${state}, but the panel could not show the data: ${errorText(error)}. Close and reopen the panel.`, { level: 'error' });
+    return;
   }
+  showToast(result.message, { level: result.ok ? 'info' : 'error' });
 }
 
 // ---------- Tabs ----------
@@ -746,13 +763,10 @@ function bind(): void {
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));
 
-  const saveNotes = debounce((sessionId: string, notes: string) => {
-    updateSessionText(db, sessionId, { notes }).catch((error: unknown) => showToast(`Notes not saved: ${errorText(error)}`, { level: 'error' }));
-  }, 500);
   $<HTMLTextAreaElement>('session-notes').addEventListener('input', (event) => {
     const notes = (event.target as HTMLTextAreaElement).value;
     if (view) view = { ...view, session: { ...view.session, notes } };
-    saveNotes(activeId, notes);
+    updateSessionText(db, activeId, { notes }).catch(reportSaveError('Notes'));
     renderJob();
   });
 
@@ -842,7 +856,7 @@ async function init(): Promise<void> {
     const notice = stored[NOTICE_KEY] as Notice | undefined;
     if (notice && Date.now() - notice.at < 10_000) handleNotice(notice);
   } catch (error) {
-    showToast(`ClipGrail could not open its database: ${errorText(error)}`, { level: 'error' });
+    showToast(`ClipGrail could not load its data: ${errorText(error)}`, { level: 'error' });
   }
 }
 

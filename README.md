@@ -122,7 +122,7 @@ ClipGrail never sends a message for you; you paste and send it yourself. If copy
 
 ClipGrail keeps its data only in the current Chrome profile, and uninstalling the extension deletes it. Back up regularly if the research matters.
 
-- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets and the active session.
+- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets, Research Job settings and the active session.
 - **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm.
 
 Merging a backup with existing data is not supported.
