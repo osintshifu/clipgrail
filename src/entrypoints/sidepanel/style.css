@@ -110,6 +110,7 @@ kbd { font: 600 11px var(--mono); border: 1px solid var(--line); border-radius: 
   background: none; text-align: left;
 }
 .session-button:hover:not(:disabled) { background: var(--soft); border-color: transparent; }
+.session-label { flex: none; font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 .session-name { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .caret { flex: none; color: var(--muted); font-size: 11px; }
 button.icon { flex: none; width: 32px; height: 30px; padding: 0; border-color: transparent; background: none; font-weight: 700; letter-spacing: 1px; }
