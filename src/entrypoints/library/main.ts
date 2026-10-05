@@ -23,7 +23,8 @@ import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
-import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings } from '../../lib/settings';
+import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout } from '../../lib/settings';
+import type { LibraryLayout } from '../../lib/settings';
 
 import { finishNoteWrites, keepNoteFocus, noteEditor } from '../../lib/note-editor';
 
@@ -40,6 +41,8 @@ let detailsOpen = false;
 /** Snapshot texts already read. A saved text never changes, so they can be kept. */
 const texts = new Map<string, string>();
 const wide = window.matchMedia('(min-width: 901px)');
+let layout: LibraryLayout = { sessions_hidden: false, reader_expanded: false };
+const expandButton = $<HTMLButtonElement>('expand-reader');
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const count = (n: number, word: string) => `${fmtNumber(n)} ${n === 1 ? word : `${word}s`}`;
@@ -71,6 +74,27 @@ function setReading(reading: boolean): void {
   document.body.classList.toggle('reading', reading);
   $('back-button').hidden = !reading;
   $('narrow-position').hidden = !reading;
+}
+
+// ---------- Hidden columns (wide windows) ----------
+
+/** The reader is expanded only while a source is open, so the list is never hidden with nothing to read. */
+function applyLayout(): void {
+  const expanded = layout.reader_expanded && !!selectedRow();
+  document.body.classList.toggle('sessions-hidden', layout.sessions_hidden);
+  document.body.classList.toggle('reader-expanded', expanded);
+  $('show-sessions').hidden = !layout.sessions_hidden;
+  const label = expanded ? 'Show all columns' : 'Expand reader';
+  expandButton.title = label;
+  expandButton.setAttribute('aria-label', label);
+  expandButton.setAttribute('aria-pressed', String(expanded));
+}
+
+function changeLayout(changes: Partial<LibraryLayout>, focus?: HTMLElement): void {
+  layout = { ...layout, ...changes };
+  applyLayout();
+  focus?.focus();
+  saveLibraryLayout(layout).catch((error: unknown) => notice(`Layout not saved: ${errorText(error)}`));
 }
 
 // ---------- Sessions ----------
@@ -380,6 +404,8 @@ function renderReaderContents(): void {
   renderNarrowTop(row);
   const actionSession = row?.session ?? sessionOf(filter.view);
   $('narrow-session-actions').hidden = !actionSession || actionSession.id === INBOX_SESSION_ID;
+  expandButton.hidden = !row;
+  applyLayout();
   if (!row) {
     reader.replaceChildren(
       h('div', { class: 'empty' }, [
@@ -433,6 +459,7 @@ function renderReaderContents(): void {
       h('button', { class: 'link', attrs: { type: 'button', title: `Show all sources of ${session.name}` }, on: { click: () => setView(session.id) } }, [session.name]),
       session.archived_at ? h('span', { class: 'chip pending' }, ['Archived']) : null,
       h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, ['Move to…']),
+      expandButton,
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
     h('div', { class: 'url-row' }, [
@@ -604,6 +631,9 @@ function bind(): void {
     renderList();
   });
   $('clear-filters').addEventListener('click', clearFilters);
+  $('hide-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: true }, $('show-sessions')));
+  $('show-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: false }, $('hide-sessions')));
+  expandButton.addEventListener('click', () => changeLayout({ reader_expanded: !document.body.classList.contains('reader-expanded') }));
   $<HTMLSelectElement>('view-select').addEventListener('change', (event) => setView((event.target as HTMLSelectElement).value));
   $('back-button').addEventListener('click', () => {
     setReading(false);
@@ -653,6 +683,7 @@ async function init(): Promise<void> {
     db = await openDb();
     setWriteListener(announceDataChange);
     activeId = await getActiveSessionId();
+    layout = await getLibraryLayout();
     data = await loadLibrary(db);
     rows = libraryRows(data);
     readHash();

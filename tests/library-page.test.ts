@@ -149,4 +149,26 @@ describe('organizing in the library', () => {
     expect(fake.local.activeSessionId).toBe('inbox');
     expect(document.querySelector('[data-session="inbox"]')).toBeNull();
   });
+
+  it('hides the sessions and expands the reader only while a source is open, and remembers the layout', async () => {
+    await openExample('Layout');
+    $('hide-sessions').click();
+    expect(document.body.classList.contains('sessions-hidden')).toBe(true);
+    expect($('show-sessions').hidden).toBe(false);
+    expect(document.activeElement?.id).toBe('show-sessions');
+
+    const expand = () => $<HTMLButtonElement>('expand-reader');
+    expect(expand().closest('.crumb')).not.toBeNull();
+    expand().click();
+    expect(document.body.classList.contains('reader-expanded')).toBe(true);
+    expect(expand().getAttribute('aria-label')).toBe('Show all columns');
+    await vi.waitFor(() => expect(fake.local.libraryLayout).toEqual({ sessions_hidden: true, reader_expanded: true }));
+
+    // With no source open the list comes back, so there is always something to pick from.
+    location.hash = '#view=all';
+    await vi.waitFor(() => expect(document.body.classList.contains('reader-expanded')).toBe(false));
+    expect(document.getElementById('expand-reader')).toBeNull();
+    $('show-sessions').click();
+    expect(document.body.classList.contains('sessions-hidden')).toBe(false);
+  });
 });

@@ -36,7 +36,7 @@ npm run build
 
 ## Collecting sources
 
-The side panel has two views: **Collect** for gathering material and **Research Job** for preparing a job. Every capture goes to the active session, so ClipGrail does not ask where to save it.
+The side panel has two views: **Clips** for clipping and reviewing sources and **Research Job** for preparing a job. Every capture goes to the active session, so ClipGrail does not ask where to save it.
 
 | Action | How | What is saved |
 |---|---|---|

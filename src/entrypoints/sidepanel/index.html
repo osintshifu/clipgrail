@@ -28,7 +28,7 @@
         </div>
       </div>
       <div class="tabs" role="tablist" aria-label="Workspaces">
-        <button id="tab-collect" role="tab" type="button" aria-selected="true" aria-controls="view-collect">Collect</button>
+        <button id="tab-collect" role="tab" type="button" aria-selected="true" aria-controls="view-collect">Clips</button>
         <button id="tab-job" role="tab" type="button" aria-selected="false" aria-controls="view-job" tabindex="-1">Research Job</button>
       </div>
     </header>
@@ -57,7 +57,7 @@
       <section id="view-job" class="view" role="tabpanel" aria-labelledby="tab-job" hidden>
         <div class="stage-row">
           <div class="seg" role="tablist" aria-label="Research Job stage">
-            <button id="stage-prepare" role="tab" type="button" aria-selected="true" aria-controls="prepare">Prepare</button>
+            <button id="stage-prepare" role="tab" type="button" aria-selected="true" aria-controls="prepare">Prompt &amp; sources</button>
             <button id="stage-result" role="tab" type="button" aria-selected="false" aria-controls="result" tabindex="-1">Result</button>
           </div>
         </div>
@@ -89,7 +89,7 @@
               <div id="job-sources-heading" class="section-title">Sources</div>
               <span class="small-links"><button id="select-all" class="link" type="button">All</button> <span class="muted">·</span> <button id="select-none" class="link" type="button">None</button></span>
             </div>
-            <p id="job-sources-empty" class="small" hidden>This session has no sources yet. Clip something in Collect first.</p>
+            <p id="job-sources-empty" class="small" hidden>This session has no sources yet. Clip a page first.</p>
             <ul id="job-sources" class="checklist" aria-labelledby="job-sources-heading"></ul>
           </section>
 

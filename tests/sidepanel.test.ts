@@ -132,7 +132,7 @@ describe('side panel', () => {
     expect(copy.disabled).toBe(true);
     expect($('job-stale').hidden).toBe(false);
 
-    // A note edited in Collect shows the job as outdated when the Research Job view opens again.
+    // A note edited in Clips shows the job as outdated when the Research Job view opens again.
     $('generate').click();
     await vi.waitFor(() => expect(copy.disabled).toBe(false));
     $('tab-collect').click();

@@ -8,8 +8,9 @@ body { display: grid; grid-template-columns: 232px 404px minmax(0, 1fr); height:
 
 /* Sessions */
 .nav { border-right: 1px solid var(--line); background: var(--soft); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
-.brand { display: flex; align-items: baseline; justify-content: space-between; padding: 2px 8px 12px; }
+.brand { display: flex; align-items: center; gap: 6px; padding: 0 8px 10px 0; }
 .brand h1 { font-size: 15px; margin: 0; }
+.brand .small { margin-left: auto; }
 .nav-list { display: flex; flex-direction: column; gap: 2px; }
 .nav-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 6px 8px; border-radius: 6px; text-align: left; }
 .nav-item:hover:not(:disabled) { background: var(--line); }
@@ -23,7 +24,8 @@ body { display: grid; grid-template-columns: 232px 404px minmax(0, 1fr); height:
 /* Sources */
 .list-col { border-right: 1px solid var(--line); display: flex; flex-direction: column; }
 .list-top { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 12px 12px 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-.list-top h2 { font-size: 16px; overflow-wrap: anywhere; }
+.list-head { display: flex; align-items: center; gap: 6px; }
+.list-top h2 { flex: 1; min-width: 0; font-size: 16px; overflow-wrap: anywhere; }
 #search { width: 100%; padding: 6px 9px; }
 .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 select { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--bg); font-size: 12px; }
@@ -95,6 +97,21 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .details dd.mono { font: 11.5px/1.5 var(--mono); }
 .notice { font-size: 12.5px; color: var(--muted); }
 
+/* Hiding columns in wide windows: the sessions alone, or both columns to read the open source. */
+.icon-btn { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); flex: none; }
+.icon-btn:hover:not(:disabled) { background: var(--line); color: var(--fg); }
+.icon-btn[hidden] { display: none; }
+.icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#expand-reader .icon-collapse, body.reader-expanded #expand-reader .icon-expand { display: none; }
+body.reader-expanded #expand-reader .icon-collapse { display: block; }
+@media (min-width: 901px) {
+  body.sessions-hidden { grid-template-columns: 404px minmax(0, 1fr); }
+  body.sessions-hidden .nav { display: none; }
+  body.reader-expanded { grid-template-columns: minmax(0, 1fr); }
+  body.reader-expanded .nav, body.reader-expanded .list-col { display: none; }
+  body.reader-expanded .reader { margin: 0 auto; }
+}
+
 /* Narrow windows: the session list becomes a menu and the list and the open source take turns. */
 .narrow-top { display: none; }
 @media (max-width: 900px) {
@@ -124,4 +141,4 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .move-targets button { display: flex; justify-content: space-between; gap: 8px; text-align: left; white-space: normal; padding: 10px; }
 .dialog-error { color: var(--fail); font-size: 12px; }
 .library-notice { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; background: var(--toast); color: var(--toast-fg); border-radius: 6px; padding: 8px 12px; max-width: calc(100vw - 24px); font-size: 12px; }
-@media (max-width: 900px) { .reader-actions { margin-left: 0; } #narrow-session-actions { font-size: 12px; padding: 4px 6px; } }
+@media (max-width: 900px) { .reader-actions { margin-left: 0; } #narrow-session-actions { font-size: 12px; padding: 4px 6px; } #hide-sessions, #show-sessions, #expand-reader { display: none; } }

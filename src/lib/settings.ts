@@ -33,6 +33,7 @@ export const DEFAULT_PRESETS: Preset[] = [
 
 const ACTIVE_SESSION_KEY = 'activeSessionId';
 const PRESETS_KEY = 'presets';
+const LIBRARY_LAYOUT_KEY = 'libraryLayout';
 /** One key per session, so saving one session's settings never rewrites another's. */
 const JOB_SETTINGS_PREFIX = 'jobSettings.';
 
@@ -57,6 +58,21 @@ export async function resolveActiveSessionId(db: IDBDatabase): Promise<string> {
   // Replace only the missing session, not one another page stored meanwhile.
   if ((await getActiveSessionId()) === id) await setActiveSessionId(INBOX_SESSION_ID);
   return INBOX_SESSION_ID;
+}
+
+/** Columns the library hides in wide windows. */
+export interface LibraryLayout {
+  sessions_hidden: boolean;
+  reader_expanded: boolean;
+}
+
+export async function getLibraryLayout(): Promise<LibraryLayout> {
+  const stored = (await browser.storage.local.get(LIBRARY_LAYOUT_KEY))[LIBRARY_LAYOUT_KEY] as Partial<LibraryLayout> | undefined;
+  return { sessions_hidden: stored?.sessions_hidden === true, reader_expanded: stored?.reader_expanded === true };
+}
+
+export async function saveLibraryLayout(layout: LibraryLayout): Promise<void> {
+  await browser.storage.local.set({ [LIBRARY_LAYOUT_KEY]: layout });
 }
 
 /** Returns the four presets; stored texts replace the defaults, names and order stay fixed. */
