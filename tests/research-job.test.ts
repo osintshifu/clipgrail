@@ -53,6 +53,22 @@ describe('buildResearchJob', () => {
     expect(JSON.stringify(job.sources)).not.toContain('news.example.com/recount?');
   });
 
+  it('marks a source whose latest attempt failed after the text in use, with its time only on request', async () => {
+    const { db, sessionId } = await sessionWithMaterial();
+    await commitCapture(db, failedDraft('https://news.example.com/recount', '2026-10-06T12:20:00.000Z', sessionId));
+    const view = await loadSessionView(db, sessionId);
+    const build = (s: Partial<JobSettings>) => buildResearchJob({ view, settings: settings(s), id: 'j', createdAt: 'now' });
+
+    const full = build({});
+    expect(full.text).toContain('- Latest capture attempt failed (HTTP 404); the snapshot text is from an earlier capture.');
+    expect(full.sources[0]!.latest_failure).toEqual({ description: 'HTTP 404', captured_at: null });
+    expect(JSON.parse(researchJobToJson(full)).job.sources[0].latest_failure).toEqual({ description: 'HTTP 404', captured_at: null });
+    expect(build({ include_capture_times: true }).text).toContain('- Latest capture attempt failed (HTTP 404) at 2026-10-06T12:20:00.000Z; the snapshot');
+    expect(build({ context_mode: 'links' }).text).toContain('- Latest capture attempt failed (HTTP 404).\n');
+    // A source that only ever failed is reported as missing, not as a later failure.
+    expect(full.sources.find((s) => s.url === 'https://maps.example.net/results')!.latest_failure).toBeNull();
+  });
+
   it('includes each private field only when its own option is enabled', async () => {
     const { db, sessionId } = await sessionWithMaterial();
     const view = await loadSessionView(db, sessionId);

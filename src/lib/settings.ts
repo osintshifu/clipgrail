@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { hasSession } from './db';
 import { INBOX_SESSION_ID } from './model';
 import type { JobSettings } from './research-job';
 import { DEFAULT_JOB_SETTINGS } from './research-job';
@@ -43,6 +44,19 @@ export async function getActiveSessionId(): Promise<string> {
 
 export async function setActiveSessionId(id: string): Promise<void> {
   await browser.storage.local.set({ [ACTIVE_SESSION_KEY]: id });
+}
+
+/**
+ * The active session, or the Inbox when the stored session no longer exists
+ * (a restore can replace the data and stop before it stores the active
+ * session). The Inbox is then stored, so every ClipGrail page agrees.
+ */
+export async function resolveActiveSessionId(db: IDBDatabase): Promise<string> {
+  const id = await getActiveSessionId();
+  if (await hasSession(db, id)) return id;
+  // Replace only the missing session, not one another page stored meanwhile.
+  if ((await getActiveSessionId()) === id) await setActiveSessionId(INBOX_SESSION_ID);
+  return INBOX_SESSION_ID;
 }
 
 /** Returns the four presets; stored texts replace the defaults, names and order stay fixed. */
@@ -94,18 +108,21 @@ export async function saveJobSettings(sessionId: string, settings: JobSettings):
 /** Research Job settings of every session, keyed by session ID (for backups). */
 export async function getAllJobSettings(): Promise<Record<string, JobSettings>> {
   const stored = await browser.storage.local.get(null);
-  const all: Record<string, JobSettings> = {};
+  const all = Object.create(null) as Record<string, JobSettings>;
   for (const [key, value] of Object.entries(stored)) {
     if (key.startsWith(JOB_SETTINGS_PREFIX)) all[key.slice(JOB_SETTINGS_PREFIX.length)] = cleanJobSettings(value);
   }
   return all;
 }
 
-/** Replaces the Research Job settings of all sessions (restore): sessions missing from `all` get defaults. */
+/**
+ * Replaces the Research Job settings of all sessions (restore): sessions missing from `all` get defaults.
+ * The new settings are written before old keys are removed, so a failure in between leaves no session without its settings.
+ */
 export async function replaceAllJobSettings(all: Record<string, JobSettings>): Promise<void> {
-  const stored = await browser.storage.local.get(null);
-  const obsolete = Object.keys(stored).filter((k) => k.startsWith(JOB_SETTINGS_PREFIX) && !(k.slice(JOB_SETTINGS_PREFIX.length) in all));
-  if (obsolete.length) await browser.storage.local.remove(obsolete);
   const entries = Object.entries(all).map(([id, s]) => [JOB_SETTINGS_PREFIX + id, cleanJobSettings(s)] as const);
   if (entries.length) await browser.storage.local.set(Object.fromEntries(entries));
+  const stored = await browser.storage.local.get(null);
+  const obsolete = Object.keys(stored).filter((k) => k.startsWith(JOB_SETTINGS_PREFIX) && !Object.hasOwn(all, k.slice(JOB_SETTINGS_PREFIX.length)));
+  if (obsolete.length) await browser.storage.local.remove(obsolete);
 }

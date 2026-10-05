@@ -49,7 +49,7 @@ Chrome lets ClipGrail read a tab only after you act on that tab: click the toolb
 
 Saving tabs needs Chrome's permission to read tab addresses. Chrome asks for it the first time you save tabs and calls it "Read your browsing history". ClipGrail reads the addresses and titles of the tabs in the current window only when you save tabs. **··· > Turn off tab access** withdraws the permission; Chrome remembers your earlier consent, so the next time you save tabs it is turned on again without asking. To save several tabs, select them in the tab strip with Ctrl+click (Cmd+click on a Mac) or Shift+click.
 
-Each source gets a label within its session: S1, S2, S3. Clipping the same address again adds a new capture to the same source and keeps the earlier text. Known tracking parameters such as `utm_*`, `gclid` and `fbclid` are ignored when ClipGrail matches addresses; the address as you visited it stays with the capture. A label is never given to another source, also after Undo.
+Each source gets a label within its session: S1, S2, S3. Clipping the same address again adds a new capture to the same source and keeps the earlier text. Known tracking parameters such as `utm_*`, `gclid` and `fbclid` are ignored when ClipGrail matches addresses; the address as you visited it stays with the capture. The part of an address after `#` counts too, so `page#a` and `page#b` are separate sources. A label is never given to another source, also after Undo.
 
 After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after saving tabs, the captures of that save.
 
@@ -65,7 +65,7 @@ A snapshot is the saved text of a page. Every source in the list shows the statu
 | Capture failed | The address is saved without text: the server returned an HTTP error, the browser showed an error page, the page had no readable text, or extraction failed |
 | Selections only | Only selections were clipped from this page |
 
-A later failed capture never removes an earlier successful snapshot.
+A later failed capture never removes an earlier successful snapshot. The source list, the source details and the Research Job say that the latest attempt failed.
 
 ClipGrail uses Mozilla Readability to get the article text of a page. When Readability finds no article, ClipGrail saves the visible page text instead and says so in the source details.
 

@@ -2,7 +2,7 @@ import type { SourceEntry as FullSourceEntry } from './db';
 import type { Capture, OkSnapshotMeta, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
-import { chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from './selection';
+import { chooseSnapshot, describeFailure, failedSnapshotOf, laterFailureOf, okSnapshotOf } from './selection';
 import { plural } from './text';
 
 /** Descriptions need only snapshot metadata, so they work for the side panel and the library alike. */
@@ -58,6 +58,7 @@ export function sourceMeta(entry: SourceEntry): string {
     main,
     entry.captures.length > 1 ? plural(entry.captures.length, 'capture') : '',
     choice.status !== 'none' && selections ? plural(selections, 'selection') : '',
+    laterFailureOf(entry, choice) ? 'latest attempt failed' : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -68,13 +69,15 @@ export function statusSentence(entry: SourceEntry): string {
   const choice = chooseSnapshot(entry);
   const ok = okSnapshotOf(choice);
   const failed = failedSnapshotOf(choice);
+  const later = laterFailureOf(entry, choice);
+  const laterText = later ? ` Latest attempt ${fmtTime(later.captured_at)} failed: ${describeFailure(later)}.` : '';
   if (ok && choice.status === 'ok') {
     const fallback = ok.extraction_method === 'page-text' ? ' · from visible page text, no article found' : '';
     const which = choice.total > 1 ? ` · capture ${choice.position} of ${choice.total}` : '';
-    return `Readable text saved ${fmtTime(ok.captured_at)} · ${fmtNumber(ok.character_count)} characters${fallback}${which}.`;
+    return `Readable text saved ${fmtTime(ok.captured_at)} · ${fmtNumber(ok.character_count)} characters${fallback}${which}.${laterText}`;
   }
   if (ok) {
-    return `Partial text: cut at capture to ${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} characters. Saved ${fmtTime(ok.captured_at)}.`;
+    return `Partial text: cut at capture to ${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} characters. Saved ${fmtTime(ok.captured_at)}.${laterText}`;
   }
   if (choice.status === 'pending') {
     return choice.entry?.capture.kind === 'tab'

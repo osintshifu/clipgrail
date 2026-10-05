@@ -2,7 +2,7 @@ import type { SessionView, SourceEntry } from './db';
 import type { ExtractionMethod, FallbackReason, Fragment } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
-import { capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from './selection';
+import { capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, laterFailureOf, okSnapshotOf } from './selection';
 import { countCharacters, plural, truncateToCharacters } from './text';
 
 export const RESEARCH_JOB_FORMAT = 'clipgrail-research-job';
@@ -82,6 +82,8 @@ export interface JobSource {
   /** complete / partial / missing for the requested material; not_requested in Links only mode. */
   material: 'complete' | 'partial' | 'missing' | 'not_requested';
   missing_reason: string | null;
+  /** The latest attempt to read the page failed after the snapshot in use; its time only with capture timestamps. */
+  latest_failure: { description: string; captured_at: string | null } | null;
   snapshot: JobSnapshot | null;
   selections: JobSelection[];
   /** Private fields: null unless the matching option was enabled. */
@@ -212,6 +214,7 @@ function buildJobSource(entry: SourceEntry, settings: JobSettings): JobSource {
   if (material === 'complete' && anyPartial) material = 'partial';
 
   const originalUrls = [...new Set(captures.map((c) => c.original_url))].filter((u) => u !== entry.source.dedup_url);
+  const laterFailure = laterFailureOf(entry, choice);
   return {
     label: sourceLabel(entry.source),
     source_id: entry.source.id,
@@ -223,6 +226,9 @@ function buildJobSource(entry: SourceEntry, settings: JobSettings): JobSource {
     status: choice.status,
     material,
     missing_reason: missingReason,
+    latest_failure: laterFailure
+      ? { description: describeFailure(laterFailure), captured_at: settings.include_capture_times ? laterFailure.captured_at : null }
+      : null,
     snapshot,
     selections,
     source_note: settings.include_notes && entry.source.note.trim() ? entry.source.note : null,
@@ -272,6 +278,11 @@ function renderSource(source: JobSource): string[] {
   ].filter(Boolean);
   if (meta.length) lines.push(`- ${meta.join(' · ')}`);
   if (source.snapshot) lines.push(snapshotLine(source.snapshot));
+  if (source.latest_failure) {
+    const when = source.latest_failure.captured_at ? ` at ${source.latest_failure.captured_at}` : '';
+    const failure = `- Latest capture attempt failed (${source.latest_failure.description})${when}`;
+    lines.push(source.snapshot ? `${failure}; the snapshot text is from an earlier capture.` : `${failure}.`);
+  }
   if (source.material === 'missing' && source.missing_reason) lines.push(`- MISSING: ${source.missing_reason}`);
   for (const t of source.capture_times ?? []) lines.push(`- Captured (${t.kind}): ${t.captured_at}`);
   if (source.snapshot?.captured_at) lines.push(`- Snapshot taken: ${source.snapshot.captured_at}`);

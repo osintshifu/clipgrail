@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
-import { extractPage } from '../src/lib/extract-page';
+import { describe, expect, it, vi } from 'vitest';
+import { extractPage, readHttpStatus } from '../src/lib/extract-page';
 import { MAX_SNAPSHOT_CHARACTERS } from '../src/lib/text';
 
 const paragraph = (n: number) =>
@@ -37,6 +37,26 @@ describe('extractPage', () => {
     // Without a reported status the same page is plain text content, not a guessed 404.
     const withoutStatus = extractPage(notFoundPage, null);
     expect(withoutStatus.ok).toBe(true);
+  });
+
+  it('applies the reported status only to the address the document was loaded from', () => {
+    const entry = { name: `${location.origin}/missing`, responseStatus: 404 };
+    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([entry as unknown as PerformanceEntry]);
+    history.replaceState(null, '', '/missing#comments');
+    expect(readHttpStatus()).toBe(404);
+    // A single-page app moved on to another address: Chrome never reported its status.
+    history.pushState(null, '', '/article');
+    expect(readHttpStatus()).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it('limits page metadata, which the snapshot text limit does not cover', () => {
+    const longTitle = 't'.repeat(3_000_000);
+    const result = extractPage(html(paragraph(1), `<title>${longTitle}</title><link rel="canonical" href="https://example.com/${'p'.repeat(9_000)}">`), 200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.title).toBe(`${'t'.repeat(1_000)}…`);
+    expect(result.canonical_url).toBeNull();
   });
 
   it('fails visibly on a page without text instead of saving an empty snapshot', () => {

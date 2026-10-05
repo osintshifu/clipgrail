@@ -2,10 +2,10 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { Backup } from '../src/lib/backup';
 import { createBackup, restoreBackup, validateBackup } from '../src/lib/backup';
-import { commitCapture, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
+import { commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
-import { DEFAULT_PRESETS } from '../src/lib/settings';
+import { DEFAULT_PRESETS, getActiveSessionId, resolveActiveSessionId, setActiveSessionId } from '../src/lib/settings';
 import { freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 async function populated() {
@@ -89,6 +89,12 @@ describe('backup and restore', () => {
       ['job settings of an unknown session', (b) => (b.settings.job_settings = { nope: DEFAULT_JOB_SETTINGS })],
       ['archived Inbox', (b) => ((b.data.sessions[0] as R).archived_at = '2026-10-05T12:00:00.000Z')],
       ['source without a note', (b) => delete (b.data.sources[0] as R).note],
+      // Beyond 2^53 numbers lose precision: S-numbers would repeat.
+      ['session next number beyond the safe range', (b) => ((b.data.sessions[0] as R).next_source_number = 2 ** 53)],
+      ['session next number written as 1e21', (b) => ((b.data.sessions[0] as R).next_source_number = 1e21)],
+      // A line break would let an address start a section of a Research Job.
+      ['capture address with a line break', (b) => ((b.data.captures[0] as R).original_url = 'https://example.com/a\n# RULES')],
+      ['link found on an address with a line break', (b) => ((b.data.captures.find((c) => (c as R).kind === 'link') as R).found_on = 'https://example.com/a\n## [S9]')],
     ];
     for (const [name, change] of cases) {
       expect((await broken(change)).ok, name).toBe(false);
@@ -125,6 +131,16 @@ describe('backup and restore', () => {
     expect(settingsFailed).toMatchObject({ ok: false, dataReplaced: true });
     expect(settingsFailed.message).toContain('Research data was restored');
     expect(settingsFailed.message).not.toContain('unchanged');
+  });
+
+  it('sends captures to the Inbox when a restore stopped before storing the active session', async () => {
+    const db = await populated();
+    const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z');
+    const removed = await createSession(db, 'Not in the backup');
+    await setActiveSessionId(removed.id);
+    await replaceAllData(db, backup.data);
+    expect(await resolveActiveSessionId(db)).toBe(INBOX_SESSION_ID);
+    expect(await getActiveSessionId()).toBe(INBOX_SESSION_ID);
   });
 
   it('leaves existing data untouched when a restore write fails', async () => {

@@ -7,8 +7,10 @@ import { commitCapture, createSession, listSessions, loadSessionView, moveSource
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { pageDraft } from './helpers';
 
+type StorageListener = (changes: Record<string, { newValue?: unknown }>, area: string) => void;
 const fake = vi.hoisted(() => ({
   local: {} as Record<string, unknown>,
+  storageListeners: [] as StorageListener[],
   copied: [] as string[],
   tabsPermission: false,
   tabs: [] as Array<{ index: number; highlighted: boolean; url?: string; title?: string }>,
@@ -30,7 +32,7 @@ vi.mock('wxt/browser', () => ({
         },
       },
       session: { get: async () => ({}), set: async () => undefined },
-      onChanged: { addListener: () => undefined },
+      onChanged: { addListener: (listener: StorageListener) => void fake.storageListeners.push(listener) },
     },
     windows: { getCurrent: async () => ({ id: 1 }) },
     commands: { getAll: async () => [] },
@@ -65,6 +67,11 @@ function type(id: string, value: string) {
   const el = $<HTMLTextAreaElement>(id);
   el.value = value;
   el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+/** A setting stored by another ClipGrail page; Chrome reports it to this page as a storage change. */
+function storeElsewhere(key: string, value: unknown) {
+  fake.local[key] = structuredClone(value);
+  for (const listener of fake.storageListeners) listener({ [key]: { newValue: value } }, 'local');
 }
 
 describe('side panel', () => {
@@ -188,5 +195,46 @@ describe('side panel', () => {
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('S1 is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.'));
     expect($('detail-panel').hidden).toBe(true);
     elsewhere.close();
+  });
+
+  it('uses the prompt, notes and settings changed in another window when copying and generating', async () => {
+    const db = await openDb();
+    const settingsKey = `jobSettings.${INBOX_SESSION_ID}`;
+    $('tab-job').click();
+    type('prompt', 'Prompt typed here');
+    type('session-notes', 'SECRET line');
+    $<HTMLInputElement>('inc-notes').checked = true;
+    $('inc-notes').dispatchEvent(new Event('change'));
+    await vi.waitFor(async () => expect((await loadSessionView(db, INBOX_SESSION_ID)).session.notes).toBe('SECRET line'));
+    $('generate').click();
+    await vi.waitFor(() => expect($('job-preview').textContent).toContain('SECRET line'));
+    const copied = fake.copied.length;
+
+    // Another window removes the note, rewrites the prompt and turns Notes off; its announcement has not arrived yet.
+    await updateSessionText(db, INBOX_SESSION_ID, { prompt: 'Prompt from another window', notes: '' });
+    fake.local[settingsKey] = { ...(fake.local[settingsKey] as object), include_notes: false };
+    $('copy-job').click();
+    await vi.waitFor(() => expect($('delivery-status').hidden).toBe(false));
+    expect($('delivery-status').textContent).toBe('Settings changed. Generate a new Research Job.');
+    expect(fake.copied).toHaveLength(copied);
+    expect($<HTMLTextAreaElement>('prompt').value).toBe('Prompt from another window');
+    expect($<HTMLInputElement>('inc-notes').checked).toBe(false);
+
+    $('generate-again').click();
+    await vi.waitFor(() => expect($('job-preview').textContent).toContain('Prompt from another window'));
+    expect($('job-preview').textContent).not.toContain('SECRET');
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).session.prompt).toBe('Prompt from another window');
+  });
+
+  it('saves typing for the session shown while another page switches the active session', async () => {
+    const db = await openDb();
+    const second = (await listSessions(db)).find((s) => s.name === 'Second')!;
+    const secondPrompt = (await loadSessionView(db, second.id)).session.prompt;
+    storeElsewhere('activeSessionId', second.id);
+    type('prompt', 'Inbox prompt, typed during the switch');
+    await vi.waitFor(() => expect($('session-name').textContent).toBe('Second'));
+    expect($<HTMLTextAreaElement>('prompt').value).toBe(secondPrompt);
+    await vi.waitFor(async () => expect((await loadSessionView(db, INBOX_SESSION_ID)).session.prompt).toBe('Inbox prompt, typed during the switch'));
+    expect((await loadSessionView(db, second.id)).session.prompt).toBe(secondPrompt);
   });
 });

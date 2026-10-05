@@ -47,6 +47,7 @@ import {
   getPresets,
   saveJobSettings,
   replaceAllJobSettings,
+  resolveActiveSessionId,
   savePresets,
   setActiveSessionId,
 } from '../../lib/settings';
@@ -133,6 +134,32 @@ let previousPrompt: string | null = null;
 let notesOpen = false;
 let optionsOpen = false;
 let tabCounts = { selected: 1, all: 0 };
+/** Session loads: a newer load supersedes an older one, and a refresh waits for the latest. */
+let loadSeq = 0;
+let loadedSeq = 0;
+
+/**
+ * Edits of the prompt, the session notes and the Research Job settings. A
+ * re-read never replaces an edit that is not saved yet or was made while
+ * the re-read ran.
+ */
+interface EditState {
+  revision: number;
+  saved: number;
+}
+const edits: Record<'prompt' | 'notes' | 'settings', EditState> = {
+  prompt: { revision: 0, saved: 0 },
+  notes: { revision: 0, saved: 0 },
+  settings: { revision: 0, saved: 0 },
+};
+
+/** Starts an edit and returns the callback that marks it saved. */
+function startEdit(state: EditState): () => void {
+  const revision = ++state.revision;
+  return () => {
+    state.saved = Math.max(state.saved, revision);
+  };
+}
 
 // ---------- Toast ----------
 
@@ -376,12 +403,25 @@ async function setArchived(archived: boolean): Promise<void> {
 
 // ---------- Loading ----------
 
+/**
+ * Reads the active session and shows it. State changes only after every read,
+ * so an edit made meanwhile is saved for the session still shown.
+ */
 async function loadActiveSession(): Promise<void> {
-  sessions = await listSessions(db);
-  if (!sessions.some((s) => s.id === activeId)) activeId = INBOX_SESSION_ID;
-  view = await loadSessionView(db, activeId);
-  settings = await getJobSettings(activeId);
-  job = await latestJob(db, activeId);
+  const seq = ++loadSeq;
+  const list = await listSessions(db);
+  // The stored session can be missing after a restore stopped early: the Inbox replaces it.
+  const id = list.some((s) => s.id === activeId) ? activeId : await resolveActiveSessionId(db);
+  const nextView = await loadSessionView(db, id);
+  const nextSettings = await getJobSettings(id);
+  const nextJob = await latestJob(db, id);
+  if (seq !== loadSeq) return;
+  loadedSeq = seq;
+  sessions = list;
+  activeId = id;
+  view = nextView;
+  settings = nextSettings;
+  job = nextJob;
   previousPrompt = null;
   $<HTMLTextAreaElement>('prompt').value = view.session.prompt;
   $<HTMLTextAreaElement>('session-notes').value = view.session.notes;
@@ -426,25 +466,50 @@ function keepFocus(): () => void {
  * too, and an open source that disappeared is explained instead of just closed.
  */
 async function refreshData(options: { external?: boolean } = {}): Promise<void> {
-  if (!db) return;
+  // A session load in progress shows fresh data itself.
+  if (!db || !view || loadedSeq !== loadSeq) return;
+  const seq = loadSeq;
+  const sessionId = view.session.id;
+  const startRevisions = { prompt: edits.prompt.revision, notes: edits.notes.revision, settings: edits.settings.revision };
   const restore = keepFocus();
+  let fresh: SessionView;
+  let freshSettings: JobSettings;
+  let freshSessions: Session[] | undefined;
+  let freshJob: ResearchJob | undefined;
   try {
-    const fresh = await loadSessionView(db, activeId);
+    fresh = await loadSessionView(db, sessionId);
+    freshSettings = await getJobSettings(sessionId);
     if (options.external) {
-      sessions = await listSessions(db);
-      job = await latestJob(db, activeId);
+      freshSessions = await listSessions(db);
+      freshJob = await latestJob(db, sessionId);
     }
-    const lost =
-      options.external && detailSourceId !== null && !fresh.sources.some((s) => s.source.id === detailSourceId)
-        ? view?.sources.find((s) => s.source.id === detailSourceId)
-        : undefined;
-    // Keep text being typed: the prompt and notes fields are the source of truth while edited.
-    view = { ...fresh, session: { ...fresh.session, prompt: view?.session.prompt ?? fresh.session.prompt, notes: view?.session.notes ?? fresh.session.notes } };
-    if (lost) showToast(`${sourceLabel(lost.source)} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`);
   } catch {
     await loadActiveSession();
     return;
   }
+  if (seq !== loadSeq) return;
+  if (freshSessions) sessions = freshSessions;
+  if (options.external) job = freshJob;
+  const lost =
+    options.external && detailSourceId !== null && !fresh.sources.some((s) => s.source.id === detailSourceId)
+      ? view.sources.find((s) => s.source.id === detailSourceId)
+      : undefined;
+  // Another window may have changed the prompt, notes or settings. Text being typed, not yet
+  // saved, or edited during this read stays: the read may predate the last keystroke.
+  const kept = (key: keyof typeof edits, field?: HTMLElement) =>
+    document.activeElement === field || edits[key].revision !== edits[key].saved || edits[key].revision !== startRevisions[key];
+  const promptField = $<HTMLTextAreaElement>('prompt');
+  const notesField = $<HTMLTextAreaElement>('session-notes');
+  const prompt = kept('prompt', promptField) ? view.session.prompt : fresh.session.prompt;
+  const notes = kept('notes', notesField) ? view.session.notes : fresh.session.notes;
+  if (promptField.value !== prompt) promptField.value = prompt;
+  if (notesField.value !== notes) notesField.value = notes;
+  view = { ...fresh, session: { ...fresh.session, prompt, notes } };
+  if (!kept('settings') && JSON.stringify(freshSettings) !== JSON.stringify(settings)) {
+    settings = freshSettings;
+    fillJobForm();
+  }
+  if (lost) showToast(`${sourceLabel(lost.source)} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`);
   if (options.external) renderHeader();
   renderCollect();
   renderJobSources();
@@ -712,7 +777,7 @@ async function moveDetailSource(entry: SourceEntry, targetId: string): Promise<v
     // The source has left this session, so it no longer belongs in this session's job selection.
     if (settings.excluded_source_ids.includes(entry.source.id)) {
       settings = { ...settings, excluded_source_ids: settings.excluded_source_ids.filter((id) => id !== entry.source.id) };
-      persistSettings(activeId, settings);
+      persistSettings(entry.source.session_id, settings);
     }
     closeSheet(false);
     detailSourceId = null;
@@ -859,13 +924,20 @@ function renderOptionsToggle(): void {
   $('options-body').hidden = !optionsOpen;
 }
 
+/** Settings live in chrome.storage, so other ClipGrail pages are told about the change. */
 function persistSettings(sessionId: string, value: JobSettings): void {
-  saveJobSettings(sessionId, value).catch(reportSaveError('Settings'));
+  const done = startEdit(edits.settings);
+  saveJobSettings(sessionId, value).then(() => {
+    done();
+    announceDataChange();
+  }, reportSaveError('Settings'));
 }
 
+/** Edits apply to the session shown, also while another session is being loaded. */
 function changeSettings(changes: Partial<JobSettings>): void {
+  if (!view) return;
   settings = { ...settings, ...changes };
-  persistSettings(activeId, settings);
+  persistSettings(view.session.id, settings);
   renderOptionsToggle();
   renderJob();
 }
@@ -876,13 +948,14 @@ function setMode(mode: ContextMode): void {
 }
 
 function persistPrompt(sessionId: string, prompt: string): void {
-  updateSessionText(db, sessionId, { prompt }).catch(reportSaveError('Prompt'));
+  const done = startEdit(edits.prompt);
+  updateSessionText(db, sessionId, { prompt }).then(done, reportSaveError('Prompt'));
 }
 
 function setPrompt(prompt: string): void {
   if (!view) return;
   view = { ...view, session: { ...view.session, prompt } };
-  persistPrompt(activeId, prompt);
+  persistPrompt(view.session.id, prompt);
   scheduleJobRender();
 }
 
@@ -1052,9 +1125,10 @@ function renderJob(): void {
 }
 
 async function generateJob(): Promise<void> {
+  // Re-read first: another window may have changed the prompt, notes, settings or sources.
+  await refreshData();
   if (!view) return;
   try {
-    await updateSessionText(db, activeId, { prompt: view.session.prompt });
     const fresh = buildResearchJob({ view, settings, id: crypto.randomUUID(), createdAt: new Date().toISOString() });
     job = await saveJob(db, fresh);
     $('delivery-status').hidden = true;
@@ -1319,8 +1393,10 @@ function bind(): void {
   });
   $<HTMLTextAreaElement>('session-notes').addEventListener('input', (event) => {
     const notes = (event.target as HTMLTextAreaElement).value;
-    if (view) view = { ...view, session: { ...view.session, notes } };
-    updateSessionText(db, activeId, { notes }).catch(reportSaveError('Notes'));
+    if (!view) return;
+    view = { ...view, session: { ...view.session, notes } };
+    const done = startEdit(edits.notes);
+    updateSessionText(db, view.session.id, { notes }).then(done, reportSaveError('Notes'));
     renderNotesToggle();
     renderJob();
   });

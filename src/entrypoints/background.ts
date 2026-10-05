@@ -7,7 +7,7 @@ import { openDb, setWriteListener } from '../lib/db';
 import type { ClipResponse } from '../lib/messages';
 import { isClipRequest } from '../lib/messages';
 import { publishNotice } from '../lib/notice';
-import { getActiveSessionId } from '../lib/settings';
+import { resolveActiveSessionId } from '../lib/settings';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -38,7 +38,7 @@ async function run(
 ): Promise<ClipResponse> {
   try {
     const db = await getDb();
-    return await report(await capture(db, sessionId ?? (await getActiveSessionId())), windowId);
+    return await report(await capture(db, sessionId ?? (await resolveActiveSessionId(db))), windowId);
   } catch (error) {
     const message = `Capture failed: ${error instanceof Error ? error.message : String(error)}`;
     await publishNotice({ window_id: windowId ?? null, level: 'error', text: message, capture_id: null });

@@ -19,13 +19,16 @@ describe('capture of a page that changes during the capture', () => {
 
     scriptReturns(extraction('Page B text', { page_url: 'https://example.com/b' }));
     expect(await capturePage(db, tab, INBOX_SESSION_ID)).toMatchObject({ saved: false, reason: 'page_changed' });
+    // A new fragment can show other content (another chat, another sheet), so it counts as another page.
+    scriptReturns(extraction('Other channel text', { page_url: 'https://example.com/a#@other' }));
+    expect(await capturePage(db, tab, INBOX_SESSION_ID)).toMatchObject({ saved: false, reason: 'page_changed' });
 
     scriptReturns({ text: 'Selected on page B', url: 'https://example.com/b' });
     expect(await captureSelection(db, tab, INBOX_SESSION_ID)).toMatchObject({ saved: false, reason: 'page_changed' });
     expect((await loadSessionView(db, INBOX_SESSION_ID)).sources).toHaveLength(0);
 
-    // The same page with tracking parameters or an anchor is still the same document.
-    scriptReturns(extraction('Page A text', { page_url: 'https://example.com/a?utm_source=x#top' }));
+    // The same page with tracking parameters is still the same document.
+    scriptReturns(extraction('Page A text', { page_url: 'https://example.com/a?utm_source=x' }));
     expect(await capturePage(db, tab, INBOX_SESSION_ID)).toMatchObject({ saved: true });
   });
 });

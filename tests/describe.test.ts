@@ -4,7 +4,7 @@ import { commitCapture, loadSessionView } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { chooseSnapshot } from '../src/lib/selection';
 import { buildSnapshotDraft } from '../src/lib/snapshot';
-import { STATUS_LABELS, sourceMeta, statusSentence } from '../src/lib/describe';
+import { STATUS_LABELS, fmtTime, sourceMeta, statusSentence } from '../src/lib/describe';
 import { extraction, failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 describe('source status texts', () => {
@@ -42,5 +42,16 @@ describe('source status texts', () => {
     expect(sentences[3]).toMatch(/failed: HTTP 404\. No text was saved; the address is kept\.$/);
     expect(sentences[4]).toBe('No page text. Only 1 selection was clipped from this page.');
     expect(sentences[5]).toMatch(/^The tab address was saved without reading the page/);
+  });
+
+  it('say when the latest attempt failed after the text in use', async () => {
+    const db = await freshDb();
+    await commitCapture(db, await pageDraft('https://example.com/recount', 'Saved text', '2026-10-05T10:00:00.000Z'));
+    await commitCapture(db, failedDraft('https://example.com/recount', '2026-10-06T12:20:00.000Z'));
+    const [entry] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    expect(STATUS_LABELS[chooseSnapshot(entry!).status]).toBe('Text saved');
+    expect(sourceMeta(entry!)).toBe('10 chars · 2 captures · latest attempt failed');
+    expect(statusSentence(entry!)).toMatch(/^Readable text saved .* · capture 1 of 2\. Latest attempt (.+) failed: HTTP 404\.$/);
+    expect(statusSentence(entry!)).toContain(`Latest attempt ${fmtTime('2026-10-06T12:20:00.000Z')} failed`);
   });
 });

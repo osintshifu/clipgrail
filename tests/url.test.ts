@@ -14,10 +14,15 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('https://example.com/page?utm_medium=email')).toBe('https://example.com/page');
   });
 
-  it('drops anchors and credentials but keeps hash routes, paths and trailing slashes', () => {
-    expect(normalizeUrl('https://user:pw@Example.com/docs/#section-2')).toBe('https://example.com/docs/');
+  it('keeps fragments that select content and drops credentials and text fragments', () => {
+    expect(normalizeUrl('https://user:pw@Example.com/docs/')).toBe('https://example.com/docs/');
     expect(normalizeUrl('https://app.example.com/#/items/7')).toBe('https://app.example.com/#/items/7');
+    // Different channels and sheets stay different sources.
+    expect(normalizeUrl('https://web.telegram.org/k/#@durov')).toBe('https://web.telegram.org/k/#@durov');
+    expect(normalizeUrl('https://docs.google.com/spreadsheets/d/X/edit#gid=2')).toBe('https://docs.google.com/spreadsheets/d/X/edit#gid=2');
     expect(normalizeUrl('https://example.com/a#:~:text=quote')).toBe('https://example.com/a');
+    expect(normalizeUrl('https://example.com/a#section:~:text=quote')).toBe('https://example.com/a#section');
+    expect(normalizeUrl('https://example.com/a#')).toBe('https://example.com/a');
   });
 
   it('returns null for URLs that cannot be captured', () => {

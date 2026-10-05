@@ -83,9 +83,13 @@ function strOrNull(r: Rec, key: string, where: string): string | null {
   if (v !== null && typeof v !== 'string') throw new Invalid(`${where}: "${key}" must be a string or null.`);
   return v;
 }
-function int(r: Rec, key: string, where: string, min = 0): number {
+/** Highest S-number a backup may hold, far below the precision limit of JavaScript numbers. */
+const MAX_SOURCE_NUMBER = 1_000_000_000;
+
+function int(r: Rec, key: string, where: string, min = 0, max = Number.MAX_SAFE_INTEGER): number {
   const v = r[key];
   if (typeof v !== 'number' || !Number.isInteger(v) || v < min) throw new Invalid(`${where}: "${key}" must be an integer ≥ ${min}.`);
+  if (v > max) throw new Invalid(`${where}: "${key}" is larger than ${max}.`);
   return v;
 }
 function intOrNull(r: Rec, key: string, where: string): number | null {
@@ -212,6 +216,12 @@ function validateJob(j: Rec, sessions: Map<string, Rec>): void {
     }
     // Jobs generated before sources had notes have no source_note.
     if (s.source_note !== undefined) strOrNull(s, 'source_note', w);
+    // Jobs generated before later failed attempts were reported have no latest_failure.
+    if (s.latest_failure !== undefined && s.latest_failure !== null) {
+      const f = obj(s.latest_failure, `${w} latest_failure`);
+      str(f, 'description', w, false);
+      strOrNull(f, 'captured_at', w);
+    }
     for (const n of nullableList(s.notes, `${w} notes`) ?? []) {
       str(n, 'capture_id', w, false);
       str(n, 'note', w);
@@ -298,7 +308,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       const where = `session ${String(s.id)}`;
       str(s, 'name', where, false);
       str(s, 'created_at', where, false);
-      int(s, 'next_source_number', where, 1);
+      int(s, 'next_source_number', where, 1, MAX_SOURCE_NUMBER);
       str(s, 'prompt', where);
       str(s, 'notes', where);
       const archivedAt = strOrNull(s, 'archived_at', where);
@@ -394,7 +404,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     const activeSessionId = str(settingsRoot, 'active_session_id', 'Backup settings', false);
     // Backups made before job settings were included have none: every session then gets defaults.
     const jobSettingsRoot = settingsRoot.job_settings === undefined ? {} : obj(settingsRoot.job_settings, 'Backup job settings');
-    const jobSettings: Record<string, JobSettings> = {};
+    // Session IDs are keys here; a prototype-less object keeps an ID such as "__proto__" an ordinary key.
+    const jobSettings = Object.create(null) as Record<string, JobSettings>;
     for (const [sessionId, value] of Object.entries(jobSettingsRoot)) {
       if (!sessions.has(sessionId)) throw new Invalid(`Backup job settings: unknown session ${sessionId}.`);
       jobSettings[sessionId] = parseJobSettings(value, `Job settings of session ${sessionId}`);

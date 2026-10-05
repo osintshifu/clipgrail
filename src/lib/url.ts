@@ -38,8 +38,21 @@ function isTrackingParam(name: string, host: string): boolean {
   return HOST_TRACKING_PARAMS.some((rule) => rule.hosts.test(host) && rule.params.has(key));
 }
 
+/**
+ * Spaces, control characters and line breaks never appear in an address as
+ * the browser writes it; the URL parser would silently drop some of them.
+ */
+function hasBreakingCharacter(url: string): boolean {
+  for (let i = 0; i < url.length; i++) {
+    const code = url.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f || code === 0x85 || code === 0x2028 || code === 0x2029) return true;
+  }
+  return false;
+}
+
 /** Returns true for addresses kept as provenance (the page a link was found on): http, https and file. */
 export function isProvenanceUrl(url: string): boolean {
+  if (hasBreakingCharacter(url)) return false;
   try {
     return ['http:', 'https:', 'file:'].includes(new URL(url).protocol);
   } catch {
@@ -49,6 +62,7 @@ export function isProvenanceUrl(url: string): boolean {
 
 /** Returns true for URLs ClipGrail can capture (http and https). */
 export function isCapturableUrl(url: string): boolean {
+  if (hasBreakingCharacter(url)) return false;
   try {
     const { protocol } = new URL(url);
     return protocol === 'http:' || protocol === 'https:';
@@ -61,7 +75,8 @@ export function isCapturableUrl(url: string): boolean {
  * Returns the URL used to deduplicate sources, or null for non-http(s) URLs.
  *
  * - removes documented tracking parameters, keeps the order of the rest;
- * - removes the fragment, except hash routes (`#/...`, `#!...`) that select content;
+ * - keeps the fragment, which can select content (`#/route`, `#@channel`, `#gid=2`);
+ *   removes only a text fragment (`#:~:text=...`) and an empty `#`;
  * - removes user:password credentials;
  * - keeps path, trailing slash, host and every other parameter unchanged.
  */
@@ -95,8 +110,7 @@ export function normalizeUrl(input: string): string | null {
     url.search = kept.length ? `?${kept.join('&')}` : '';
   }
 
-  const fragment = url.hash.slice(1).split(':~:', 1)[0] ?? '';
-  url.hash = fragment.startsWith('/') || fragment.startsWith('!') ? fragment : '';
+  url.hash = url.hash.slice(1).split(':~:', 1)[0] ?? '';
 
   return url.href;
 }

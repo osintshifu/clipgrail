@@ -43,6 +43,19 @@ export function okSnapshotOf<S extends SnapshotMeta>(choice: SnapshotChoice<S>):
   return snapshot?.status === 'ok' ? (snapshot as Extract<S, { status: 'ok' }>) : undefined;
 }
 
+/**
+ * The latest failed attempt to read the page, when it came after the
+ * successful snapshot in use: the page may have changed or gone since.
+ */
+export function laterFailureOf<S extends SnapshotMeta>(source: SourceEntry<S>, choice: SnapshotChoice<S>): FailedSnapshot | undefined {
+  if (choice.status !== 'ok' && choice.status !== 'partial') return undefined;
+  for (let i = source.captures.length - 1; i >= choice.position; i--) {
+    const snapshot = source.captures[i]?.snapshot;
+    if (snapshot?.status === 'failed') return snapshot as FailedSnapshot;
+  }
+  return undefined;
+}
+
 export function failedSnapshotOf(choice: SnapshotChoice): FailedSnapshot | undefined {
   const snapshot = choice.entry?.snapshot;
   return snapshot?.status === 'failed' ? snapshot : undefined;
