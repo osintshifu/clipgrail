@@ -12,6 +12,7 @@ import {
   latestJob,
   listSessions,
   loadSessionView,
+  loadNote,
   moveSource,
   openDb,
   readAllData,
@@ -51,6 +52,7 @@ import {
 } from '../../lib/settings';
 import { savedTabsMessage, tabDrafts } from '../../lib/tabs';
 import { plural } from '../../lib/text';
+import { finishNoteWrites, noteEditor } from '../../lib/note-editor';
 import {
   STATUS_LABELS,
   captureExtra,
@@ -409,7 +411,7 @@ function keepFocus(): () => void {
       : focusKey
         ? Array.from(document.querySelectorAll<HTMLElement>('[data-focus]')).find((e) => e.dataset.focus === focusKey)
         : null;
-    if (!el || el === active) return;
+    if (!el || (el === active && document.activeElement === el)) return;
     if (field && el instanceof HTMLTextAreaElement) {
       el.value = field.value;
       el.setSelectionRange(field.start, field.end);
@@ -587,12 +589,13 @@ function capturesSection(entry: SourceEntry): Child[] {
     const head = captureHead(capture, i);
     const line = captureLine(capture, snapshot);
     const extra = captureExtra(capture, entry.source.dedup_url);
-    const note = h('textarea', { attrs: { id: `note-${capture.id}`, rows: '2', 'aria-label': `Note for ${head}`, placeholder: 'Private note about this capture…' } });
-    note.value = capture.note;
-    note.addEventListener('input', () => {
-      capture.note = note.value;
-      updateCaptureNote(db, capture.id, note.value).catch(reportSaveError('Note'));
-      renderJob();
+    const note = noteEditor({
+      id: `note-${capture.id}`, key: `panel:capture:${capture.id}`,
+      label: `Capture note · Capture ${i + 1}`, value: capture.note,
+      hint: 'Private. For this capture only.',
+      read: () => loadNote(db, 'capture', capture.id),
+      write: (value) => updateCaptureNote(db, capture.id, value),
+      onEdit: (value) => { capture.note = value; renderJob(); },
     });
     return h('div', { class: 'capture-card' }, [
       h('div', { class: 'head' }, [h('span', { class: 'capture-title' }, [head]), h('span', { class: 'muted' }, [fmtTime(capture.captured_at)])]),
@@ -630,12 +633,13 @@ function renderDetail(): void {
   const label = sourceLabel(entry.source);
   const title = capturedTitle(entry);
   const url = entry.source.dedup_url;
-  const note = h('textarea', { attrs: { id: 'source-note', rows: '2', placeholder: 'Private note about this source…' } });
-  note.value = entry.source.note;
-  note.addEventListener('input', () => {
-    entry.source.note = note.value;
-    updateSourceNote(db, entry.source.id, note.value).catch(reportSaveError('Note'));
-    renderJob();
+  const note = noteEditor({
+    id: 'source-note', key: `panel:source:${entry.source.id}`,
+    label: 'Source note', value: entry.source.note,
+    hint: 'Private. Exported only with Notes.',
+    read: () => loadNote(db, 'source', entry.source.id),
+    write: (value) => updateSourceNote(db, entry.source.id, value),
+    onEdit: (value) => { entry.source.note = value; renderJob(); },
   });
   const tabs: Array<[DetailTab, string]> = [['text', 'Text'], ['captures', `Captures · ${entry.captures.length}`], ['details', 'Details']];
   const buttons = tabs.map(([tab, text]) =>
@@ -658,7 +662,6 @@ function renderDetail(): void {
       h('a', { class: 'detail-url', attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, [url]),
     ]),
     h('div', { class: 'card status-card' }, [chip(chooseSnapshot(entry).status), h('span', {}, [statusSentence(entry)])]),
-    h('label', { class: 'visually-hidden', attrs: { for: 'source-note' } }, [`Note for ${label}`]),
     note,
     seg,
     h('div', { class: 'detail-section', attrs: { id: 'detail-section', role: 'tabpanel', 'aria-labelledby': `detail-tab-${detailTab}` } }, section),
@@ -704,6 +707,7 @@ async function moveDetailSource(entry: SourceEntry, targetId: string): Promise<v
   const label = sourceLabel(entry.source);
   const from = view.session.name;
   try {
+    await finishNoteWrites();
     const result = await moveSource(db, entry.source.id, target.id);
     // The source has left this session, so it no longer belongs in this session's job selection.
     if (settings.excluded_source_ids.includes(entry.source.id)) {

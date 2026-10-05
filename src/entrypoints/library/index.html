@@ -10,12 +10,13 @@
       <select id="view-select" aria-label="Show sources of"></select>
       <button id="back-button" class="link back" type="button" hidden></button>
       <span id="narrow-position" class="small"></span>
+      <button id="narrow-session-actions" type="button" aria-haspopup="dialog" hidden>Session ···</button>
     </div>
 
     <nav id="nav" class="col nav" aria-label="Sessions">
       <div class="brand"><h1>Library</h1><span class="small">ClipGrail</span></div>
       <div id="nav-list" class="nav-list"></div>
-      <p class="nav-foot">Research data is stored only in this browser profile. Uninstalling ClipGrail deletes it, so back up from the side panel menu.</p>
+      <p class="nav-foot">Stored locally. Uninstalling deletes data. Back up from the side panel.</p>
     </nav>
 
     <section id="list-col" class="col list-col" aria-labelledby="list-title">
@@ -43,6 +44,8 @@
     <section id="reader-col" class="col reader-col" aria-label="Source">
       <div id="reader" class="reader"></div>
     </section>
+    <dialog id="library-dialog" aria-label="Organize research"></dialog>
+    <div id="library-notice" class="library-notice" role="status" hidden></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

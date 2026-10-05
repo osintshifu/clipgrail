@@ -99,3 +99,7 @@ kbd { font: 600 11px var(--mono); border: 1px solid var(--line); border-radius: 
 .chip.pending { color: var(--st-pending); background: var(--st-pending-bg); }
 .chip.none { color: var(--st-none); background: var(--st-none-bg); }
 .card { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+.note-editor { display: flex; flex-direction: column; gap: 5px; }
+.note-editor label { font-size: 12px; font-weight: 650; }
+.note-status { color: var(--ok); }
+.note-warning { padding: 6px 8px; background: var(--warn-bg); color: var(--warn); border-radius: 6px; font-size: 12px; }

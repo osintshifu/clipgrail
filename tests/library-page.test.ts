@@ -3,10 +3,12 @@ import 'fake-indexeddb/auto';
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { commitCapture, createSession, openDb } from '../src/lib/db';
+import { commitCapture, createSession, openDb, loadNote, loadSessionView, updateSourceNote, listSessions } from '../src/lib/db';
 import { linkDraft, pageDraft } from './helpers';
 
-const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown> }));
+const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, refresh: () => undefined as void }));
+
+vi.mock('../src/lib/changes', () => ({ announceDataChange: () => undefined, onDataChange: (fn: () => void) => { fake.refresh = fn; } }));
 
 vi.mock('wxt/browser', () => ({
   browser: {
@@ -31,6 +33,8 @@ describe('library page', () => {
     vi.stubGlobal('crypto', webcrypto);
     vi.stubGlobal('matchMedia', () => ({ matches: true }));
     Element.prototype.scrollIntoView = () => undefined;
+    HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+    HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
     document.documentElement.innerHTML = readFileSync('src/entrypoints/library/index.html', 'utf8');
     const db = await openDb();
     const strike = await createSession(db, 'Port strike');
@@ -65,5 +69,84 @@ describe('library page', () => {
     await vi.waitFor(() => expect($('reader').querySelector('.banner.info')).toBeNull());
     expect(fake.local.activeSessionId).toBe(strike.id);
     expect(location.hash).toBe(`#view=all&source=${link.source.id}`);
+  });
+});
+
+
+describe('organizing in the library', () => {
+  async function openExample(name: string) {
+    const db = await openDb();
+    const session = await createSession(db, name);
+    const capture = await commitCapture(db, await pageDraft(`https://example.test/${name}`, 'Controlled text.', new Date().toISOString(), session.id));
+    document.querySelector<HTMLButtonElement>('#nav-list > .nav-item')!.click();
+    fake.refresh();
+    await vi.waitFor(() => expect(document.querySelector(`#rows [data-id="${capture.source.id}"]`)).not.toBeNull());
+    document.querySelector<HTMLButtonElement>(`#rows [data-id="${capture.source.id}"]`)!.click();
+    return { db, session, capture };
+  }
+
+  it('writes both notes for the panel reader and preserves a focused draft on external edits without writing it back on blur', async () => {
+    const { db, session, capture } = await openExample('Notes');
+    const id = `source-note-${capture.source.id}`;
+    const note = $<HTMLTextAreaElement>(id);
+    note.focus();
+    note.value = 'Library note';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(async () => expect((await loadSessionView(db, session.id)).sources[0]!.source.note).toBe('Library note'));
+    note.setSelectionRange(3, 7);
+    await updateSourceNote(db, capture.source.id, 'Panel note');
+    fake.refresh();
+    await vi.waitFor(() => expect(note.closest('.note-editor')!.querySelector('.note-warning')?.textContent).toContain('Changed elsewhere'));
+    expect(document.activeElement).toBe(note);
+    expect([note.value, note.selectionStart, note.selectionEnd]).toEqual(['Library note', 3, 7]);
+    note.blur();
+    await vi.waitFor(() => expect(note.value).toBe('Panel note'));
+    expect(await loadNote(db, 'source', capture.source.id)).toBe('Panel note');
+    note.focus();
+    note.value = 'Latest library edit';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    const captureNote = $<HTMLTextAreaElement>(`capture-note-${capture.capture.id}`);
+    captureNote.value = 'Observation';
+    captureNote.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(async () => {
+      const view = await loadSessionView(db, session.id);
+      expect(view.sources[0]!.source.note).toBe('Latest library edit');
+      expect(view.sources[0]!.captures[0]!.capture.note).toBe('Observation');
+    });
+  });
+
+  it('joins a moved source, shows the target, and clears exclusions of the source session rather than the active session', async () => {
+    const { db, session, capture } = await openExample('Move');
+    const target = await createSession(db, 'Target');
+    const existing = await commitCapture(db, await pageDraft(capture.source.dedup_url, 'Target text.', new Date().toISOString(), target.id));
+    fake.local[`jobSettings.${session.id}`] = { excluded_source_ids: [capture.source.id, 'another-source'] };
+    fake.local.activeSessionId = 'inbox';
+    fake.refresh();
+    await vi.waitFor(() => expect(document.querySelector(`[data-session="${target.id}"]`)).not.toBeNull());
+    $('move-source').click();
+    document.querySelector<HTMLButtonElement>(`[data-target="${target.id}"]`)!.click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toContain('joined'));
+    expect(location.hash).toBe(`#view=${target.id}&source=${existing.source.id}`);
+    expect($('reader').querySelector('.crumb')!.textContent).toContain('Target');
+    expect((fake.local[`jobSettings.${session.id}`] as { excluded_source_ids: string[] }).excluded_source_ids).toEqual(['another-source']);
+    expect((await loadSessionView(db, session.id)).sources).toHaveLength(0);
+    expect((await loadSessionView(db, target.id)).sources[0]!.captures).toHaveLength(2);
+  });
+
+  it('archives the active session to Inbox, keeps its data and unarchives without changing the active session', async () => {
+    const { db, session } = await openExample('Archive');
+    fake.local.activeSessionId = session.id;
+    document.querySelector<HTMLButtonElement>(`[data-session="${session.id}"]`)!.click();
+    $('archive-session').click();
+    await vi.waitFor(() => expect(fake.local.activeSessionId).toBe('inbox'));
+    await vi.waitFor(() => expect($('library-notice').textContent).toContain('archived'));
+    expect((await listSessions(db)).find((s) => s.id === session.id)!.archived_at).not.toBeNull();
+    expect((await loadSessionView(db, session.id)).sources).toHaveLength(1);
+    document.querySelector<HTMLButtonElement>(`[data-session="${session.id}"]`)!.click();
+    expect($('archive-session').textContent).toBe('Unarchive session');
+    $('archive-session').click();
+    await vi.waitFor(async () => expect((await listSessions(db)).find((s) => s.id === session.id)!.archived_at).toBeNull());
+    expect(fake.local.activeSessionId).toBe('inbox');
+    expect(document.querySelector('[data-session="inbox"]')).toBeNull();
   });
 });

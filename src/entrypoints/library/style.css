@@ -108,3 +108,20 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
   .list-col { border-right: 0; }
   .reader { padding: 12px 14px 24px; }
 }
+
+/* Organizing stays close to the session or source it affects. */
+.nav-row { display: flex; align-items: center; min-width: 0; }
+.nav-row .nav-item { flex: 1; min-width: 0; }
+.session-actions { flex: none; padding: 3px 6px; margin-right: 4px; }
+.reader-actions { margin-left: auto; }
+#library-dialog { background: var(--raised); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 18px; width: min(510px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+#library-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
+#library-dialog h2 { font-size: 16px; overflow-wrap: anywhere; }
+#library-dialog::backdrop { background: #0006; }
+#library-dialog.session-dialog { margin: 0; width: 260px; padding: 10px; gap: 8px; }
+#library-dialog.session-dialog::backdrop { background: transparent; }
+.move-targets { display: flex; flex-direction: column; gap: 6px; }
+.move-targets button { display: flex; justify-content: space-between; gap: 8px; text-align: left; white-space: normal; padding: 10px; }
+.dialog-error { color: var(--fail); font-size: 12px; }
+.library-notice { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; background: var(--toast); color: var(--toast-fg); border-radius: 6px; padding: 8px 12px; max-width: calc(100vw - 24px); font-size: 12px; }
+@media (max-width: 900px) { .reader-actions { margin-left: 0; } #narrow-session-actions { font-size: 12px; padding: 4px 6px; } }

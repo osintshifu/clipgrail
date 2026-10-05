@@ -1,7 +1,7 @@
 import './style.css';
 import { browser } from 'wxt/browser';
-import { onDataChange } from '../../lib/changes';
-import { loadLibrary, loadSnapshotText, openDb } from '../../lib/db';
+import { announceDataChange, onDataChange } from '../../lib/changes';
+import { loadLibrary, loadSnapshotText, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import {
   STATUS_LABELS,
@@ -23,9 +23,9 @@ import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
-import { getActiveSessionId, setActiveSessionId } from '../../lib/settings';
+import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings } from '../../lib/settings';
 
-// The library only reads research data. Captures, notes and organizing stay in the side panel.
+import { finishNoteWrites, keepNoteFocus, noteEditor } from '../../lib/note-editor';
 
 let db: IDBDatabase;
 let data: LibraryData = { sessions: [], sources: [] };
@@ -81,12 +81,17 @@ function renderNav(): void {
   const current = data.sessions.filter((s) => s.archived_at === null);
   const archived = data.sessions.filter((s) => s.archived_at !== null);
   if (archived.some((s) => s.id === filter.view)) archivedOpen = true;
-  const item = (key: string, name: string, n: number, session?: Session) =>
-    h('button', { class: 'nav-item', attrs: { type: 'button', 'aria-current': String(filter.view === key) }, on: { click: () => setView(key) } }, [
+  const item = (key: string, name: string, n: number, session?: Session) => {
+    const button = h('button', { class: 'nav-item', attrs: { type: 'button', 'aria-current': String(filter.view === key) }, on: { click: () => setView(key) } }, [
       h('span', { class: 'name', attrs: { title: name } }, [name]),
       session?.id === activeId ? h('span', { class: 'active-tag', attrs: { title: 'Active session: new clips go here' } }, ['Active']) : null,
       h('span', { class: 'count' }, [fmtNumber(n)]),
     ]);
+    if (!session || session.id === INBOX_SESSION_ID) return button;
+    return h('div', { class: 'nav-row' }, [button,
+      h('button', { class: 'session-actions', attrs: { type: 'button', 'data-session': session.id, 'aria-label': `Actions for ${name}`, 'aria-haspopup': 'dialog' }, on: { click: (event) => openSessionActions(session, event.currentTarget as HTMLElement) } }, ['···']),
+    ]);
+  };
   const toggle = h(
     'button',
     {
@@ -230,8 +235,23 @@ function openSource(id: string, userAction: boolean): void {
 
 // ---------- The open source ----------
 
-function noteBox(label: string, text: string): HTMLElement {
-  return h('div', { class: 'note-box' }, [h('span', { class: 'small' }, [label]), text]);
+function editNote(kind: 'source' | 'capture', id: string, value: string, label: string): HTMLElement {
+  return noteEditor({
+    id: kind === 'source' ? `source-note-${id}` : `capture-note-${id}`,
+    key: `library:${kind}:${id}`, label, value,
+    hint: kind === 'source' ? 'Private. Exported only with Notes.' : 'Private. For this capture only.',
+    read: () => loadNote(db, kind, id),
+    write: (text) => kind === 'source' ? updateSourceNote(db, id, text) : updateCaptureNote(db, id, text),
+    onEdit: (text) => {
+      if (kind === 'source') {
+        const source = data.sources.find((s) => s.source.id === id)?.source;
+        if (source) source.note = text;
+      } else {
+        const capture = data.sources.flatMap((s) => s.captures).find((c) => c.capture.id === id)?.capture;
+        if (capture) capture.note = text;
+      }
+    },
+  });
 }
 
 function versionButton(version: Version, checked: boolean): HTMLButtonElement {
@@ -314,7 +334,7 @@ function viewedSection(viewed: Version, current: Version | undefined, total: num
       ]),
     );
   }
-  if (capture.note.trim()) blocks.push(noteBox('Capture note', capture.note));
+  blocks.push(editNote('capture', capture.id, capture.note, `Capture note · Capture ${viewed.number}`));
   return h('div', { class: 'stack' }, blocks);
 }
 
@@ -349,9 +369,17 @@ function renderNarrowTop(row: LibraryRow | undefined): void {
 }
 
 function renderReader(): void {
+  const restore = keepNoteFocus();
+  renderReaderContents();
+  restore();
+}
+
+function renderReaderContents(): void {
   const reader = $('reader');
   const row = selectedRow();
   renderNarrowTop(row);
+  const actionSession = row?.session ?? sessionOf(filter.view);
+  $('narrow-session-actions').hidden = !actionSession || actionSession.id === INBOX_SESSION_ID;
   if (!row) {
     reader.replaceChildren(
       h('div', { class: 'empty' }, [
@@ -404,6 +432,7 @@ function renderReader(): void {
       h('span', {}, ['·']),
       h('button', { class: 'link', attrs: { type: 'button', title: `Show all sources of ${session.name}` }, on: { click: () => setView(session.id) } }, [session.name]),
       session.archived_at ? h('span', { class: 'chip pending' }, ['Archived']) : null,
+      h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, ['Move to…']),
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
     h('div', { class: 'url-row' }, [
@@ -412,6 +441,7 @@ function renderReader(): void {
     ]),
     h('div', { class: 'status-line' }, [chip(row.status), h('span', {}, [statusSentence(entry)])]),
     activeSessionBanner(row),
+    editNote('source', entry.source.id, entry.source.note, 'Source note'),
     h('div', { class: 'versions' }, [
       h('div', { class: 'versions-head' }, [
         h('span', { class: 'section-title' }, ['Captures']),
@@ -420,9 +450,117 @@ function renderReader(): void {
       group,
     ]),
     viewedSection(viewed, current, versions.length),
-    entry.source.note.trim() ? noteBox('Source note', entry.source.note) : null,
     details,
   ]);
+}
+
+// ---------- Organizing ----------
+
+const dialog = $<HTMLDialogElement>('library-dialog');
+let dialogOpener: HTMLElement | null = null;
+
+function notice(message: string): void {
+  $('library-notice').textContent = message;
+  $('library-notice').hidden = false;
+}
+
+function openDialog(title: string, body: Child[], opener: HTMLElement | null, sessionMenu = false): void {
+  dialogOpener = opener;
+  dialog.classList.toggle('session-dialog', sessionMenu);
+  dialog.style.removeProperty('left');
+  dialog.style.removeProperty('top');
+  fill(dialog, [
+    h('div', { class: 'row between' }, [h('h2', {}, [title]), h('button', { class: 'close', attrs: { type: 'button', 'aria-label': 'Close' }, on: { click: () => dialog.close() } }, ['×'])]),
+    ...body,
+    h('p', { class: 'dialog-error', attrs: { id: 'dialog-error', role: 'alert', hidden: '' } }),
+  ]);
+  if (sessionMenu && opener) {
+    const rect = opener.getBoundingClientRect();
+    dialog.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 268))}px`;
+    dialog.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - 200))}px`;
+  }
+  // Moving focus to a dialog must not replace a note draft changed in another view.
+  document.querySelectorAll<HTMLElement>('.note-editor').forEach((e) => { e.inert = true; });
+  dialog.showModal();
+}
+
+function dialogFailure(message: string): void {
+  $('dialog-error').textContent = message;
+  $('dialog-error').hidden = false;
+}
+
+function openSessionActions(session: Session, opener: HTMLElement): void {
+  if (session.id === INBOX_SESSION_ID) return;
+  const archive = session.archived_at === null;
+  openDialog(session.name, [
+    h('button', { attrs: { type: 'button', id: 'archive-session' }, on: { click: () => void archiveSession(session, archive) } }, [archive ? 'Archive session' : 'Unarchive session']),
+    h('p', { class: 'small' }, [archive ? (session.id === activeId ? 'Keeps all data. New clips go to Inbox.' : 'Keeps all data in Archived.') : 'Returns to Sessions. Active session unchanged.']),
+  ], opener, true);
+}
+
+async function archiveSession(session: Session, archive: boolean): Promise<void> {
+  const button = $<HTMLButtonElement>('archive-session');
+  button.disabled = true;
+  let changed = false;
+  try {
+    await finishNoteWrites();
+    await setSessionArchived(db, session.id, archive);
+    changed = true;
+    if (archive && await getActiveSessionId() === session.id) await setActiveSessionId(INBOX_SESSION_ID);
+    activeId = await getActiveSessionId();
+    if (archive) archivedOpen = true;
+    await reload();
+    dialog.close();
+    notice(`Session "${session.name}" ${archive ? 'archived' : 'unarchived'}.`);
+  } catch (error) {
+    dialogFailure(`${changed ? 'Session changed; refresh or active-session update failed' : 'Session not changed'}: ${errorText(error)}`);
+  } finally { button.disabled = false; }
+}
+
+function openMove(row: LibraryRow): void {
+  const targets = data.sessions.filter((s) => s.id !== row.session.id);
+  openDialog(`Move ${row.label} to another session`, [
+    h('p', {}, [`All captures move. ${row.label} is retired here. The target assigns a label or joins the same address.`]),
+    h('div', { class: 'move-targets' }, targets.map((s) => h('button', {
+      attrs: { type: 'button', 'data-target': s.id }, on: { click: () => void moveSelected(row, s) },
+    }, [h('span', {}, [`${s.name}${s.archived_at ? ' (archived)' : ''}`]), h('span', { class: 'small' }, [count(rows.filter((r) => r.session.id === s.id).length, 'source')])]))),
+    targets.length ? null : h('p', { class: 'small' }, ['Create another session in the side panel first.']),
+    h('button', { attrs: { type: 'button' }, on: { click: () => dialog.close() } }, ['Cancel']),
+  ], $('move-source'));
+}
+
+async function moveSelected(row: LibraryRow, target: Session): Promise<void> {
+  const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>('[data-target]'));
+  buttons.forEach((b) => { b.disabled = true; });
+  let moved = false;
+  try {
+    await finishNoteWrites();
+    const fresh = await loadLibrary(db);
+    const source = fresh.sources.find((s) => s.source.id === row.entry.source.id)?.source;
+    if (!source || source.session_id !== row.session.id) throw new Error('Source changed elsewhere. Close and retry.');
+    const result = await moveSource(db, source.id, target.id);
+    moved = true;
+    selectedId = result.source.id;
+    filter.view = target.id;
+    filter.query = '';
+    filter.status = 'any';
+    $<HTMLInputElement>('search').value = '';
+    $<HTMLSelectElement>('status-filter').value = 'any';
+    writeHash();
+    // Settings belong to the source session, which need not be the active session.
+    let cleanupError: unknown;
+    try {
+      const settings = await getJobSettings(source.session_id);
+      if (settings.excluded_source_ids.includes(source.id)) {
+        await saveJobSettings(source.session_id, { ...settings, excluded_source_ids: settings.excluded_source_ids.filter((id) => id !== source.id) });
+      }
+    } catch (error) { cleanupError = error; }
+    await reload();
+    dialog.close();
+    notice(`Moved ${row.label} to ${target.name} ${result.joined ? '· joined' : 'as'} S${result.source.number}.${cleanupError ? ` Job settings not updated: ${errorText(cleanupError)}` : ''}`);
+  } catch (error) {
+    dialogFailure(`${moved ? 'Source moved; refresh failed' : 'Source not moved'}: ${errorText(error)}`);
+  } finally { buttons.forEach((b) => { b.disabled = false; }); }
 }
 
 // ---------- Loading and live updates ----------
@@ -431,6 +569,7 @@ function renderReader(): void {
 async function reload(): Promise<void> {
   const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const focus = active?.dataset.id ? { id: active.dataset.id, inRows: !!active.closest('#rows') } : null;
+  const restoreNote = keepNoteFocus();
   const scroll = [$('list-col').scrollTop, $('reader-col').scrollTop] as const;
   data = await loadLibrary(db);
   rows = libraryRows(data);
@@ -440,6 +579,7 @@ async function reload(): Promise<void> {
   renderReader();
   $('list-col').scrollTop = scroll[0];
   $('reader-col').scrollTop = scroll[1];
+  restoreNote();
   if (focus) document.querySelector<HTMLElement>(`${focus.inRows ? '#rows' : '#reader'} [data-id="${focus.id}"]`)?.focus({ preventScroll: true });
 }
 
@@ -496,13 +636,22 @@ function bind(): void {
     renderNav();
     renderReader();
   });
-  onDataChange(() => void reload());
+  onDataChange(() => void reload().catch((error) => notice(`Refresh failed: ${errorText(error)}`)));
+  $('narrow-session-actions').addEventListener('click', (event) => {
+    const session = selectedRow()?.session ?? sessionOf(filter.view);
+    if (session) openSessionActions(session, event.currentTarget as HTMLElement);
+  });
+  dialog.addEventListener('close', () => {
+    document.querySelectorAll<HTMLElement>('.note-editor').forEach((e) => { e.inert = false; });
+    (dialogOpener?.isConnected ? dialogOpener : document.getElementById('move-source') ?? $('search')).focus({ preventScroll: true });
+  });
 }
 
 async function init(): Promise<void> {
   bind();
   try {
     db = await openDb();
+    setWriteListener(announceDataChange);
     activeId = await getActiveSessionId();
     data = await loadLibrary(db);
     rows = libraryRows(data);

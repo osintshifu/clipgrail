@@ -244,6 +244,15 @@ export function updateCaptureNote(db: IDBDatabase, captureId: string, note: stri
   });
 }
 
+/** Reads one note without loading snapshot texts; undefined means the record disappeared. */
+export function loadNote(db: IDBDatabase, kind: 'source' | 'capture', id: string): Promise<string | undefined> {
+  const store = kind === 'source' ? 'sources' : 'captures';
+  return inTransaction(db, [store], 'readonly', async (tx) => {
+    const record = await result(tx.objectStore(store).get(id)) as Source | Capture | undefined;
+    return record?.note;
+  });
+}
+
 export function updateSourceNote(db: IDBDatabase, sourceId: string, note: string): Promise<Source> {
   return inTransaction(db, ['sources'], 'readwrite', async (tx) => {
     const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;

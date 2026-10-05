@@ -88,7 +88,7 @@ Click a source to see its status and saved text (**Text**), every capture with i
 - **Open page ↗** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
 - When a source has earlier text versions, its details in the side panel link to them with **Open in library ↗**.
 
-The library shows new captures and changes made in the side panel as they happen. Notes, moving sources and archiving stay in the side panel. Search covers titles and addresses, not the saved text.
+The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move sources between sessions, and archive or unarchive sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles and addresses, not the saved text.
 
 ## Preparing a Research Job
 
