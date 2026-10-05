@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClipGrail</title>
+  </head>
+  <body>
+    <header class="top">
+      <div class="row between">
+        <h1>ClipGrail</h1>
+        <div class="menu-wrap">
+          <button id="menu-button" class="icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" title="Data">···</button>
+          <div id="menu" role="menu" hidden>
+            <button id="backup-button" role="menuitem" type="button">Back up all data (JSON)</button>
+            <button id="restore-button" role="menuitem" type="button">Restore from backup…</button>
+          </div>
+        </div>
+      </div>
+      <input id="restore-file" type="file" accept=".json,application/json" hidden />
+      <div class="row session-row">
+        <label class="visually-hidden" for="session-select">Session</label>
+        <select id="session-select"></select>
+        <button id="new-session" type="button">New</button>
+        <button id="rename-session" type="button">Rename</button>
+      </div>
+      <form id="session-form" class="row session-form" hidden>
+        <label class="visually-hidden" for="session-name">Session name</label>
+        <input id="session-name" maxlength="120" required autocomplete="off" />
+        <button id="session-save" class="primary" type="submit">Create</button>
+        <button id="session-cancel" type="button">Cancel</button>
+      </form>
+      <div class="tabs" role="tablist" aria-label="Views">
+        <button id="tab-collect" role="tab" type="button" aria-selected="true" aria-controls="view-collect">Collect</button>
+        <button id="tab-job" role="tab" type="button" aria-selected="false" aria-controls="view-job" tabindex="-1">Research Job</button>
+      </div>
+    </header>
+
+    <section id="restore-panel" class="restore" role="alertdialog" aria-labelledby="restore-title" hidden tabindex="-1">
+      <h2 id="restore-title">Restore from backup</h2>
+      <p id="restore-text"></p>
+      <div class="row">
+        <button id="restore-confirm" class="danger" type="button">Replace current data</button>
+        <button id="restore-cancel" type="button">Cancel</button>
+      </div>
+    </section>
+
+    <main>
+      <section id="view-collect" role="tabpanel" aria-labelledby="tab-collect">
+        <div class="pad">
+          <div class="row">
+            <button id="clip-page" class="primary grow" type="button">Clip current page</button>
+            <button id="clip-selection" type="button">Clip selection</button>
+          </div>
+          <p id="clip-hint" class="hint"></p>
+        </div>
+        <div id="sources-panel">
+          <h2 id="sources-heading" class="pad-x">Sources</h2>
+          <ul id="source-list" class="sources"></ul>
+          <p id="sources-empty" class="pad empty" hidden>No sources yet. Open a page and click <b>Clip current page</b>.</p>
+          <details id="notes-details" class="notes">
+            <summary>Session notes</summary>
+            <label class="visually-hidden" for="session-notes">Session notes</label>
+            <textarea id="session-notes" rows="4" placeholder="Private notes for this session"></textarea>
+          </details>
+        </div>
+        <div id="detail-panel" hidden></div>
+        <footer>Stored only in this browser. Back up from the ··· menu.</footer>
+      </section>
+
+      <section id="view-job" role="tabpanel" aria-labelledby="tab-job" hidden>
+        <div class="sec first">
+          <div class="row between">
+            <h2 class="flush"><label for="prompt">Session prompt</label></h2>
+            <button id="edit-presets" class="link" type="button" aria-expanded="false" aria-controls="preset-editor">Edit presets</button>
+          </div>
+          <div id="preset-chips" class="chips"></div>
+          <div id="preset-editor" hidden></div>
+          <textarea id="prompt" rows="4" placeholder="What should the AI do with these sources?"></textarea>
+        </div>
+
+        <fieldset class="sec">
+          <legend>Context</legend>
+          <div class="seg">
+            <input type="radio" id="mode-links" name="context" value="links" /><label for="mode-links">Links only</label>
+            <input type="radio" id="mode-selections" name="context" value="selections" /><label for="mode-selections">Selections</label>
+            <input type="radio" id="mode-full" name="context" value="full" /><label for="mode-full">Full snapshots</label>
+          </div>
+        </fieldset>
+
+        <div class="sec">
+          <div class="row between">
+            <h2 id="job-sources-heading" class="flush">Sources</h2>
+            <span><button id="select-all" class="link" type="button">All</button> · <button id="select-none" class="link" type="button">None</button></span>
+          </div>
+          <ul id="job-sources" class="checklist" aria-labelledby="job-sources-heading"></ul>
+        </div>
+
+        <div class="sec">
+          <div class="row between">
+            <label for="limit">Max characters per source</label>
+            <input id="limit" type="number" min="1" step="1000" placeholder="No limit" inputmode="numeric" />
+          </div>
+          <fieldset class="private">
+            <legend>Include private data</legend>
+            <label class="check"><input id="inc-notes" type="checkbox" /> Notes</label>
+            <label class="check"><input id="inc-links" type="checkbox" /> Where links were found (page, link text)</label>
+            <label class="check"><input id="inc-times" type="checkbox" /> Capture timestamps</label>
+            <label class="check"><input id="inc-urls" type="checkbox" /> Original URLs (may contain tracking)</label>
+          </fieldset>
+        </div>
+
+        <div class="sec">
+          <div id="summary" class="summary" aria-live="polite"></div>
+          <button id="generate" class="primary wide" type="button">Generate Research Job</button>
+          <p id="generate-hint" class="hint" hidden></p>
+        </div>
+
+        <section id="job-result" class="sec" hidden aria-labelledby="job-result-title">
+          <div class="row between">
+            <h2 id="job-result-title" class="flush"></h2>
+            <span id="job-result-meta" class="small"></span>
+          </div>
+          <p id="job-stale" class="stale" role="status" hidden>Settings changed. Generate a new Research Job.</p>
+          <pre id="job-preview" class="job-preview" tabindex="0" aria-label="Research Job preview"></pre>
+          <div class="btns"><button id="copy-job" class="primary" type="button" data-destination="clipboard">Copy Research Job</button></div>
+          <p class="small">Open in (copies the job, then opens the site):</p>
+          <div class="btns">
+            <button type="button" data-destination="chatgpt">ChatGPT</button>
+            <button type="button" data-destination="claude">Claude</button>
+            <button type="button" data-destination="gemini">Gemini</button>
+            <button type="button" data-destination="perplexity">Perplexity</button>
+          </div>
+          <div class="btns">
+            <button type="button" data-destination="markdown">Export Markdown</button>
+            <button type="button" data-destination="json">Export JSON</button>
+          </div>
+          <p id="delivery-status" class="delivery" role="status" hidden></p>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden>
+      <span id="toast-text" role="status"></span>
+      <button id="toast-undo" type="button" hidden>Undo</button>
+      <button id="toast-close" class="close" type="button" aria-label="Dismiss">×</button>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

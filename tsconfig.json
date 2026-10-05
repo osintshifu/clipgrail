@@ -1,0 +1,10 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+  },
+  "include": [".wxt/wxt.d.ts", "src/**/*", "tests/**/*", "*.config.ts"]
+}
