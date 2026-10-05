@@ -439,6 +439,17 @@ export function loadSessionView(db: IDBDatabase, sessionId: string): Promise<Ses
   });
 }
 
+/** Number of sources in each session, keyed by session ID (sessions without sources are missing). */
+export function countSourcesBySession(db: IDBDatabase): Promise<Map<string, number>> {
+  return inTransaction(db, ['sources'], 'readonly', async (tx) => {
+    const counts = new Map<string, number>();
+    for (const source of (await result(tx.objectStore('sources').getAll())) as Source[]) {
+      counts.set(source.session_id, (counts.get(source.session_id) ?? 0) + 1);
+    }
+    return counts;
+  });
+}
+
 // Research Jobs
 
 /** Stores a generated Research Job. Jobs are never modified afterwards. */

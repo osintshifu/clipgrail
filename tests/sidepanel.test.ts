@@ -53,6 +53,14 @@ vi.mock('wxt/browser', () => ({
 }));
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+function pickSession(name: string) {
+  $('session-button').click();
+  return vi.waitFor(() => {
+    const row = Array.from(document.querySelectorAll<HTMLButtonElement>('#sheet-body .pick')).find((b) => b.textContent?.startsWith(name));
+    expect(row).toBeTruthy();
+    row!.click();
+  });
+}
 function type(id: string, value: string) {
   const el = $<HTMLTextAreaElement>(id);
   el.value = value;
@@ -77,6 +85,7 @@ describe('side panel', () => {
 
     // Two notes edited right after each other are both saved.
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
+    $('detail-tab-captures').click();
     type(`note-${a.capture.id}`, 'First note');
     type(`note-${b.capture.id}`, 'Second note');
     await vi.waitFor(async () =>
@@ -88,9 +97,7 @@ describe('side panel', () => {
 
     // A prompt edit followed at once by a session switch is saved for the session it was typed in.
     type('prompt', 'Changed Inbox prompt');
-    const select = $<HTMLSelectElement>('session-select');
-    select.value = second.id;
-    select.dispatchEvent(new Event('change'));
+    await pickSession('Second');
     await vi.waitFor(() => expect($<HTMLTextAreaElement>('prompt').value).toBe(''));
     type('prompt', 'Second session prompt');
     await vi.waitFor(async () => {
@@ -99,9 +106,9 @@ describe('side panel', () => {
     });
 
     // Back in the Inbox: generate a job that includes notes.
-    select.value = INBOX_SESSION_ID;
-    select.dispatchEvent(new Event('change'));
+    await pickSession('Inbox');
     await vi.waitFor(() => expect($<HTMLTextAreaElement>('prompt').value).toBe('Changed Inbox prompt'));
+    expect(second.id).not.toBe(INBOX_SESSION_ID);
     $<HTMLInputElement>('inc-notes').checked = true;
     $('inc-notes').dispatchEvent(new Event('change'));
     $('generate').click();
@@ -121,6 +128,7 @@ describe('side panel', () => {
     $('generate').click();
     await vi.waitFor(() => expect(copy.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
+    $('detail-tab-captures').click();
     type(`note-${a.capture.id}`, 'Edited here');
     expect(copy.disabled).toBe(true);
   });
@@ -133,12 +141,16 @@ describe('side panel', () => {
       { index: 1, highlighted: false, url: 'https://example.com/tab-b', title: 'Tab B' },
       { index: 0, highlighted: true, url: 'chrome://newtab/', title: 'New Tab' },
     ];
-    $('save-all').click();
+    const saveAll = () => {
+      $('tabs-button').click();
+      $('save-all').click();
+    };
+    saveAll();
     await vi.waitFor(() => expect($('toast-text').textContent).toBe("Tabs not saved: ClipGrail needs Chrome's permission to read tab addresses."));
     expect(await count()).toBe(before);
 
     fake.tabsPermission = true;
-    $('save-all').click();
+    saveAll();
     await vi.waitFor(() =>
       expect($('toast-text').textContent).toBe('Saved 1 tab: 1 new source (S2). Skipped 1 tab without an http or https address.'),
     );

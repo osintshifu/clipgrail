@@ -4,6 +4,7 @@ import { backupFileName, createBackup, restoreBackup, summarize, validateBackup 
 import type { Backup } from '../../lib/backup';
 import {
   commitCaptures,
+  countSourcesBySession,
   createSession,
   latestJob,
   listSessions,
@@ -26,13 +27,13 @@ import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations'
 import { DESTINATIONS, deliverJob } from '../../lib/destinations';
 import type { ClipRequest, ClipResponse } from '../../lib/messages';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
-import type { Capture, Session } from '../../lib/model';
+import type { Session } from '../../lib/model';
 import type { Notice } from '../../lib/notice';
 import { NOTICE_KEY } from '../../lib/notice';
 import type { ContextMode, JobSettings, ResearchJob } from '../../lib/research-job';
 import { buildResearchJob, isJobOutdated } from '../../lib/research-job';
 import type { SourceStatus } from '../../lib/selection';
-import { capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from '../../lib/selection';
+import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
 import type { Preset } from '../../lib/settings';
 import {
   getActiveSessionId,
@@ -46,6 +47,19 @@ import {
 } from '../../lib/settings';
 import { savedTabsMessage, tabDrafts } from '../../lib/tabs';
 import { plural } from '../../lib/text';
+import {
+  STATUS_LABELS,
+  captureExtra,
+  captureHead,
+  captureLine,
+  detailRows,
+  fmtBytes,
+  fmtNumber,
+  fmtTime,
+  hostOf,
+  sourceMeta,
+  statusSentence,
+} from './describe';
 
 // ---------- DOM helpers (page content is only ever inserted as text) ----------
 
@@ -72,17 +86,6 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-const nf = new Intl.NumberFormat('en-US');
-const fmtNumber = (n: number) => nf.format(n);
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-function fmtBytes(bytes: number): string {
-  return bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1)} kB`;
-}
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -96,32 +99,57 @@ function reportSaveError(what: string): (error: unknown) => void {
   return (error) => showToast(`${what} not saved: ${errorText(error)}`, { level: 'error' });
 }
 
-const STATUS_LABELS: Record<SourceStatus, string> = {
-  ok: 'OK',
-  partial: 'Partial',
-  failed: 'Failed',
-  pending: 'Pending',
-  none: 'No snapshot',
-};
-const badge = (status: SourceStatus) => h('span', { class: `badge ${status}` }, [STATUS_LABELS[status]]);
+const chip = (status: SourceStatus) => h('span', { class: `chip ${status}` }, [STATUS_LABELS[status]]);
+
+/** Arrow keys, Home and End move between the buttons of a tablist or radiogroup and activate them. */
+function rovingKeys(container: HTMLElement, activate: (button: HTMLButtonElement) => void): void {
+  container.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter((b) => !b.disabled);
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    const step = event.key === 'ArrowRight' ? 1 : -1;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + step + items.length) % items.length;
+    event.preventDefault();
+    items[next]?.focus();
+    if (items[next]) activate(items[next]);
+  });
+}
+
+function setSelected(buttons: HTMLButtonElement[], selected: HTMLButtonElement | undefined, attr: 'aria-selected' | 'aria-checked'): void {
+  for (const button of buttons) {
+    const on = button === selected;
+    button.setAttribute(attr, String(on));
+    button.tabIndex = on ? 0 : -1;
+  }
+}
 
 // ---------- State ----------
+
+type DetailTab = 'text' | 'captures' | 'details';
+type Stage = 'prepare' | 'result';
 
 let db: IDBDatabase;
 let windowId: number | undefined;
 let sessions: Session[] = [];
 let activeId = INBOX_SESSION_ID;
 let view: SessionView | null = null;
+let currentView: 'collect' | 'job' = 'collect';
 let detailSourceId: string | null = null;
+let detailTab: DetailTab = 'text';
+let stage: Stage = 'prepare';
 let presets: Preset[] = [];
 let settings: JobSettings;
 let job: ResearchJob | undefined;
 let draft: ResearchJob | undefined;
 let pendingRestore: Backup | null = null;
-let sessionFormMode: 'create' | 'rename' = 'create';
 let shortcut = '';
+let modifier = 'Ctrl';
 let lastNoticeId = '';
 let previousPrompt: string | null = null;
+let notesOpen = false;
+let optionsOpen = false;
+let tabCounts = { selected: 1, all: 0 };
 
 // ---------- Toast ----------
 
@@ -177,39 +205,180 @@ function handleNotice(notice: Notice | undefined): void {
   void refreshData();
 }
 
-// ---------- Sessions ----------
+// ---------- Sheets and menus ----------
 
-/** Session options: sessions in the main list first, then an Archived group. */
-function sessionOptions(list: Session[]): HTMLElement[] {
-  const option = (s: Session) => h('option', { attrs: { value: s.id } }, [s.name]);
-  const archived = list.filter((s) => s.archived_at !== null);
-  return [
-    ...list.filter((s) => s.archived_at === null).map(option),
-    ...(archived.length ? [h('optgroup', { attrs: { label: 'Archived' } }, archived.map(option))] : []),
-  ];
+let sheetKind: string | null = null;
+let sheetOpener: HTMLElement | null = null;
+
+/** Where focus returns after a sheet: items of a menu are hidden by then, so their menu button takes focus. */
+function sheetOpenerFor(active: Element | null): HTMLElement {
+  if (active?.closest('#presets-menu')) return $('presets-button');
+  if (!(active instanceof HTMLElement) || active === document.body || active.closest('#menu') || active.id === 'restore-file') return $('menu-button');
+  return active;
 }
 
-function renderSessions(): void {
-  const select = $<HTMLSelectElement>('session-select');
-  select.replaceChildren(...sessionOptions(sessions));
-  select.value = activeId;
+/**
+ * Shows a bottom sheet (modal dialog). The rest of the panel is inert while it
+ * is open; closing returns focus to the control that opened the first sheet.
+ */
+function openSheet(kind: string, title: string, body: Child[], focus?: HTMLElement): void {
+  toggleMenu(false);
+  togglePresetsMenu(false);
+  if (!sheetKind) sheetOpener = sheetOpenerFor(document.activeElement);
+  sheetKind = kind;
+  $('sheet-title').textContent = title;
+  $('sheet-body').replaceChildren(...body.filter((c): c is Node | string => !!c));
+  $('sheet-layer').hidden = false;
+  for (const id of ['top', 'main', 'bar']) $(id).inert = true;
+  const first = focus ?? $('sheet-body').querySelector<HTMLElement>('input, textarea, button:not(:disabled)') ?? $('sheet-close');
+  first.focus();
+}
+
+function closeSheet(restoreFocus = true): void {
+  if (!sheetKind) return;
+  sheetKind = null;
+  pendingRestore = null;
+  $('sheet-layer').hidden = true;
+  for (const id of ['top', 'main', 'bar']) $(id).inert = false;
+  const opener = sheetOpener;
+  sheetOpener = null;
+  if (restoreFocus && opener && document.contains(opener)) opener.focus();
+}
+
+/** Shows an error inside the open sheet (toasts sit behind it). */
+function sheetError(text: string): void {
+  const body = $('sheet-body');
+  const existing = body.querySelector('.alert-text');
+  const message = h('p', { class: 'alert-text', attrs: { role: 'alert' } }, [text]);
+  if (existing) existing.replaceWith(message);
+  else body.append(message);
+}
+
+function toggleMenu(open: boolean): void {
+  $('menu').hidden = !open;
+  $('menu-button').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  togglePresetsMenu(false);
+  Array.from($('menu').querySelectorAll('button')).find((b) => !b.hidden && !b.disabled)?.focus();
+  // Turn off tab access is offered only while ClipGrail has the permission.
+  browser.permissions.contains({ permissions: ['tabs'] }).then(
+    (has) => ($('tab-access-button').hidden = !has),
+    () => ($('tab-access-button').hidden = true),
+  );
+}
+
+function togglePresetsMenu(open: boolean): void {
+  $('presets-menu').hidden = !open;
+  $('presets-button').setAttribute('aria-expanded', String(open));
+  if (open) $('presets-menu').querySelector('button')?.focus();
+}
+
+// ---------- Sessions ----------
+
+function renderHeader(): void {
+  const session = sessions.find((s) => s.id === activeId) ?? view?.session;
+  const name = session?.name ?? '';
+  $('session-name').textContent = name;
+  $('session-archived').hidden = !session?.archived_at;
+  $('session-button').setAttribute('aria-label', `Session: ${name}. Switch or manage sessions`);
+}
+
+async function openSessionsSheet(): Promise<void> {
+  const counts = await countSourcesBySession(db).catch(() => new Map<string, number>());
+  sessions = await listSessions(db);
   const isInbox = activeId === INBOX_SESSION_ID;
-  const archived = sessions.find((s) => s.id === activeId)?.archived_at != null;
-  $<HTMLButtonElement>('rename-session').disabled = isInbox;
-  $<HTMLButtonElement>('rename-session').title = isInbox ? 'The Inbox keeps its name' : '';
-  $('archived-line').hidden = !archived;
-  const archive = $<HTMLButtonElement>('archive-button');
-  archive.textContent = archived ? 'Unarchive session' : 'Archive session';
+  const active = sessions.find((s) => s.id === activeId);
+  const row = (s: Session) =>
+    h('li', {}, [
+      h(
+        'button',
+        {
+          class: `pick${s.archived_at ? ' archived' : ''}`,
+          attrs: { type: 'button', 'aria-current': String(s.id === activeId) },
+          on: {
+            click: () => {
+              closeSheet();
+              if (s.id !== activeId) void switchSession(s.id);
+            },
+          },
+        },
+        [h('span', { class: 'name' }, [s.name]), h('span', { class: 'meta' }, [plural(counts.get(s.id) ?? 0, 'source')])],
+      ),
+    ]);
+  const current = sessions.filter((s) => s.archived_at === null);
+  const archived = sessions.filter((s) => s.archived_at !== null);
+  const rename = h('button', { attrs: { type: 'button' }, on: { click: () => openSessionForm('rename') } }, ['Rename']);
+  rename.disabled = isInbox;
+  if (isInbox) rename.title = 'The Inbox keeps its name';
+  const archive = h('button', { attrs: { type: 'button' }, on: { click: () => void setArchived(!active?.archived_at) } }, [
+    active?.archived_at ? 'Unarchive' : 'Archive session',
+  ]);
   archive.disabled = isInbox;
-  archive.title = isInbox ? 'The Inbox cannot be archived' : '';
+  if (isInbox) archive.title = 'The Inbox cannot be archived';
+  openSheet('sessions', 'Sessions', [
+    h('ul', { class: 'pick-list' }, current.map(row)),
+    archived.length ? h('div', { class: 'section-title' }, ['Archived']) : null,
+    archived.length ? h('ul', { class: 'pick-list' }, archived.map(row)) : null,
+    h('div', { class: 'sheet-actions divided' }, [
+      h('button', { class: 'primary', attrs: { type: 'button' }, on: { click: () => openSessionForm('create') } }, ['New session']),
+      rename,
+      archive,
+    ]),
+    h('p', { class: 'small' }, ['New captures go to the selected session. Archived sessions stay available here and still accept captures.']),
+  ]);
+}
+
+function openSessionForm(mode: 'create' | 'rename'): void {
+  const input = h('input', {
+    attrs: { id: 'session-name-input', type: 'text', maxlength: '120', required: '', autocomplete: 'off', placeholder: mode === 'create' ? 'New session name' : 'Session name' },
+  });
+  input.value = mode === 'rename' ? (view?.session.name ?? '') : '';
+  const submit = (event: Event) => {
+    event.preventDefault();
+    void submitSessionForm(mode, input.value);
+  };
+  const form = h('form', { class: 'stack', on: { submit } }, [
+    h('label', { class: 'form-field' }, [h('span', {}, ['Session name']), input]),
+    h('div', { class: 'sheet-actions' }, [
+      h('button', { class: 'primary', attrs: { type: 'submit' } }, [mode === 'create' ? 'Create' : 'Save']),
+      h('button', { attrs: { type: 'button' }, on: { click: () => void openSessionsSheet() } }, ['Cancel']),
+    ]),
+  ]);
+  openSheet('session-form', mode === 'create' ? 'New session' : 'Rename session', [form], input);
+  input.select();
+}
+
+async function submitSessionForm(mode: 'create' | 'rename', name: string): Promise<void> {
+  try {
+    if (mode === 'create') {
+      const session = await createSession(db, name);
+      closeSheet();
+      await switchSession(session.id);
+      showToast(`Session "${session.name}" created. New captures go here.`);
+    } else {
+      await renameSession(db, activeId, name);
+      closeSheet();
+      await loadActiveSession();
+    }
+  } catch (error) {
+    sheetError(errorText(error));
+  }
+}
+
+async function switchSession(id: string): Promise<void> {
+  activeId = id;
+  detailSourceId = null;
+  stage = 'prepare';
+  await setActiveSessionId(id);
+  await loadActiveSession();
 }
 
 async function setArchived(archived: boolean): Promise<void> {
-  toggleMenu(false);
   const session = sessions.find((s) => s.id === activeId);
   if (!session) return;
   try {
     await setSessionArchived(db, session.id, archived);
+    closeSheet();
     if (archived) {
       await switchSession(INBOX_SESSION_ID);
       showToast(`Session "${session.name}" archived. Find it under Archived in the session list.`);
@@ -218,29 +387,8 @@ async function setArchived(archived: boolean): Promise<void> {
       showToast(`Session "${session.name}" unarchived.`);
     }
   } catch (error) {
-    showToast(errorText(error), { level: 'error' });
+    sheetError(errorText(error));
   }
-}
-
-function openSessionForm(mode: 'create' | 'rename'): void {
-  sessionFormMode = mode;
-  const input = $<HTMLInputElement>('session-name');
-  input.value = mode === 'rename' ? (view?.session.name ?? '') : '';
-  input.placeholder = mode === 'create' ? 'New session name' : 'Session name';
-  $('session-save').textContent = mode === 'create' ? 'Create' : 'Save';
-  $('session-form').hidden = false;
-  input.focus();
-  input.select();
-}
-function closeSessionForm(): void {
-  $('session-form').hidden = true;
-}
-
-async function switchSession(id: string): Promise<void> {
-  activeId = id;
-  detailSourceId = null;
-  await setActiveSessionId(id);
-  await loadActiveSession();
 }
 
 // ---------- Loading ----------
@@ -256,8 +404,9 @@ async function loadActiveSession(): Promise<void> {
   $<HTMLTextAreaElement>('session-notes').value = view.session.notes;
   fillJobForm();
   $('delivery-status').hidden = true;
-  renderSessions();
+  renderHeader();
   renderCollect();
+  renderJobSources();
   renderJob();
 }
 
@@ -272,63 +421,72 @@ async function refreshData(): Promise<void> {
     return;
   }
   renderCollect();
+  renderJobSources();
   renderJob();
 }
 
-// ---------- Collect view ----------
+// ---------- Collect: source list ----------
 
-function sourceMeta(entry: SourceEntry): Child[] {
-  const choice = chooseSnapshot(entry);
-  const ok = okSnapshotOf(choice);
-  const failed = failedSnapshotOf(choice);
-  const selections = entry.captures.filter((c) => c.capture.kind === 'selection').length;
-  const parts: string[] = [];
-  if (ok) parts.push(ok.truncated ? `${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} chars` : `${fmtNumber(ok.character_count)} chars`);
-  if (failed) parts.push(describeFailure(failed));
-  if (choice.status === 'pending') parts.push(choice.entry?.capture.kind === 'tab' ? 'tab saved, not read' : 'link saved, not opened');
-  parts.push(`${entry.captures.length} ${entry.captures.length === 1 ? 'capture' : 'captures'}`);
-  if (selections) parts.push(`${selections} ${selections === 1 ? 'selection' : 'selections'}`);
-  return [
-    badge(choice.status),
-    ok?.extraction_method === 'page-text' ? h('span', { class: 'badge fallback' }, ['Page text']) : null,
-    parts.join(' · '),
-  ];
+function renderNotesToggle(): void {
+  const empty = !(view?.session.notes.trim() ?? '');
+  $('notes-label').textContent = `Session notes${empty ? ' · empty' : ''}`;
+  $('notes-chevron').textContent = notesOpen ? '▴' : '▾';
+  $('notes-toggle').setAttribute('aria-expanded', String(notesOpen));
+  $('session-notes').hidden = !notesOpen;
 }
 
 function renderCollect(): void {
   if (!view) return;
-  const list = $('source-list');
-  list.replaceChildren(
-    ...view.sources.map((entry) =>
-      h('li', {}, [
+  const has = view.sources.length > 0;
+  $('sources-heading').textContent = `Sources · ${view.sources.length}`;
+  $('sources-heading').hidden = !has;
+  $('source-list').hidden = !has;
+  $('source-list').replaceChildren(
+    ...view.sources.map((entry) => {
+      const label = sourceLabel(entry.source);
+      const title = capturedTitle(entry);
+      const status = chooseSnapshot(entry).status;
+      const meta = sourceMeta(entry);
+      return h('li', {}, [
         h(
           'button',
           {
             class: 'src',
-            attrs: { type: 'button', 'aria-label': `${sourceLabel(entry.source)}: ${capturedTitle(entry) ?? entry.source.dedup_url}, open details` },
+            attrs: { type: 'button', 'aria-label': `${label}: ${title ?? entry.source.dedup_url}, ${STATUS_LABELS[status]}, open details` },
             on: { click: () => openDetail(entry.source.id) },
           },
           [
-            h('span', { class: 'sid' }, [sourceLabel(entry.source)]),
-            h('span', { class: 'title' }, [capturedTitle(entry) ?? entry.source.dedup_url]),
-            h('span', { class: 'url' }, [entry.source.dedup_url.replace(/^https?:\/\//, '')]),
-            h('span', { class: 'meta' }, sourceMeta(entry)),
+            h('span', { class: 'sid' }, [label]),
+            h('span', { class: 'src-body' }, [
+              h('span', { class: `src-title${title ? '' : ' untitled'}` }, [title ?? entry.source.dedup_url]),
+              h('span', { class: 'src-meta' }, [
+                chip(status),
+                h('span', { class: 'src-host' }, [hostOf(entry.source.dedup_url)]),
+                meta ? h('span', { class: 'nowrap' }, [meta]) : null,
+              ]),
+            ]),
           ],
         ),
-      ]),
-    ),
+      ]);
+    }),
   );
-  $('sources-heading').textContent = `Sources · ${view.sources.length}`;
-  $('sources-empty').hidden = view.sources.length > 0;
+  $('sources-empty').hidden = has;
+  $('empty-session').textContent = view.session.name;
+  $('empty-shortcut').hidden = !shortcut;
+  $('empty-shortcut-key').textContent = shortcut;
+  renderNotesToggle();
   if (detailSourceId && !view.sources.some((s) => s.source.id === detailSourceId)) detailSourceId = null;
   $('sources-panel').hidden = detailSourceId !== null;
   $('detail-panel').hidden = detailSourceId === null;
   if (detailSourceId) renderDetail();
+  renderBars();
 }
 
 function openDetail(sourceId: string): void {
   detailSourceId = sourceId;
+  detailTab = 'text';
   renderCollect();
+  $('main').scrollTop = 0;
   $('detail-back')?.focus();
 }
 
@@ -341,39 +499,86 @@ function closeDetail(): void {
   (items[index] ?? items[0])?.focus();
 }
 
+// ---------- Collect: source details ----------
 
-function captureBlock(capture: Capture, entry: SourceEntry, index: number): HTMLElement {
-  const snapshot = entry.captures[index]?.snapshot;
-  let status = '';
-  if (capture.kind === 'selection' && capture.fragment) {
-    status = `${fmtNumber(capture.fragment.character_count)} chars${capture.fragment.truncated ? ', partial' : ''}`;
-  } else if (snapshot?.status === 'ok') status = snapshot.truncated ? 'Partial' : 'OK';
-  else if (snapshot?.status === 'failed') status = `Failed: ${describeFailure(snapshot)}`;
-  else if (snapshot?.status === 'pending') status = 'Pending';
-  const noteId = `note-${capture.id}`;
-  return h('li', { class: 'capture' }, [
-    h('div', { class: 'head' }, [`Capture ${index + 1} · ${capture.kind} · ${fmtTime(capture.captured_at)}${status ? ` · ${status}` : ''}`]),
-    capture.fragment ? h('pre', { class: 'text-box small-box' }, [capture.fragment.text]) : null,
-    capture.kind === 'link'
-      ? h('div', { class: 'line' }, [
-          `Found on: ${capture.found_on ?? 'unknown page'}`,
-          capture.anchor_text ? ` · Link text: "${capture.anchor_text}"` : '',
-        ])
-      : null,
-    capture.original_url !== entry.source.dedup_url ? h('div', { class: 'line' }, [`Original URL: ${capture.original_url}`]) : null,
-    snapshot?.status === 'failed' ? h('div', { class: 'line' }, [snapshot.error_message]) : null,
-    h('label', { class: 'visually-hidden', attrs: { for: noteId } }, [`Note for capture ${index + 1}`]),
-    (() => {
-      const area = h('textarea', { attrs: { id: noteId, rows: '2', placeholder: 'Add a private note…' } });
-      area.value = capture.note;
-      area.addEventListener('input', () => {
-        capture.note = area.value;
-        updateCaptureNote(db, capture.id, area.value).catch(reportSaveError('Note'));
-        renderJob();
-      });
-      return area;
-    })(),
-  ]);
+function textSection(entry: SourceEntry): Child[] {
+  const choice = chooseSnapshot(entry);
+  const ok = okSnapshotOf(choice);
+  const selections = entry.captures.filter((c) => c.capture.kind === 'selection' && c.capture.fragment);
+  const blocks: Child[] = [];
+  if (ok) {
+    blocks.push(
+      h('div', { class: 'stack' }, [
+        h('div', { class: 'text-head' }, [
+          h('span', {}, [`Snapshot · ${fmtTime(ok.captured_at)}${ok.extraction_method === 'page-text' ? ' · page text' : ''}`]),
+          h('span', {}, [`${fmtNumber(ok.character_count)} characters`]),
+        ]),
+        h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': 'Saved text' } }, [ok.text]),
+        ok.truncated
+          ? h('div', { class: 'text-cut' }, [
+              `[Text cut at capture here. ${fmtNumber(ok.original_character_count - ok.character_count)} characters of the page were not saved.]`,
+            ])
+          : null,
+      ]),
+    );
+  }
+  selections.forEach(({ capture }, i) => {
+    const fragment = capture.fragment!;
+    blocks.push(
+      h('div', { class: 'stack' }, [
+        h('div', { class: 'text-head' }, [
+          `Selection ${i + 1} of ${selections.length} · ${fmtTime(capture.captured_at)} · ${fmtNumber(fragment.character_count)} characters${fragment.truncated ? ' · partial' : ''}`,
+        ]),
+        h('pre', { class: 'text-box selection', attrs: { tabindex: '0', 'aria-label': `Selection ${i + 1}` } }, [fragment.text]),
+      ]),
+    );
+  });
+  if (!ok && !selections.length) {
+    blocks.push(
+      h('div', { class: 'no-text' }, [
+        choice.status === 'failed' ? 'No text was saved. Open the page and clip it again to retry.' : 'No text yet. Open the page and clip it to save its text.',
+      ]),
+    );
+  }
+  return blocks;
+}
+
+function capturesSection(entry: SourceEntry): Child[] {
+  return entry.captures.map(({ capture, snapshot }, i) => {
+    const head = captureHead(capture, i);
+    const line = captureLine(capture, snapshot);
+    const extra = captureExtra(capture, entry.source.dedup_url);
+    const note = h('textarea', { attrs: { id: `note-${capture.id}`, rows: '2', 'aria-label': `Note for ${head}`, placeholder: 'Private note about this capture…' } });
+    note.value = capture.note;
+    note.addEventListener('input', () => {
+      capture.note = note.value;
+      updateCaptureNote(db, capture.id, note.value).catch(reportSaveError('Note'));
+      renderJob();
+    });
+    return h('div', { class: 'capture-card' }, [
+      h('div', { class: 'head' }, [h('span', { class: 'capture-title' }, [head]), h('span', { class: 'muted' }, [fmtTime(capture.captured_at)])]),
+      line ? h('div', { class: 'line' }, [line]) : null,
+      capture.fragment ? h('pre', { class: 'text-box excerpt' }, [capture.fragment.text]) : null,
+      extra ? h('div', { class: 'line' }, [extra]) : null,
+      note,
+    ]);
+  });
+}
+
+function detailsSection(entry: SourceEntry): Child[] {
+  return [
+    h(
+      'dl',
+      { class: 'details' },
+      detailRows(entry, view?.session.name ?? '').flatMap((row) => [
+        h('dt', {}, [row.label]),
+        h('dd', { class: row.mono ? 'mono' : '' }, [row.value]),
+      ]),
+    ),
+    h('p', { class: 'small' }, [
+      'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
+    ]),
+  ];
 }
 
 function renderDetail(): void {
@@ -383,63 +588,103 @@ function renderDetail(): void {
     panel.replaceChildren();
     return;
   }
-  const choice = chooseSnapshot(entry);
-  const ok = okSnapshotOf(choice);
-  const failed = failedSnapshotOf(choice);
-  const title = capturedTitle(entry);
-  let snapshotInfo: Child[];
-  if (ok) {
-    const which = choice.total === 1 ? 'only capture' : `capture ${choice.position} of ${choice.total}, latest successful`;
-    snapshotInfo = [
-      `Snapshot ${fmtTime(ok.captured_at)} · ${ok.extraction_method}${ok.fallback_reason ? ` (${ok.fallback_reason.replace(/_/g, ' ')})` : ''} · ${fmtNumber(ok.character_count)} characters · ${which}`,
-      h('br'),
-      'SHA-256 ',
-      h('code', { attrs: { title: ok.sha256 } }, [`${ok.sha256.slice(0, 12)}…${ok.sha256.slice(-6)}`]),
-      ok.truncated ? h('div', { class: 'alert' }, [`Partial snapshot: cut at capture to ${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} characters.`]) : null,
-    ];
-  } else if (failed) {
-    snapshotInfo = [`No text saved. Latest attempt ${fmtTime(failed.captured_at)} failed: ${describeFailure(failed)}.`];
-  } else if (choice.status === 'pending') {
-    snapshotInfo = [
-      choice.entry?.capture.kind === 'tab'
-        ? 'Only the address was saved; the page was not read. Open the page and clip it to capture its text.'
-        : 'Pending: the link was saved without opening the page. Open it and clip the page to capture its text.',
-    ];
-  } else {
-    snapshotInfo = ['No page snapshot: only selections were captured for this source.'];
-  }
   const label = sourceLabel(entry.source);
-  const others = sessions.filter((s) => s.id !== entry.source.session_id);
-  const moveSelect = h('select', { attrs: { id: 'move-target', 'aria-label': `Move ${label} to session` } }, [
-    h('option', { attrs: { value: '' } }, ['Move to…']),
-    ...sessionOptions(others),
-  ]);
-  const moveButton = h('button', { attrs: { type: 'button' }, on: { click: () => void moveDetailSource(entry, moveSelect.value) } }, ['Move']);
-  moveButton.disabled = true;
-  moveSelect.addEventListener('change', () => (moveButton.disabled = !moveSelect.value));
-  const note = h('textarea', { class: 'source-note', attrs: { id: 'source-note', rows: '2', placeholder: 'Add a private note about this source…' } });
+  const title = capturedTitle(entry);
+  const url = entry.source.dedup_url;
+  const note = h('textarea', { attrs: { id: 'source-note', rows: '2', placeholder: 'Private note about this source…' } });
   note.value = entry.source.note;
   note.addEventListener('input', () => {
     entry.source.note = note.value;
     updateSourceNote(db, entry.source.id, note.value).catch(reportSaveError('Note'));
     renderJob();
   });
+  const tabs: Array<[DetailTab, string]> = [['text', 'Text'], ['captures', `Captures · ${entry.captures.length}`], ['details', 'Details']];
+  const buttons = tabs.map(([tab, text]) =>
+    h('button', { attrs: { id: `detail-tab-${tab}`, type: 'button', role: 'tab', 'aria-controls': 'detail-section' }, on: { click: () => setDetailTab(tab) } }, [text]),
+  );
+  setSelected(buttons, buttons[tabs.findIndex(([tab]) => tab === detailTab)], 'aria-selected');
+  const seg = h('div', { class: 'seg', attrs: { role: 'tablist', 'aria-label': 'Source sections' } }, buttons);
+  rovingKeys(seg, (button) => setDetailTab(button.id.replace('detail-tab-', '') as DetailTab, true));
+  const section = detailTab === 'text' ? textSection(entry) : detailTab === 'captures' ? capturesSection(entry) : detailsSection(entry);
   panel.replaceChildren(
-    h('div', { class: 'detail' }, [
-      h('div', { class: 'row detail-top' }, [
-        h('button', { class: 'link', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, ['‹ Back to sources']),
-        others.length ? h('span', { class: 'row' }, [moveSelect, moveButton]) : null,
+    h('div', { class: 'detail-top' }, [
+      h('button', { class: 'link', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, ['‹ Sources']),
+      h('span', { class: 'detail-actions' }, [
+        h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, ['Move to…']),
+        h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, ['Open page ↗']),
       ]),
-      h('h3', {}, [h('span', { class: 'sid' }, [label]), ' ', title ?? '(title not captured)']),
-      h('a', { class: 'url-link', attrs: { href: entry.source.dedup_url, target: '_blank', rel: 'noopener noreferrer' } }, [entry.source.dedup_url]),
-      h('label', { class: 'visually-hidden', attrs: { for: 'source-note' } }, [`Note for ${label}`]),
-      note,
-      h('div', { class: 'snapmeta' }, [badge(choice.status), ' ', ...snapshotInfo]),
-      ok ? h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': 'Snapshot text' } }, [ok.text]) : null,
-      h('ul', {}, entry.captures.map((c, i) => captureBlock(c.capture, entry, i))),
     ]),
+    h('div', {}, [
+      h('div', { class: 'detail-title' }, [h('span', { class: 'sid' }, [label]), h('h3', { class: title ? '' : 'untitled' }, [title ?? '(title not captured)'])]),
+      h('a', { class: 'detail-url', attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, [url]),
+    ]),
+    h('div', { class: 'card status-card' }, [chip(chooseSnapshot(entry).status), h('span', {}, [statusSentence(entry)])]),
+    h('label', { class: 'visually-hidden', attrs: { for: 'source-note' } }, [`Note for ${label}`]),
+    note,
+    seg,
+    h('div', { class: 'detail-section', attrs: { id: 'detail-section', role: 'tabpanel', 'aria-labelledby': `detail-tab-${detailTab}` } }, section),
   );
 }
+
+function setDetailTab(tab: DetailTab, focus = false): void {
+  detailTab = tab;
+  renderDetail();
+  if (focus) $(`detail-tab-${tab}`).focus();
+}
+
+async function openMoveSheet(entry: SourceEntry): Promise<void> {
+  const counts = await countSourcesBySession(db).catch(() => new Map<string, number>());
+  sessions = await listSessions(db);
+  const label = sourceLabel(entry.source);
+  const others = sessions.filter((s) => s.id !== entry.source.session_id);
+  const targets = [...others.filter((s) => s.archived_at === null), ...others.filter((s) => s.archived_at !== null)];
+  openSheet('move', `Move ${label} to another session`, [
+    h('p', {}, [
+      `All captures of ${label} move with it. It gets the next free label in the target session; ${label} is not reused here. If the target already has this address, the captures join that source.`,
+    ]),
+    targets.length
+      ? h(
+          'ul',
+          { class: 'pick-list' },
+          targets.map((s) =>
+            h('li', {}, [
+              h('button', { class: 'pick boxed', attrs: { type: 'button' }, on: { click: () => void moveDetailSource(entry, s.id) } }, [
+                h('span', { class: 'name' }, [`${s.name}${s.archived_at ? ' (archived)' : ''}`]),
+                h('span', { class: 'meta' }, [plural(counts.get(s.id) ?? 0, 'source')]),
+              ]),
+            ]),
+          ),
+        )
+      : h('p', {}, ['There is no other session yet. Create one in the session list first.']),
+  ]);
+}
+
+async function moveDetailSource(entry: SourceEntry, targetId: string): Promise<void> {
+  const target = sessions.find((s) => s.id === targetId);
+  if (!target || !view) return;
+  const label = sourceLabel(entry.source);
+  const from = view.session.name;
+  try {
+    const result = await moveSource(db, entry.source.id, target.id);
+    // The source has left this session, so it no longer belongs in this session's job selection.
+    if (settings.excluded_source_ids.includes(entry.source.id)) {
+      settings = { ...settings, excluded_source_ids: settings.excluded_source_ids.filter((id) => id !== entry.source.id) };
+      persistSettings(activeId, settings);
+    }
+    closeSheet(false);
+    detailSourceId = null;
+    await refreshData();
+    const where = result.joined
+      ? `${target.name}: it joined ${sourceLabel(result.source)}, which has the same address`
+      : `${target.name} as ${sourceLabel(result.source)}`;
+    showToast(`Moved ${label} to ${where}. ${label} is not reused in ${from}.`);
+    (document.querySelector<HTMLButtonElement>('#source-list .src') ?? $('clip-page')).focus();
+  } catch (error) {
+    sheetError(`Source not moved: ${errorText(error)}`);
+  }
+}
+
+// ---------- Collect: capture ----------
 
 async function clip(what: 'page' | 'selection'): Promise<void> {
   const buttons = [$<HTMLButtonElement>('clip-page'), $<HTMLButtonElement>('clip-selection')];
@@ -456,31 +701,9 @@ async function clip(what: 'page' | 'selection'): Promise<void> {
   }
 }
 
-async function moveDetailSource(entry: SourceEntry, targetId: string): Promise<void> {
-  const target = sessions.find((s) => s.id === targetId);
-  if (!target || !view) return;
-  const label = sourceLabel(entry.source);
-  const from = view.session.name;
-  try {
-    const result = await moveSource(db, entry.source.id, target.id);
-    // The source has left this session, so it no longer belongs in this session's job selection.
-    if (settings.excluded_source_ids.includes(entry.source.id)) {
-      settings = { ...settings, excluded_source_ids: settings.excluded_source_ids.filter((id) => id !== entry.source.id) };
-      persistSettings(activeId, settings);
-    }
-    detailSourceId = null;
-    await refreshData();
-    const where = result.joined
-      ? `${target.name}: it joined ${sourceLabel(result.source)}, which has the same address`
-      : `${target.name} as ${sourceLabel(result.source)}`;
-    showToast(`Moved ${label} to ${where}. ${label} is not reused in ${from}.`);
-    (document.querySelector<HTMLButtonElement>('#source-list .src') ?? $('clip-page')).focus();
-  } catch (error) {
-    showToast(`Source not moved: ${errorText(error)}`, { level: 'error' });
-  }
-}
+const selectedTabsLabel = () => (tabCounts.selected > 1 ? `${tabCounts.selected} selected tabs` : 'This tab');
 
-/** Updates the Save tabs buttons with the number of selected and open tabs (no permission needed for counts). */
+/** Counts the selected and open tabs of this window (no permission needed for counts). */
 async function updateTabCounts(): Promise<void> {
   if (windowId === undefined) return;
   try {
@@ -488,11 +711,38 @@ async function updateTabCounts(): Promise<void> {
       browser.tabs.query({ windowId }),
       browser.tabs.query({ windowId, highlighted: true }),
     ]);
-    $('save-selected').textContent = selected.length > 1 ? `${selected.length} selected tabs` : 'This tab';
-    $('save-all').textContent = `All in window (${all.length})`;
+    tabCounts = { selected: selected.length, all: all.length };
   } catch {
     // The counts are only labels; saving queries the tabs again.
+    return;
   }
+  const selectedLabel = document.getElementById('save-selected-label');
+  if (selectedLabel) selectedLabel.textContent = selectedTabsLabel();
+  const allCount = document.getElementById('save-all-count');
+  if (allCount) allCount.textContent = plural(tabCounts.all, 'tab');
+}
+
+function openTabsSheet(): void {
+  const save = (which: 'selected' | 'all') => () => {
+    closeSheet();
+    void saveTabs(which);
+  };
+  openSheet('tabs', 'Save tabs as addresses', [
+    h('p', {}, [
+      'Saves the address and title of open tabs as sources marked ',
+      h('b', {}, ['Address only']),
+      '. Pages are not read; open a tab and clip it to save its text. Chrome asks once for permission to read tab addresses.',
+    ]),
+    h('button', { class: 'option-button', attrs: { id: 'save-selected', type: 'button' }, on: { click: save('selected') } }, [
+      h('span', { class: 'name', attrs: { id: 'save-selected-label' } }, [selectedTabsLabel()]),
+      h('span', { class: 'meta' }, [`${modifier}+click tabs to select several`]),
+    ]),
+    h('button', { class: 'option-button', attrs: { id: 'save-all', type: 'button' }, on: { click: save('all') } }, [
+      h('span', { class: 'name' }, ['All tabs in this window']),
+      h('span', { class: 'meta', attrs: { id: 'save-all-count' } }, [plural(tabCounts.all, 'tab')]),
+    ]),
+  ]);
+  void updateTabCounts();
 }
 
 /**
@@ -513,8 +763,8 @@ async function saveTabs(which: 'selected' | 'all'): Promise<void> {
     showToast("Tabs not saved: ClipGrail needs Chrome's permission to read tab addresses.", { level: 'error' });
     return;
   }
-  const buttons = [$<HTMLButtonElement>('save-selected'), $<HTMLButtonElement>('save-all')];
-  buttons.forEach((b) => (b.disabled = true));
+  const button = $<HTMLButtonElement>('tabs-button');
+  button.disabled = true;
   try {
     if (windowId === undefined) throw new Error('Unknown window.');
     const tabs = await browser.tabs.query(which === 'all' ? { windowId } : { windowId, highlighted: true });
@@ -532,43 +782,54 @@ async function saveTabs(which: 'selected' | 'all'): Promise<void> {
   } catch (error) {
     showToast(`Tabs not saved: ${errorText(error)}`, { level: 'error' });
   } finally {
-    buttons.forEach((b) => (b.disabled = false));
+    button.disabled = false;
   }
 }
 
-// ---------- Research Job view ----------
+// ---------- Research Job: Prepare ----------
+
+const MODE_HINTS: Record<ContextMode, string> = {
+  links: 'Title, address and basic page metadata only. No page text is sent.',
+  selections: 'Only the text you selected on each page. Sources without a selection are listed as missing.',
+  full: 'Saved page text plus selections. Sources without text are listed as missing, partial text is marked.',
+};
+const modeButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"] [data-mode]'));
 
 function fillJobForm(): void {
-  $<HTMLInputElement>(`mode-${settings.context_mode}`).checked = true;
+  const buttons = modeButtons();
+  setSelected(buttons, buttons.find((b) => b.dataset.mode === settings.context_mode), 'aria-checked');
+  $('mode-hint').textContent = MODE_HINTS[settings.context_mode];
   $<HTMLInputElement>('limit').value = settings.max_chars_per_source ? String(settings.max_chars_per_source) : '';
   $<HTMLInputElement>('inc-notes').checked = settings.include_notes;
   $<HTMLInputElement>('inc-links').checked = settings.include_link_context;
   $<HTMLInputElement>('inc-times').checked = settings.include_capture_times;
   $<HTMLInputElement>('inc-urls').checked = settings.include_original_urls;
+  renderOptionsToggle();
 }
 
-function readJobForm(): void {
-  const mode = document.querySelector<HTMLInputElement>('input[name="context"]:checked')?.value as ContextMode | undefined;
-  const limit = Number.parseInt($<HTMLInputElement>('limit').value, 10);
-  settings = {
-    ...settings,
-    context_mode: mode ?? 'full',
-    max_chars_per_source: Number.isInteger(limit) && limit > 0 ? limit : null,
-    include_notes: $<HTMLInputElement>('inc-notes').checked,
-    include_link_context: $<HTMLInputElement>('inc-links').checked,
-    include_capture_times: $<HTMLInputElement>('inc-times').checked,
-    include_original_urls: $<HTMLInputElement>('inc-urls').checked,
-  };
+function renderOptionsToggle(): void {
+  const privateCount = [settings.include_notes, settings.include_link_context, settings.include_capture_times, settings.include_original_urls].filter(Boolean).length;
+  const limit = settings.max_chars_per_source ? `limit ${fmtNumber(settings.max_chars_per_source)} chars/source` : 'no limit';
+  $('options-summary').textContent = ` · ${limit}, ${privateCount} of 4 private fields`;
+  $('options-chevron').textContent = optionsOpen ? '▴' : '▾';
+  $('options-toggle').setAttribute('aria-expanded', String(optionsOpen));
+  $('options-body').hidden = !optionsOpen;
 }
 
 function persistSettings(sessionId: string, value: JobSettings): void {
   saveJobSettings(sessionId, value).catch(reportSaveError('Settings'));
 }
 
-function settingsChanged(): void {
-  readJobForm();
+function changeSettings(changes: Partial<JobSettings>): void {
+  settings = { ...settings, ...changes };
   persistSettings(activeId, settings);
+  renderOptionsToggle();
   renderJob();
+}
+
+function setMode(mode: ContextMode): void {
+  changeSettings({ context_mode: mode });
+  fillJobForm();
 }
 
 function persistPrompt(sessionId: string, prompt: string): void {
@@ -582,148 +843,151 @@ function setPrompt(prompt: string): void {
   renderJob();
 }
 
-function renderPresets(): void {
-  $('preset-chips').replaceChildren(
+function applyPreset(preset: Preset): void {
+  togglePresetsMenu(false);
+  const area = $<HTMLTextAreaElement>('prompt');
+  const before = area.value;
+  area.value = preset.text;
+  setPrompt(preset.text);
+  area.focus();
+  if (before.trim() && before !== preset.text) {
+    previousPrompt = before;
+    showToast(`Prompt replaced with the ${preset.name} preset.`, {
+      undo: async () => {
+        if (previousPrompt === null) return;
+        area.value = previousPrompt;
+        setPrompt(previousPrompt);
+        previousPrompt = null;
+        hideToast();
+      },
+    });
+  }
+}
+
+function renderPresetsMenu(): void {
+  $('presets-menu').replaceChildren(
     ...presets.map((preset) =>
-      h(
-        'button',
-        {
-          attrs: { type: 'button', title: preset.text || 'Empty preset: write your own prompt' },
-          on: {
-            click: () => {
-              const area = $<HTMLTextAreaElement>('prompt');
-              const before = area.value;
-              area.value = preset.text;
-              setPrompt(preset.text);
-              area.focus();
-              if (before.trim() && before !== preset.text) {
-                previousPrompt = before;
-                showToast(`Prompt replaced with the ${preset.name} preset.`, {
-                  undo: async () => {
-                    if (previousPrompt === null) return;
-                    area.value = previousPrompt;
-                    setPrompt(previousPrompt);
-                    previousPrompt = null;
-                    hideToast();
-                  },
-                });
-              }
-            },
-          },
-        },
-        [preset.name],
-      ),
+      h('button', { attrs: { type: 'button', role: 'menuitem', title: preset.text || 'Empty preset: write your own prompt' }, on: { click: () => applyPreset(preset) } }, [preset.name]),
     ),
+    h('div', { class: 'menu-sep', attrs: { role: 'separator' } }),
+    h('button', { attrs: { type: 'button', role: 'menuitem' }, on: { click: openPresetsSheet } }, ['Edit presets…']),
   );
 }
 
-function openPresetEditor(): void {
-  const editor = $('preset-editor');
+function openPresetsSheet(): void {
   const areas = presets.map((preset) => {
-    const area = h('textarea', { attrs: { id: `preset-${preset.id}`, rows: '3' } });
+    const area = h('textarea', { attrs: { rows: '3' } });
     area.value = preset.text;
     return area;
   });
-  editor.replaceChildren(
-    ...presets.flatMap((preset, i) => [h('label', { attrs: { for: `preset-${preset.id}` } }, [preset.name]), areas[i]!]),
-    h('div', { class: 'btns' }, [
-      h(
-        'button',
-        {
-          class: 'primary',
-          attrs: { type: 'button' },
-          on: {
-            click: async () => {
-              presets = presets.map((p, i) => ({ ...p, text: areas[i]!.value }));
-              try {
-                await savePresets(presets);
-                showToast('Presets saved.');
-              } catch (error) {
-                showToast(`Presets not saved: ${errorText(error)}`, { level: 'error' });
-              }
-              closePresetEditor();
-              renderPresets();
-            },
-          },
-        },
-        ['Save presets'],
-      ),
-      h('button', { attrs: { type: 'button' }, on: { click: closePresetEditor } }, ['Cancel']),
+  const save = async () => {
+    try {
+      await savePresets(presets.map((p, i) => ({ ...p, text: areas[i]!.value })));
+      presets = await getPresets();
+      renderPresetsMenu();
+      closeSheet();
+      showToast('Presets saved.');
+    } catch (error) {
+      sheetError(`Presets not saved: ${errorText(error)}`);
+    }
+  };
+  openSheet('presets', 'Edit presets', [
+    h('p', {}, ['Four presets, fixed names. Edited text is kept in this browser.']),
+    ...presets.map((preset, i) => h('label', { class: 'preset-field' }, [h('span', {}, [preset.name]), areas[i]!])),
+    h('div', { class: 'sheet-actions' }, [
+      h('button', { class: 'primary', attrs: { type: 'button' }, on: { click: () => void save() } }, ['Save presets']),
+      h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Cancel']),
     ]),
-  );
-  editor.hidden = false;
-  $('edit-presets').setAttribute('aria-expanded', 'true');
-  areas[0]?.focus();
-}
-function closePresetEditor(): void {
-  $('preset-editor').hidden = true;
-  $('edit-presets').setAttribute('aria-expanded', 'false');
-  $('edit-presets').focus();
+  ]);
 }
 
+/** Rebuilds the source checklist; a single checkbox change only updates the counts and summary. */
 function renderJobSources(): void {
   if (!view) return;
   const excluded = new Set(settings.excluded_source_ids);
   $('job-sources').replaceChildren(
     ...view.sources.map((entry) => {
+      const title = capturedTitle(entry);
       const box = h('input', { attrs: { type: 'checkbox' } });
       box.checked = !excluded.has(entry.source.id);
       box.addEventListener('change', () => {
         const set = new Set(settings.excluded_source_ids);
         if (box.checked) set.delete(entry.source.id);
         else set.add(entry.source.id);
-        settings = { ...settings, excluded_source_ids: [...set] };
-        persistSettings(activeId, settings);
-        renderJob();
+        changeSettings({ excluded_source_ids: [...set] });
       });
       return h('li', {}, [
         h('label', {}, [
           box,
           h('span', { class: 'sid' }, [sourceLabel(entry.source)]),
-          h('span', { class: 'title' }, [capturedTitle(entry) ?? entry.source.dedup_url]),
-          badge(chooseSnapshot(entry).status),
+          h('span', { class: `title${title ? '' : ' untitled'}` }, [title ?? entry.source.dedup_url]),
+          chip(chooseSnapshot(entry).status),
         ]),
       ]);
     }),
   );
-  const selected = view.sources.filter((s) => !excluded.has(s.source.id)).length;
-  $('job-sources-heading').textContent = `Sources · ${selected} of ${view.sources.length}`;
+}
+
+// ---------- Research Job: Result ----------
+
+function setStage(next: Stage, focus = false): void {
+  if (next === 'result' && !job) return;
+  stage = next;
+  renderJob();
+  if (focus) $(next === 'prepare' ? 'stage-prepare' : 'stage-result').focus();
 }
 
 function renderJob(): void {
   if (!view) return;
-  renderJobSources();
+  const excluded = new Set(settings.excluded_source_ids);
+  const selectedCount = view.sources.filter((s) => !excluded.has(s.source.id)).length;
+  $('job-sources-heading').textContent = `Sources · ${selectedCount} of ${view.sources.length}`;
+  $('job-sources-empty').hidden = view.sources.length > 0;
+
   draft = buildResearchJob({ view, settings, id: 'draft', createdAt: '' });
   const stats = draft.stats;
   const missing = draft.sources.filter((s) => s.material === 'missing').map((s) => s.label);
   const partial = draft.sources.filter((s) => s.material === 'partial').map((s) => s.label);
-  const missingWhat = settings.context_mode === 'selections' ? 'selection' : 'snapshot';
+  const missingWhat = settings.context_mode === 'selections' ? 'selection' : 'text';
+  const issues = [missing.length ? `Missing ${missingWhat}: ${missing.join(', ')}` : '', partial.length ? `Partial: ${partial.join(', ')}` : '']
+    .filter(Boolean)
+    .join(' · ');
   $('summary').replaceChildren(
-    h('b', {}, [`${stats.source_count} ${stats.source_count === 1 ? 'source' : 'sources'}`]),
-    ` · ${fmtNumber(stats.character_count)} characters · ~${fmtBytes(stats.utf8_bytes)} UTF-8`,
-    h('br'),
-    `${missing.length} missing ${missingWhat}${missing.length === 1 ? '' : 's'}${missing.length ? ` (${missing.join(', ')})` : ''} · `,
-    `${partial.length} partial${partial.length ? ` (${partial.join(', ')})` : ''}`,
+    h('div', {}, [
+      h('b', {}, [`${plural(stats.source_count, 'source')} · ${fmtNumber(stats.character_count)} characters`]),
+      h('span', { class: 'muted' }, [` · ~${fmtBytes(stats.utf8_bytes)} UTF-8`]),
+    ]),
+    issues ? h('div', { class: 'issues' }, [issues]) : '',
+    !issues && stats.source_count > 0 ? h('div', { class: 'muted' }, ['All selected sources have the requested material.']) : '',
   );
 
   const reasons: string[] = [];
-  if (!view.session.prompt.trim()) reasons.push('Write a session prompt first.');
+  if (!view.session.prompt.trim()) reasons.push('Write a prompt to generate.');
   if (stats.source_count === 0) reasons.push('Select at least one source.');
   $<HTMLButtonElement>('generate').disabled = reasons.length > 0;
   $('generate-hint').textContent = reasons.join(' ');
   $('generate-hint').hidden = reasons.length === 0;
 
-  const result = $('job-result');
-  result.hidden = !job;
-  if (!job) return;
-  const outdated = isJobOutdated(job, draft);
-  $('job-result-title').textContent = `Generated ${fmtTime(job.created_at)}`;
-  $('job-result-meta').textContent = `${job.stats.source_count} ${job.stats.source_count === 1 ? 'source' : 'sources'} · ${fmtNumber(job.stats.character_count)} chars`;
-  $('job-stale').hidden = !outdated;
-  if ($('job-preview').textContent !== job.text) $('job-preview').textContent = job.text;
-  for (const button of document.querySelectorAll<HTMLButtonElement>('#job-result [data-destination]')) {
-    button.disabled = outdated;
+  if (!job) stage = 'prepare';
+  const outdated = !!job && isJobOutdated(job, draft);
+  const prepareTab = $<HTMLButtonElement>('stage-prepare');
+  const resultTab = $<HTMLButtonElement>('stage-result');
+  resultTab.disabled = !job;
+  resultTab.textContent = !job ? 'Result · not generated' : outdated ? 'Result · outdated' : 'Result';
+  setSelected([prepareTab, resultTab], stage === 'prepare' ? prepareTab : resultTab, 'aria-selected');
+  $('prepare').hidden = stage !== 'prepare';
+  $('result').hidden = stage !== 'result';
+  $('view-job').classList.toggle('fill', stage === 'result');
+
+  if (job) {
+    $('job-result-title').textContent = `Generated ${fmtTime(job.created_at)}`;
+    $('job-result-meta').textContent = `${plural(job.stats.source_count, 'source')} · ${fmtNumber(job.stats.character_count)} chars · ~${fmtBytes(job.stats.utf8_bytes)}`;
+    $('job-stale').hidden = !outdated;
+    if ($('job-preview').textContent !== job.text) $('job-preview').textContent = job.text;
+    $('job-preview').classList.toggle('outdated', outdated);
   }
+  for (const id of ['copy-job', 'open-in-button', 'export-button']) $<HTMLButtonElement>(id).disabled = !job || outdated;
+  renderBars();
 }
 
 async function generateJob(): Promise<void> {
@@ -733,6 +997,7 @@ async function generateJob(): Promise<void> {
     const fresh = buildResearchJob({ view, settings, id: crypto.randomUUID(), createdAt: new Date().toISOString() });
     job = await saveJob(db, fresh);
     $('delivery-status').hidden = true;
+    stage = 'result';
     renderJob();
     $('job-preview').focus();
   } catch (error) {
@@ -777,31 +1042,42 @@ async function deliver(id: DestinationId): Promise<void> {
   if (DESTINATIONS[id].kind === 'chat' && result.ok) showToast(result.message);
 }
 
-// ---------- Backup and restore ----------
-
-function toggleMenu(open: boolean): void {
-  $('menu').hidden = !open;
-  $('menu-button').setAttribute('aria-expanded', String(open));
-  if (!open) return;
-  Array.from($('menu').querySelectorAll('button')).find((b) => !b.hidden && !b.disabled)?.focus();
-  // Turn off tab access is offered only while ClipGrail has the permission.
-  browser.permissions.contains({ permissions: ['tabs'] }).then(
-    (has) => ($('tab-access-button').hidden = !has),
-    () => ($('tab-access-button').hidden = true),
-  );
+function deliverFromSheet(id: DestinationId): () => void {
+  return () => {
+    closeSheet();
+    void deliver(id);
+  };
 }
 
-async function turnOffTabAccess(): Promise<void> {
-  toggleMenu(false);
-  try {
-    const removed = await browser.permissions.remove({ permissions: ['tabs'] });
-    // Chrome keeps the earlier consent, so the next Save tabs gets the permission back without a prompt.
-    if (removed) showToast('Tab access turned off. Save tabs turns it on again.');
-    else showToast('Tab access could not be turned off.', { level: 'error' });
-  } catch (error) {
-    showToast(`Tab access could not be turned off: ${errorText(error)}`, { level: 'error' });
-  }
+function openInSheet(): void {
+  const services: DestinationId[] = ['chatgpt', 'claude', 'gemini', 'perplexity'];
+  openSheet('open-in', 'Open in a chat service', [
+    h('p', {}, [
+      "Copies the generated Research Job to the clipboard, then opens the service's start page in a new tab. Paste it into the chat yourself; nothing is sent for you.",
+    ]),
+    h(
+      'div',
+      { class: 'service-grid' },
+      services.map((id) => h('button', { attrs: { type: 'button', 'data-destination': id }, on: { click: deliverFromSheet(id) } }, [DESTINATIONS[id].name])),
+    ),
+  ]);
 }
+
+function exportSheet(): void {
+  openSheet('export', 'Export the Research Job', [
+    h('p', {}, ['Both files contain the Research Job exactly as shown in the preview. This is not a backup of your data; use Back up all data for that.']),
+    h('button', { class: 'option-button', attrs: { type: 'button', 'data-destination': 'markdown' }, on: { click: deliverFromSheet('markdown') } }, [
+      h('span', { class: 'name' }, ['Markdown']),
+      h('span', { class: 'file' }, ['clipgrail-session.md']),
+    ]),
+    h('button', { class: 'option-button', attrs: { type: 'button', 'data-destination': 'json' }, on: { click: deliverFromSheet('json') } }, [
+      h('span', {}, [h('span', { class: 'name' }, ['JSON']), h('span', { class: 'meta' }, [' · text plus structured sources and settings'])]),
+      h('span', { class: 'file' }, ['clipgrail-session.json']),
+    ]),
+  ]);
+}
+
+// ---------- Backup, restore and help ----------
 
 async function backup(): Promise<void> {
   toggleMenu(false);
@@ -821,29 +1097,35 @@ async function backup(): Promise<void> {
   }
 }
 
-function showRestorePanel(text: string, canConfirm: boolean): void {
-  $('restore-text').textContent = text;
-  $('restore-confirm').hidden = !canConfirm;
-  $('restore-cancel').textContent = canConfirm ? 'Cancel' : 'Close';
-  $('restore-panel').hidden = false;
-  $('restore-panel').focus();
-}
-function closeRestorePanel(): void {
-  pendingRestore = null;
-  $('restore-panel').hidden = true;
+function showRestoreSheet(text: string, canConfirm: boolean): void {
+  const backupToRestore = pendingRestore;
+  const cancel = h('button', { attrs: { id: 'restore-cancel', type: 'button' }, on: { click: () => closeSheet() } }, [canConfirm ? 'Cancel' : 'Close']);
+  openSheet(
+    'restore',
+    'Restore from backup',
+    [
+      h('p', { class: canConfirm ? 'plain-text' : 'plain-text alert-text' }, [text]),
+      h('div', { class: 'sheet-actions' }, [
+        canConfirm ? h('button', { class: 'danger', attrs: { id: 'restore-confirm', type: 'button' }, on: { click: () => void confirmRestore() } }, ['Replace current data']) : null,
+        cancel,
+      ]),
+    ],
+    cancel,
+  );
+  pendingRestore = backupToRestore;
 }
 
 async function checkRestoreFile(file: File): Promise<void> {
   const check = await validateBackup(await file.text());
   if (!check.ok) {
     pendingRestore = null;
-    showRestorePanel(`Backup rejected: ${check.error}\nCurrent data is unchanged.`, false);
+    showRestoreSheet(`Backup rejected: ${check.error}\nCurrent data is unchanged.`, false);
     return;
   }
   pendingRestore = check.backup;
   const current = summarize(await readAllData(db), '');
   const s = check.summary;
-  showRestorePanel(
+  showRestoreSheet(
     `Backup from ${fmtTime(s.created_at)} is valid: ${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}, ${plural(s.jobs, 'job')}; all texts match their SHA-256.\n` +
       `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). Back up the current data first if you may need it.`,
     true,
@@ -853,7 +1135,7 @@ async function checkRestoreFile(file: File): Promise<void> {
 async function confirmRestore(): Promise<void> {
   const backupData = pendingRestore;
   if (!backupData) return;
-  closeRestorePanel();
+  closeSheet();
   const result = await restoreBackup(backupData, {
     replaceData: (data) => replaceAllData(db, data),
     applySettings: async (s) => {
@@ -863,10 +1145,11 @@ async function confirmRestore(): Promise<void> {
     },
   });
   detailSourceId = null;
+  stage = 'prepare';
   try {
     presets = await getPresets();
     activeId = await getActiveSessionId();
-    renderPresets();
+    renderPresetsMenu();
     await loadActiveSession();
   } catch (error) {
     const state = !result.ok && !result.dataReplaced ? 'Restore failed and current data is unchanged' : 'The backup was restored';
@@ -876,19 +1159,56 @@ async function confirmRestore(): Promise<void> {
   showToast(result.message, { level: result.ok ? 'info' : 'error' });
 }
 
-// ---------- Tabs ----------
+async function turnOffTabAccess(): Promise<void> {
+  toggleMenu(false);
+  try {
+    const removed = await browser.permissions.remove({ permissions: ['tabs'] });
+    // Chrome keeps the earlier consent, so the next Save tabs gets the permission back without a prompt.
+    if (removed) showToast('Tab access turned off. Save tabs turns it on again.');
+    else showToast('Tab access could not be turned off.', { level: 'error' });
+  } catch (error) {
+    showToast(`Tab access could not be turned off: ${errorText(error)}`, { level: 'error' });
+  }
+}
+
+function helpSheet(): void {
+  const item = (term: string, ...description: Child[]) => [h('dt', {}, [term]), h('dd', {}, description)];
+  openSheet('help', 'How capture works', [
+    h('dl', { class: 'help' }, [
+      ...item(
+        'Clip page',
+        'Saves the readable text of the current page with the time, extraction method and SHA-256. ',
+        shortcut ? h('kbd', {}, [shortcut]) : null,
+        shortcut ? ' or right-click › Clip page to ClipGrail does the same.' : 'Right-click › Clip page to ClipGrail does the same.',
+      ),
+      ...item('Selection', 'Saves the text you selected on the page. Also in the right-click menu.'),
+      ...item('Links', 'Right-click a link › Save link to ClipGrail (not opened). The address is saved as Address only; the page is not visited.'),
+      ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
+      ...item(
+        "Can't read this tab?",
+        "Chrome lets ClipGrail read a tab only after you act on it: click the toolbar icon, press the shortcut or use the right-click menu on that tab. Browser pages and the Chrome Web Store can't be clipped.",
+      ),
+    ]),
+  ]);
+}
+
+// ---------- Views and action bar ----------
+
+function renderBars(): void {
+  $('bar-collect').hidden = !(currentView === 'collect' && detailSourceId === null);
+  $('bar-prepare').hidden = !(currentView === 'job' && stage === 'prepare');
+  $('bar-result').hidden = !(currentView === 'job' && stage === 'result');
+}
 
 function selectTab(name: 'collect' | 'job', focus = false): void {
-  const tabs = { collect: $('tab-collect'), job: $('tab-job') };
-  for (const [key, tab] of Object.entries(tabs)) {
-    const on = key === name;
-    tab.setAttribute('aria-selected', String(on));
-    tab.tabIndex = on ? 0 : -1;
-  }
+  currentView = name;
+  const tabs = { collect: $<HTMLButtonElement>('tab-collect'), job: $<HTMLButtonElement>('tab-job') };
+  setSelected([tabs.collect, tabs.job], tabs[name], 'aria-selected');
   $('view-collect').hidden = name !== 'collect';
   $('view-job').hidden = name !== 'job';
   if (focus) tabs[name].focus();
   if (name === 'job') renderJob();
+  renderBars();
 }
 
 // ---------- Wiring ----------
@@ -896,94 +1216,87 @@ function selectTab(name: 'collect' | 'job', focus = false): void {
 function bind(): void {
   $('tab-collect').addEventListener('click', () => selectTab('collect'));
   $('tab-job').addEventListener('click', () => selectTab('job'));
-  for (const id of ['tab-collect', 'tab-job']) {
-    $(id).addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-        selectTab(id === 'tab-collect' ? 'job' : 'collect', true);
-        event.preventDefault();
-      }
-    });
-  }
+  rovingKeys($('tab-collect').parentElement!, (button) => selectTab(button.id === 'tab-collect' ? 'collect' : 'job'));
 
-  $<HTMLSelectElement>('session-select').addEventListener('change', (event) => {
-    void switchSession((event.target as HTMLSelectElement).value);
-  });
-  $('new-session').addEventListener('click', () => openSessionForm('create'));
-  $('rename-session').addEventListener('click', () => openSessionForm('rename'));
-  $('session-cancel').addEventListener('click', closeSessionForm);
-  $('session-form').addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeSessionForm();
-  });
-  $('session-form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    const name = $<HTMLInputElement>('session-name').value;
-    void (async () => {
-      try {
-        if (sessionFormMode === 'create') {
-          const session = await createSession(db, name);
-          closeSessionForm();
-          await switchSession(session.id);
-          showToast(`Session "${session.name}" created. New captures go here.`);
-        } else {
-          await renameSession(db, activeId, name);
-          closeSessionForm();
-          await loadActiveSession();
-        }
-      } catch (error) {
-        showToast(errorText(error), { level: 'error' });
-      }
-    })();
-  });
+  $('session-button').addEventListener('click', () => void openSessionsSheet());
 
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));
-  $('save-selected').addEventListener('click', () => void saveTabs('selected'));
-  $('save-all').addEventListener('click', () => void saveTabs('all'));
+  $('tabs-button').addEventListener('click', openTabsSheet);
   for (const event of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onHighlighted, browser.tabs.onAttached, browser.tabs.onDetached]) {
     event.addListener(() => void updateTabCounts());
   }
-  $('unarchive-button').addEventListener('click', () => void setArchived(false));
 
+  $('notes-toggle').addEventListener('click', () => {
+    notesOpen = !notesOpen;
+    renderNotesToggle();
+    if (notesOpen) $('session-notes').focus();
+  });
   $<HTMLTextAreaElement>('session-notes').addEventListener('input', (event) => {
     const notes = (event.target as HTMLTextAreaElement).value;
     if (view) view = { ...view, session: { ...view.session, notes } };
     updateSessionText(db, activeId, { notes }).catch(reportSaveError('Notes'));
+    renderNotesToggle();
     renderJob();
   });
 
+  $('stage-prepare').addEventListener('click', () => setStage('prepare'));
+  $('stage-result').addEventListener('click', () => setStage('result'));
+  rovingKeys($('stage-prepare').parentElement!, (button) => setStage(button.id === 'stage-prepare' ? 'prepare' : 'result'));
   $<HTMLTextAreaElement>('prompt').addEventListener('input', (event) => setPrompt((event.target as HTMLTextAreaElement).value));
-  $('edit-presets').addEventListener('click', () => ($('preset-editor').hidden ? openPresetEditor() : closePresetEditor()));
-  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="context"], #inc-notes, #inc-links, #inc-times, #inc-urls')) {
-    input.addEventListener('change', settingsChanged);
+  $('presets-button').addEventListener('click', () => togglePresetsMenu($('presets-menu').hidden === true));
+  for (const button of modeButtons()) button.addEventListener('click', () => setMode(button.dataset.mode as ContextMode));
+  rovingKeys($('mode-links').parentElement!, (button) => setMode(button.dataset.mode as ContextMode));
+  $('options-toggle').addEventListener('click', () => {
+    optionsOpen = !optionsOpen;
+    renderOptionsToggle();
+  });
+  $('limit').addEventListener('input', () => {
+    const limit = Number.parseInt($<HTMLInputElement>('limit').value, 10);
+    changeSettings({ max_chars_per_source: Number.isInteger(limit) && limit > 0 ? limit : null });
+  });
+  const privateFields: Array<[string, keyof JobSettings]> = [
+    ['inc-notes', 'include_notes'],
+    ['inc-links', 'include_link_context'],
+    ['inc-times', 'include_capture_times'],
+    ['inc-urls', 'include_original_urls'],
+  ];
+  for (const [id, key] of privateFields) {
+    $(id).addEventListener('change', () => changeSettings({ [key]: $<HTMLInputElement>(id).checked }));
   }
-  $('limit').addEventListener('input', settingsChanged);
   $('select-all').addEventListener('click', () => {
-    settings = { ...settings, excluded_source_ids: [] };
-    persistSettings(activeId, settings);
-    renderJob();
+    changeSettings({ excluded_source_ids: [] });
+    renderJobSources();
   });
   $('select-none').addEventListener('click', () => {
-    settings = { ...settings, excluded_source_ids: view?.sources.map((s) => s.source.id) ?? [] };
-    persistSettings(activeId, settings);
-    renderJob();
+    changeSettings({ excluded_source_ids: view?.sources.map((s) => s.source.id) ?? [] });
+    renderJobSources();
   });
   $('generate').addEventListener('click', () => void generateJob());
-  for (const button of document.querySelectorAll<HTMLButtonElement>('#job-result [data-destination]')) {
-    button.addEventListener('click', () => void deliver(button.dataset.destination as DestinationId));
-  }
+  $('generate-again').addEventListener('click', () => void generateJob());
+  $('copy-job').addEventListener('click', () => void deliver('clipboard'));
+  $('open-in-button').addEventListener('click', openInSheet);
+  $('export-button').addEventListener('click', exportSheet);
 
   $('menu-button').addEventListener('click', () => toggleMenu($('menu').hidden === true));
-  $('menu').addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
+  document.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    if (!$('menu').hidden && !target.closest('#menu, #menu-button')) toggleMenu(false);
+    if (!$('presets-menu').hidden && !target.closest('#presets-menu, #presets-button')) togglePresetsMenu(false);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (sheetKind) {
+      closeSheet();
+    } else if (!$('menu').hidden) {
       toggleMenu(false);
       $('menu-button').focus();
-    }
+    } else if (!$('presets-menu').hidden) {
+      togglePresetsMenu(false);
+      $('presets-button').focus();
+    } else return;
+    event.preventDefault();
   });
-  document.addEventListener('click', (event) => {
-    if (!$('menu').hidden && !(event.target as HTMLElement).closest('.menu-wrap')) toggleMenu(false);
-  });
-  $('archive-button').addEventListener('click', () => void setArchived(!sessions.find((s) => s.id === activeId)?.archived_at));
-  $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
   $('backup-button').addEventListener('click', () => void backup());
   $('restore-button').addEventListener('click', () => {
     toggleMenu(false);
@@ -993,13 +1306,12 @@ function bind(): void {
   });
   $<HTMLInputElement>('restore-file').addEventListener('change', (event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
-    if (file) void checkRestoreFile(file).catch((error: unknown) => showRestorePanel(`Backup rejected: ${errorText(error)}\nCurrent data is unchanged.`, false));
+    if (file) void checkRestoreFile(file).catch((error: unknown) => showRestoreSheet(`Backup rejected: ${errorText(error)}\nCurrent data is unchanged.`, false));
   });
-  $('restore-confirm').addEventListener('click', () => void confirmRestore());
-  $('restore-cancel').addEventListener('click', closeRestorePanel);
-  $('restore-panel').addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeRestorePanel();
-  });
+  $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
+  $('help-button').addEventListener('click', helpSheet);
+  $('sheet-close').addEventListener('click', () => closeSheet());
+  $('sheet-scrim').addEventListener('click', () => closeSheet());
 
   $('toast-undo').addEventListener('click', () => {
     const undo = toastUndo;
@@ -1015,6 +1327,7 @@ function bind(): void {
       if (typeof id === 'string' && id !== activeId) {
         activeId = id;
         detailSourceId = null;
+        stage = 'prepare';
         void loadActiveSession();
       }
     }
@@ -1023,6 +1336,7 @@ function bind(): void {
 
 async function init(): Promise<void> {
   bind();
+  modifier = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
   try {
     db = await openDb();
     windowId = (await browser.windows.getCurrent()).id;
@@ -1030,13 +1344,9 @@ async function init(): Promise<void> {
     activeId = await getActiveSessionId();
     const commands = await browser.commands.getAll();
     shortcut = commands.find((c) => c.name === 'clip-page')?.shortcut ?? '';
-    $('clip-hint').textContent =
-      `Right-click a link to save it without opening it.${shortcut ? ` ${shortcut} clips the current page.` : ''}`;
-    const modifier = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
-    $('save-tabs-hint').textContent = `Keeps the address and title only; pages are not read. ${modifier}+click tabs in the tab strip to select several.`;
-    void updateTabCounts();
-    renderPresets();
+    renderPresetsMenu();
     await loadActiveSession();
+    void updateTabCounts();
     // Show a capture result that arrived while the panel was opening.
     const stored = await browser.storage.session.get(NOTICE_KEY);
     const notice = stored[NOTICE_KEY] as Notice | undefined;
