@@ -28,6 +28,7 @@ npm run build
 | Capture | Clip the current page, a text selection, or a link without opening it; save the addresses of open tabs |
 | Preserve | Readable page text with capture time, extraction method, character count and SHA-256 |
 | Organize | Sessions with a default Inbox and an archive, stable source labels, moving sources between sessions, notes on sessions, sources and captures |
+| Library | All sessions and sources in a browser tab, with search, status filter, sorting and every saved version of a page's text |
 | Prompt | A prompt for each session and editable presets: Analyze, Compare, Fact Check, Custom |
 | Research Job | Prompt, rules and selected material in one text, with citations by source label |
 | Open and export | Copy, open ChatGPT, Claude, Gemini or Perplexity, export Markdown or JSON |
@@ -76,6 +77,18 @@ Click a source to see its status and saved text (**Text**), every capture with i
 - **Archive session** in the same list moves the active session to the Archived group and switches to the Inbox. An archived session keeps all its data and can still be opened; while it is open, its name shows **Archived** and new captures go to it. **Unarchive** returns it to the main list.
 - **Move to…** in the source details moves a source with all its captures, snapshots and notes to another session. There it gets the next free label, or joins the source with the same address if the session already has one. Its old label is not given to another source.
 - Each source has a private note in the source details, next to the notes on the session and on each capture.
+
+## Library
+
+**Library ↗** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
+
+- **All sources** lists the sources of every session, including the Inbox and archived sessions. Each source shows its label together with its session name, because every session has its own S1.
+- Search finds sources by title or address. You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
+- Click a source to read it. **Captures** lists every capture of the source, newest first. Choosing an earlier capture shows the text saved at that time. **Current text** marks the version a Research Job uses; an earlier version is shown for reading only.
+- **Open page ↗** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
+- When a source has earlier text versions, its details in the side panel link to them with **Open in library ↗**.
+
+The library shows new captures and changes made in the side panel as they happen. Notes, moving sources and archiving stay in the side panel. Search covers titles and addresses, not the saved text.
 
 ## Preparing a Research Job
 

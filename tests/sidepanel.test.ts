@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { commitCapture, createSession, loadSessionView, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
+import { commitCapture, createSession, listSessions, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { pageDraft } from './helpers';
 
@@ -109,6 +109,7 @@ describe('side panel', () => {
     await pickSession('Inbox');
     await vi.waitFor(() => expect($<HTMLTextAreaElement>('prompt').value).toBe('Changed Inbox prompt'));
     expect(second.id).not.toBe(INBOX_SESSION_ID);
+    $('tab-job').click();
     $<HTMLInputElement>('inc-notes').checked = true;
     $('inc-notes').dispatchEvent(new Event('change'));
     $('generate').click();
@@ -124,13 +125,16 @@ describe('side panel', () => {
     expect(copy.disabled).toBe(true);
     expect($('job-stale').hidden).toBe(false);
 
-    // A note edited in this panel marks the job outdated immediately.
+    // A note edited in Collect shows the job as outdated when the Research Job view opens again.
     $('generate').click();
     await vi.waitFor(() => expect(copy.disabled).toBe(false));
+    $('tab-collect').click();
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
     $('detail-tab-captures').click();
     type(`note-${a.capture.id}`, 'Edited here');
+    $('tab-job').click();
     expect(copy.disabled).toBe(true);
+    expect($('job-stale').hidden).toBe(false);
   });
 
   it('saves tabs only with Chrome permission, as addresses without text, and Undo removes the save', async () => {
@@ -158,5 +162,31 @@ describe('side panel', () => {
     expect(saved.captures.map((c) => [c.capture.kind, c.capture.tab_title, c.snapshot?.status])).toEqual([['tab', 'Tab B', 'pending']]);
     $('toast-undo').click();
     await vi.waitFor(async () => expect(await count()).toBe(before));
+  });
+
+  it('shows changes made in another ClipGrail page without losing the note being typed', async () => {
+    const db = await openDb();
+    const elsewhere = new BroadcastChannel('clipgrail-data');
+    const changedElsewhere = () => elsewhere.postMessage({ type: 'data-changed' });
+    $('tab-collect').click();
+    const before = document.querySelectorAll('#source-list .src').length;
+    document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
+    $('source-note').focus();
+    type('source-note', 'Typed while another window saves');
+
+    await commitCapture(db, await pageDraft('https://example.com/from-another-window', 'new text', '2026-10-05T12:00:00.000Z'));
+    changedElsewhere();
+    await vi.waitFor(() => expect(document.querySelectorAll('#source-list .src')).toHaveLength(before + 1));
+    expect(document.activeElement?.id).toBe('source-note');
+    expect($<HTMLTextAreaElement>('source-note').value).toBe('Typed while another window saves');
+
+    // The open source is moved away in another window: the panel says so instead of silently closing it.
+    const open = (await loadSessionView(db, INBOX_SESSION_ID)).sources[0]!;
+    const second = (await listSessions(db)).find((s) => s.name === 'Second')!;
+    await moveSource(db, open.source.id, second.id);
+    changedElsewhere();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('S1 is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.'));
+    expect($('detail-panel').hidden).toBe(true);
+    elsewhere.close();
   });
 });

@@ -106,7 +106,7 @@ describe('backup and restore', () => {
     const check = await validateBackup(JSON.stringify(backup));
     expect(check.ok).toBe(true);
     if (!check.ok) return;
-    expect(check.backup.db_schema_version).toBe(2);
+    expect(check.backup.db_schema_version).toBe(3);
     expect(check.backup.data.sessions).toEqual([expect.objectContaining({ archived_at: null })]);
     expect(check.backup.data.sources.every((s) => (s as { note: unknown }).note === '')).toBe(true);
   });

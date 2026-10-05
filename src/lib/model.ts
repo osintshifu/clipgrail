@@ -90,12 +90,11 @@ interface SnapshotBase {
   session_id: string;
 }
 
-export interface OkSnapshot extends SnapshotBase {
+/** A successful snapshot without its text. The database keeps the text in a separate store, so lists can be read without it. */
+export interface OkSnapshotMeta extends SnapshotBase {
   status: 'ok';
   /** When the text was read from the page. */
   captured_at: string;
-  /** Readable text exactly as stored. */
-  text: string;
   /** Unicode code points in `text`. */
   character_count: number;
   /** Lowercase hex SHA-256 of the UTF-8 bytes of `text`. */
@@ -119,6 +118,11 @@ export interface OkSnapshot extends SnapshotBase {
   http_status: number | null;
 }
 
+export interface OkSnapshot extends OkSnapshotMeta {
+  /** Readable text exactly as stored. */
+  text: string;
+}
+
 export interface FailedSnapshot extends SnapshotBase {
   status: 'failed';
   /** When the capture was attempted. */
@@ -134,6 +138,8 @@ export interface PendingSnapshot extends SnapshotBase {
 }
 
 export type Snapshot = OkSnapshot | FailedSnapshot | PendingSnapshot;
+/** A snapshot as stored in the snapshots store: everything except the text of a successful snapshot. */
+export type SnapshotMeta = OkSnapshotMeta | FailedSnapshot | PendingSnapshot;
 
 export function sourceLabel(source: Pick<Source, 'number'>): string {
   return `S${source.number}`;

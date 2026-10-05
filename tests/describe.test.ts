@@ -4,7 +4,7 @@ import { commitCapture, loadSessionView } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { chooseSnapshot } from '../src/lib/selection';
 import { buildSnapshotDraft } from '../src/lib/snapshot';
-import { STATUS_LABELS, sourceMeta, statusSentence } from '../src/entrypoints/sidepanel/describe';
+import { STATUS_LABELS, sourceMeta, statusSentence } from '../src/lib/describe';
 import { extraction, failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 describe('source status texts', () => {

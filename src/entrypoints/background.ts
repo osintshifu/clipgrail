@@ -2,7 +2,8 @@ import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import type { CaptureOutcome, TabInfo } from '../lib/capture';
 import { captureLink, capturePage, captureSelection } from '../lib/capture';
-import { openDb } from '../lib/db';
+import { announceDataChange } from '../lib/changes';
+import { openDb, setWriteListener } from '../lib/db';
 import type { ClipResponse } from '../lib/messages';
 import { isClipRequest } from '../lib/messages';
 import { publishNotice } from '../lib/notice';
@@ -59,6 +60,9 @@ function openPanel(windowId: number | undefined): void {
 }
 
 export default defineBackground(() => {
+  // Captures from the context menu and the shortcut refresh every open panel and the library.
+  setWriteListener(announceDataChange);
+
   browser.runtime.onInstalled.addListener(() => {
     void browser.contextMenus.removeAll().then(() => {
       browser.contextMenus.create({ id: 'clip-page', title: 'Clip page to ClipGrail', contexts: ['page'] });

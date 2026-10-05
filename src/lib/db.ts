@@ -1,13 +1,35 @@
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, CaptureKind, Fragment, Session, Snapshot, Source } from './model';
+import type { Capture, CaptureKind, Fragment, Session, Snapshot, SnapshotMeta, Source } from './model';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
+/** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
-const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots'] as const;
+/** Texts of successful snapshots, one record per snapshot, kept apart so lists and the library read without them. */
+const TEXT_STORE = 'snapshot_texts';
+const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE] as const;
+
+interface SnapshotText {
+  snapshot_id: string;
+  text: string;
+}
+
+/** Splits a snapshot into the record for the snapshots store and, for a successful one, its text record. */
+function splitSnapshot(snapshot: Snapshot): { meta: SnapshotMeta; text: SnapshotText | null } {
+  if (snapshot.status !== 'ok') return { meta: snapshot, text: null };
+  const { text, ...meta } = snapshot;
+  return { meta, text: { snapshot_id: snapshot.id, text } };
+}
+
+let writeListener: (() => void) | null = null;
+
+/** Called after every committed read-write transaction; pages use it to tell other ClipGrail pages that data changed. */
+export function setWriteListener(listener: (() => void) | null): void {
+  writeListener = listener;
+}
 
 export function newInboxSession(createdAt: string): Session {
   return { id: INBOX_SESSION_ID, name: 'Inbox', created_at: createdAt, next_source_number: 1, prompt: '', notes: '', archived_at: null };
@@ -19,6 +41,22 @@ function backfill(store: IDBObjectStore, defaults: Record<string, unknown>): voi
     const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
     if (!cursor) return;
     cursor.update({ ...defaults, ...(cursor.value as Record<string, unknown>) });
+    cursor.continue();
+  };
+}
+
+/** Moves the text of every successful snapshot from its snapshot record to the text store. */
+function moveTexts(tx: IDBTransaction): void {
+  const texts = tx.objectStore(TEXT_STORE);
+  tx.objectStore('snapshots').openCursor().onsuccess = (event) => {
+    const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+    if (!cursor) return;
+    const snapshot = cursor.value as Snapshot;
+    if (snapshot.status === 'ok' && typeof snapshot.text === 'string') {
+      const { meta, text } = splitSnapshot(snapshot);
+      if (text) texts.put(text);
+      cursor.update(meta);
+    }
     cursor.continue();
   };
 }
@@ -51,6 +89,11 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         // v2: sessions can be archived and sources have a note.
         backfill(request.transaction.objectStore('sessions'), { archived_at: null });
         backfill(request.transaction.objectStore('sources'), { note: '' });
+      }
+      if (event.oldVersion < 3) {
+        // v3: snapshot texts move to their own store.
+        db.createObjectStore(TEXT_STORE, { keyPath: 'snapshot_id' });
+        if (event.oldVersion >= 1 && request.transaction) moveTexts(request.transaction);
       }
     };
     request.onsuccess = () => {
@@ -103,6 +146,7 @@ async function inTransaction<T>(
     throw error;
   }
   await committed;
+  if (mode === 'readwrite') writeListener?.();
   return value;
 }
 
@@ -114,15 +158,15 @@ async function getSession(tx: IDBTransaction, id: string): Promise<Session> {
 
 // Sessions
 
+/** Inbox first, then by creation time. */
+function sortSessions(sessions: Session[]): Session[] {
+  return sessions.sort(
+    (a, b) => Number(b.id === INBOX_SESSION_ID) - Number(a.id === INBOX_SESSION_ID) || a.created_at.localeCompare(b.created_at),
+  );
+}
+
 export function listSessions(db: IDBDatabase): Promise<Session[]> {
-  return inTransaction(db, ['sessions'], 'readonly', async (tx) => {
-    const sessions = (await result(tx.objectStore('sessions').getAll())) as Session[];
-    // Inbox first, then by creation time.
-    return sessions.sort(
-      (a, b) =>
-        Number(b.id === INBOX_SESSION_ID) - Number(a.id === INBOX_SESSION_ID) || a.created_at.localeCompare(b.created_at),
-    );
-  });
+  return inTransaction(db, ['sessions'], 'readonly', async (tx) => sortSessions((await result(tx.objectStore('sessions').getAll())) as Session[]));
 }
 
 function cleanName(name: string): string {
@@ -304,7 +348,9 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
       source_id: source.id,
       session_id: session.id,
     } as Snapshot;
-    tx.objectStore('snapshots').add(snapshot);
+    const { meta, text } = splitSnapshot(snapshot);
+    tx.objectStore('snapshots').add(meta);
+    if (text) tx.objectStore(TEXT_STORE).add(text);
   }
   const captureCount = await result(tx.objectStore('captures').index('source').count(source.id));
   return { source, capture, snapshot, isNewSource, captureCount };
@@ -319,7 +365,7 @@ export interface UndoResult {
 
 /** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
 export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<UndoResult[]> {
-  return inTransaction(db, ['captures', 'snapshots', 'sources'], 'readwrite', async (tx) => {
+  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, 'sources'], 'readwrite', async (tx) => {
     const captures = tx.objectStore('captures');
     const results: UndoResult[] = [];
     for (const captureId of captureIds) {
@@ -328,7 +374,10 @@ export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<Und
         results.push({ removed: false, sourceRemoved: false });
         continue;
       }
-      if (capture.snapshot_id) tx.objectStore('snapshots').delete(capture.snapshot_id);
+      if (capture.snapshot_id) {
+        tx.objectStore('snapshots').delete(capture.snapshot_id);
+        tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
+      }
       captures.delete(capture.id);
       const remaining = await result(captures.index('source').count(capture.source_id));
       if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
@@ -386,7 +435,8 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
     for (const capture of (await result(captures.index('source').getAll(source.id))) as Capture[]) {
       captures.put({ ...capture, source_id: moved.id, session_id: target.id });
       if (!capture.snapshot_id) continue;
-      const snapshot = (await result(snapshots.get(capture.snapshot_id))) as Snapshot | undefined;
+      // Text records are keyed by snapshot only, so they stay as they are.
+      const snapshot = (await result(snapshots.get(capture.snapshot_id))) as SnapshotMeta | undefined;
       if (snapshot) snapshots.put({ ...snapshot, source_id: moved.id, session_id: target.id });
     }
     return { source: moved, joined: !!existing };
@@ -395,15 +445,16 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
 
 // Reading
 
-export interface CaptureEntry {
+/** A capture with its snapshot: with the snapshot text by default, or only its metadata (library lists). */
+export interface CaptureEntry<S extends SnapshotMeta = Snapshot> {
   capture: Capture;
-  snapshot: Snapshot | undefined;
+  snapshot: S | undefined;
 }
 
-export interface SourceEntry {
+export interface SourceEntry<S extends SnapshotMeta = Snapshot> {
   source: Source;
   /** Oldest first. */
-  captures: CaptureEntry[];
+  captures: CaptureEntry<S>[];
 }
 
 export interface SessionView {
@@ -412,30 +463,73 @@ export interface SessionView {
   sources: SourceEntry[];
 }
 
-/** Reads a session with all its sources, captures and snapshots in one consistent read. */
+/** Groups captures with their snapshots under their sources, captures oldest first and sources by S-number. */
+function groupSources<S extends SnapshotMeta>(sources: Source[], captures: Capture[], snapshots: S[]): SourceEntry<S>[] {
+  const snapshotById = new Map(snapshots.map((s) => [s.id, s]));
+  const bySource = new Map<string, CaptureEntry<S>[]>();
+  for (const capture of captures) {
+    const list = bySource.get(capture.source_id) ?? [];
+    list.push({ capture, snapshot: capture.snapshot_id ? snapshotById.get(capture.snapshot_id) : undefined });
+    bySource.set(capture.source_id, list);
+  }
+  const ordered = (a: CaptureEntry<S>, b: CaptureEntry<S>) =>
+    a.capture.captured_at.localeCompare(b.capture.captured_at) || a.capture.id.localeCompare(b.capture.id);
+  return sources
+    .sort((a, b) => a.number - b.number)
+    .map((source) => ({ source, captures: (bySource.get(source.id) ?? []).sort(ordered) }));
+}
+
+/** Adds the stored text to each successful snapshot. A missing text means damaged data and is reported, not hidden. */
+async function withTexts(tx: IDBTransaction, snapshots: SnapshotMeta[]): Promise<Snapshot[]> {
+  const texts = tx.objectStore(TEXT_STORE);
+  return Promise.all(
+    snapshots.map(async (snapshot) => {
+      if (snapshot.status !== 'ok') return snapshot;
+      const record = (await result(texts.get(snapshot.id))) as SnapshotText | undefined;
+      if (!record) throw new Error(`The saved text of snapshot ${snapshot.id} is missing.`);
+      return { ...snapshot, text: record.text };
+    }),
+  );
+}
+
+/** Reads a session with all its sources, captures and snapshots (with their texts) in one consistent read. */
 export function loadSessionView(db: IDBDatabase, sessionId: string): Promise<SessionView> {
   return inTransaction(db, CAPTURE_STORES, 'readonly', async (tx) => {
     const session = await getSession(tx, sessionId);
     const [sources, captures, snapshots] = await Promise.all([
       result(tx.objectStore('sources').index('session').getAll(sessionId)) as Promise<Source[]>,
       result(tx.objectStore('captures').index('session').getAll(sessionId)) as Promise<Capture[]>,
-      result(tx.objectStore('snapshots').index('session').getAll(sessionId)) as Promise<Snapshot[]>,
+      result(tx.objectStore('snapshots').index('session').getAll(sessionId)) as Promise<SnapshotMeta[]>,
     ]);
-    const snapshotById = new Map(snapshots.map((s) => [s.id, s]));
-    const bySource = new Map<string, CaptureEntry[]>();
-    for (const capture of captures) {
-      const list = bySource.get(capture.source_id) ?? [];
-      list.push({ capture, snapshot: capture.snapshot_id ? snapshotById.get(capture.snapshot_id) : undefined });
-      bySource.set(capture.source_id, list);
-    }
-    const ordered = (a: CaptureEntry, b: CaptureEntry) =>
-      a.capture.captured_at.localeCompare(b.capture.captured_at) || a.capture.id.localeCompare(b.capture.id);
-    return {
-      session,
-      sources: sources
-        .sort((a, b) => a.number - b.number)
-        .map((source) => ({ source, captures: (bySource.get(source.id) ?? []).sort(ordered) })),
-    };
+    return { session, sources: groupSources(sources, captures, await withTexts(tx, snapshots)) };
+  });
+}
+
+export interface LibraryData {
+  /** Inbox first, then by creation time. */
+  sessions: Session[];
+  /** Sources of all sessions, with snapshot metadata but without snapshot texts. */
+  sources: SourceEntry<SnapshotMeta>[];
+}
+
+/** Reads every session and source with captures and snapshot metadata, without any snapshot text, in one consistent read. */
+export function loadLibrary(db: IDBDatabase): Promise<LibraryData> {
+  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots'], 'readonly', async (tx) => {
+    const [sessions, sources, captures, snapshots] = await Promise.all([
+      result(tx.objectStore('sessions').getAll()) as Promise<Session[]>,
+      result(tx.objectStore('sources').getAll()) as Promise<Source[]>,
+      result(tx.objectStore('captures').getAll()) as Promise<Capture[]>,
+      result(tx.objectStore('snapshots').getAll()) as Promise<SnapshotMeta[]>,
+    ]);
+    return { sessions: sortSessions(sessions), sources: groupSources(sources, captures, snapshots) };
+  });
+}
+
+/** The saved text of one successful snapshot, or undefined if the snapshot has none. */
+export function loadSnapshotText(db: IDBDatabase, snapshotId: string): Promise<string | undefined> {
+  return inTransaction(db, [TEXT_STORE], 'readonly', async (tx) => {
+    const record = (await result(tx.objectStore(TEXT_STORE).get(snapshotId))) as SnapshotText | undefined;
+    return record?.text;
   });
 }
 
@@ -474,11 +568,13 @@ export type DataSnapshot = { [K in DataStore]: unknown[] };
 
 /** Reads every record of every data store in one consistent read. */
 export function readAllData(db: IDBDatabase): Promise<DataSnapshot> {
-  return inTransaction(db, DATA_STORES, 'readonly', async (tx) => {
+  return inTransaction(db, [...DATA_STORES, TEXT_STORE], 'readonly', async (tx) => {
     const entries = await Promise.all(
       DATA_STORES.map(async (store) => [store, await result(tx.objectStore(store).getAll())] as const),
     );
-    return Object.fromEntries(entries) as DataSnapshot;
+    const data = Object.fromEntries(entries) as DataSnapshot;
+    data.snapshots = await withTexts(tx, data.snapshots as SnapshotMeta[]);
+    return data;
   });
 }
 
@@ -487,10 +583,16 @@ export function readAllData(db: IDBDatabase): Promise<DataSnapshot> {
  * transaction aborts and the previous data stays exactly as it was.
  */
 export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<void> {
-  return inTransaction(db, DATA_STORES, 'readwrite', async (tx) => {
-    for (const store of DATA_STORES) tx.objectStore(store).clear();
+  return inTransaction(db, [...DATA_STORES, TEXT_STORE], 'readwrite', async (tx) => {
+    for (const store of [...DATA_STORES, TEXT_STORE]) tx.objectStore(store).clear();
     for (const store of DATA_STORES) {
+      if (store === 'snapshots') continue;
       for (const record of data[store]) tx.objectStore(store).add(record);
+    }
+    for (const snapshot of data.snapshots as Snapshot[]) {
+      const { meta, text } = splitSnapshot(snapshot);
+      tx.objectStore('snapshots').add(meta);
+      if (text) tx.objectStore(TEXT_STORE).add(text);
     }
   });
 }

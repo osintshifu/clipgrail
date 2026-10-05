@@ -1,106 +1,7 @@
-:root {
-  --bg: #ffffff;
-  --fg: #1d1f23;
-  --muted: #5d636e;
-  --line: #dfe2e7;
-  --soft: #f4f5f7;
-  --raised: #ffffff;
-  --accent: #1f5fbf;
-  --accent-fg: #ffffff;
-  --ok: #1d7a3e;
-  --ok-bg: #e6f4ea;
-  --fail: #b3261e;
-  --fail-bg: #fbe9e7;
-  --warn: #8a5a00;
-  --warn-bg: #fff4d6;
-  --pend: #4b5563;
-  --pend-bg: #eceef1;
-  --toast: #262a31;
-  --toast-fg: #ffffff;
-  --toast-link: #9cc3ff;
-  color-scheme: light dark;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1b1d21;
-    --fg: #e6e8eb;
-    --muted: #a2a8b3;
-    --line: #353a42;
-    --soft: #23262b;
-    --raised: #202328;
-    --accent: #6ea3ff;
-    --accent-fg: #0d1626;
-    --ok: #7fd49a;
-    --ok-bg: #1d3325;
-    --fail: #ff9b91;
-    --fail-bg: #3d211f;
-    --warn: #f2c66d;
-    --warn-bg: #3a2f17;
-    --pend: #c2c7cf;
-    --pend-bg: #30343b;
-    --toast: #e6e8eb;
-    --toast-fg: #1b1d21;
-    --toast-link: #1f5fbf;
-  }
-}
-/* Status colours: a chip reads var(--st-<status>); the text label is always present. */
-:root {
-  --st-ok: var(--ok);
-  --st-ok-bg: var(--ok-bg);
-  --st-partial: var(--warn);
-  --st-partial-bg: var(--warn-bg);
-  --st-failed: var(--fail);
-  --st-failed-bg: var(--fail-bg);
-  --st-pending: var(--pend);
-  --st-pending-bg: var(--pend-bg);
-  --st-none: var(--pend);
-  --st-none-bg: var(--pend-bg);
-  --mono: ui-monospace, Menlo, Consolas, monospace;
-}
+@import '../../styles/base.css';
 
-* { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
-/* Set on body: Chrome gives extension pages a default body font of 75%. */
-body {
-  display: flex; flex-direction: column; height: 100vh; min-width: 280px; overflow: hidden;
-  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, sans-serif;
-}
-h2, h3, p { margin: 0; }
-button, select, input, textarea { font: inherit; color: var(--fg); }
-button {
-  border-radius: 6px; padding: 5px 10px; border: 1px solid var(--line); background: var(--bg);
-  cursor: pointer; white-space: nowrap;
-}
-button:hover:not(:disabled) { border-color: var(--muted); }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
-button.danger { background: var(--fail); color: var(--bg); border-color: var(--fail); font-weight: 600; }
-button.link { border: 0; padding: 2px 0; background: none; color: var(--accent); font-size: 12px; font-weight: 600; }
-button.close { border: 0; background: none; color: inherit; padding: 0 4px; font-size: 16px; line-height: 1; }
-a { color: var(--accent); }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
-textarea { display: block; width: 100%; resize: vertical; padding: 6px 8px; font-size: 12.5px; }
-kbd { font: 600 11px var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; background: var(--soft); }
-.row { display: flex; align-items: center; gap: 6px; }
-.between { justify-content: space-between; }
-.grow { flex: 1; min-width: 0; }
-.muted { color: var(--muted); }
-.strong { font-weight: 650; }
-.small { font-size: 11.5px; color: var(--muted); }
-.section-title {
-  font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted);
-}
-.sid { font: 600 12px/1.5 var(--mono); color: var(--accent); }
-.chip {
-  flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px; line-height: 18px; white-space: nowrap;
-}
-.chip.ok { color: var(--st-ok); background: var(--st-ok-bg); }
-.chip.partial { color: var(--st-partial); background: var(--st-partial-bg); }
-.chip.failed { color: var(--st-failed); background: var(--st-failed-bg); }
-.chip.pending { color: var(--st-pending); background: var(--st-pending-bg); }
-.chip.none { color: var(--st-none); background: var(--st-none-bg); }
-.card { background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+/* Side panel layout: header, scrolling main area and action bar fill the panel height. */
+body { display: flex; flex-direction: column; height: 100vh; min-width: 280px; overflow: hidden; }
 
 /* Header */
 .top { flex: none; border-bottom: 1px solid var(--line); background: var(--bg); position: relative; z-index: 3; }
@@ -113,6 +14,8 @@ kbd { font: 600 11px var(--mono); border: 1px solid var(--line); border-radius: 
 .session-label { flex: none; font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 .session-name { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .caret { flex: none; color: var(--muted); font-size: 11px; }
+button.lib-btn { flex: none; border-color: transparent; background: none; color: var(--accent); font-weight: 600; font-size: 12.5px; padding: 5px 8px; }
+button.lib-btn:hover:not(:disabled) { background: var(--soft); border-color: transparent; }
 button.icon { flex: none; width: 32px; height: 30px; padding: 0; border-color: transparent; background: none; font-weight: 700; letter-spacing: 1px; }
 button.icon:hover:not(:disabled) { background: var(--soft); border-color: transparent; }
 .menu-wrap { position: relative; }
@@ -196,6 +99,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .text-box.selection { max-height: 160px; }
 .text-box.excerpt { max-height: 90px; font-size: 12px; line-height: 1.45; padding: 6px 8px; }
 .text-cut { font-size: 12px; color: var(--st-partial); font-weight: 600; }
+.versions-hint { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
 .stack { display: flex; flex-direction: column; gap: 4px; }
 .no-text { padding: 18px 12px; text-align: center; color: var(--muted); font-size: 12.5px; border: 1px dashed var(--line); border-radius: 6px; }
 .detail-section { display: flex; flex-direction: column; gap: 10px; }

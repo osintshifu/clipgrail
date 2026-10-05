@@ -274,7 +274,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       throw new Invalid(`Unsupported backup format version ${String(root.format_version)}.`);
     }
     const schemaVersion = root.db_schema_version;
-    if (schemaVersion !== 1 && schemaVersion !== DB_SCHEMA_VERSION) {
+    // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
+    if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== DB_SCHEMA_VERSION) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);

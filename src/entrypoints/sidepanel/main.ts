@@ -2,6 +2,9 @@ import './style.css';
 import { browser } from 'wxt/browser';
 import { backupFileName, createBackup, restoreBackup, summarize, validateBackup } from '../../lib/backup';
 import type { Backup } from '../../lib/backup';
+import { announceDataChange, onDataChange } from '../../lib/changes';
+import { $, h } from '../../lib/dom';
+import type { Child } from '../../lib/dom';
 import {
   commitCaptures,
   countSourcesBySession,
@@ -16,6 +19,7 @@ import {
   replaceAllData,
   saveJob,
   setSessionArchived,
+  setWriteListener,
   undoCapture,
   undoCaptures,
   updateCaptureNote,
@@ -59,32 +63,9 @@ import {
   hostOf,
   sourceMeta,
   statusSentence,
-} from './describe';
+} from '../../lib/describe';
 
-// ---------- DOM helpers (page content is only ever inserted as text) ----------
-
-function $<T extends HTMLElement = HTMLElement>(id: string): T {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`Missing element #${id}`);
-  return el as T;
-}
-
-type Child = Node | string | null | undefined | false;
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: { class?: string; attrs?: Record<string, string>; on?: Partial<Record<string, (event: Event) => void>> } = {},
-  children: Child[] = [],
-): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  if (props.class) el.className = props.class;
-  for (const [k, v] of Object.entries(props.attrs ?? {})) el.setAttribute(k, v);
-  for (const [k, fn] of Object.entries(props.on ?? {})) if (fn) el.addEventListener(k, fn);
-  for (const child of children) {
-    if (child === null || child === undefined || child === false) continue;
-    el.append(typeof child === 'string' ? document.createTextNode(child) : child);
-  }
-  return el;
-}
+// ---------- Helpers ----------
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -410,19 +391,63 @@ async function loadActiveSession(): Promise<void> {
   renderJob();
 }
 
-async function refreshData(): Promise<void> {
+/**
+ * Remembers focus, caret and scroll position before the panel is rendered
+ * again and restores them afterwards. A field being typed in keeps its text:
+ * every keystroke is already saved, and a re-read may predate the last one.
+ */
+function keepFocus(): () => void {
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const id = active?.id || null;
+  const focusKey = active?.dataset.focus ?? null;
+  const field = active instanceof HTMLTextAreaElement ? { value: active.value, start: active.selectionStart, end: active.selectionEnd } : null;
+  const scroll = $('main').scrollTop;
+  return () => {
+    $('main').scrollTop = scroll;
+    const el = id
+      ? document.getElementById(id)
+      : focusKey
+        ? Array.from(document.querySelectorAll<HTMLElement>('[data-focus]')).find((e) => e.dataset.focus === focusKey)
+        : null;
+    if (!el || el === active) return;
+    if (field && el instanceof HTMLTextAreaElement) {
+      el.value = field.value;
+      el.setSelectionRange(field.start, field.end);
+    }
+    el.focus({ preventScroll: true });
+  };
+}
+
+/**
+ * Reads the active session again and renders it. `external` marks changes
+ * made in another ClipGrail page: sessions and the latest job are read again
+ * too, and an open source that disappeared is explained instead of just closed.
+ */
+async function refreshData(options: { external?: boolean } = {}): Promise<void> {
   if (!db) return;
+  const restore = keepFocus();
   try {
     const fresh = await loadSessionView(db, activeId);
+    if (options.external) {
+      sessions = await listSessions(db);
+      job = await latestJob(db, activeId);
+    }
+    const lost =
+      options.external && detailSourceId !== null && !fresh.sources.some((s) => s.source.id === detailSourceId)
+        ? view?.sources.find((s) => s.source.id === detailSourceId)
+        : undefined;
     // Keep text being typed: the prompt and notes fields are the source of truth while edited.
     view = { ...fresh, session: { ...fresh.session, prompt: view?.session.prompt ?? fresh.session.prompt, notes: view?.session.notes ?? fresh.session.notes } };
+    if (lost) showToast(`${sourceLabel(lost.source)} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`);
   } catch {
     await loadActiveSession();
     return;
   }
+  if (options.external) renderHeader();
   renderCollect();
   renderJobSources();
   renderJob();
+  restore();
 }
 
 // ---------- Collect: source list ----------
@@ -452,7 +477,7 @@ function renderCollect(): void {
           'button',
           {
             class: 'src',
-            attrs: { type: 'button', 'aria-label': `${label}: ${title ?? entry.source.dedup_url}, ${STATUS_LABELS[status]}, open details` },
+            attrs: { type: 'button', 'data-focus': `src:${entry.source.id}`, 'aria-label': `${label}: ${title ?? entry.source.dedup_url}, ${STATUS_LABELS[status]}, open details` },
             on: { click: () => openDetail(entry.source.id) },
           },
           [
@@ -506,6 +531,20 @@ function textSection(entry: SourceEntry): Child[] {
   const ok = okSnapshotOf(choice);
   const selections = entry.captures.filter((c) => c.capture.kind === 'selection' && c.capture.fragment);
   const blocks: Child[] = [];
+  // The panel shows the text Research Jobs use; earlier texts are read in the library.
+  const earlier = entry.captures.filter((c) => c.snapshot?.status === 'ok' && c.snapshot !== ok).length;
+  if (earlier) {
+    blocks.push(
+      h('div', { class: 'versions-hint' }, [
+        h('span', {}, [`${plural(earlier, 'earlier text version')} kept.`]),
+        h(
+          'button',
+          { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id }) } },
+          ['Open in library ↗'],
+        ),
+      ]),
+    );
+  }
   if (ok) {
     blocks.push(
       h('div', { class: 'stack' }, [
@@ -840,7 +879,7 @@ function setPrompt(prompt: string): void {
   if (!view) return;
   view = { ...view, session: { ...view.session, prompt } };
   persistPrompt(activeId, prompt);
-  renderJob();
+  scheduleJobRender();
 }
 
 function applyPreset(preset: Preset): void {
@@ -849,6 +888,7 @@ function applyPreset(preset: Preset): void {
   const before = area.value;
   area.value = preset.text;
   setPrompt(preset.text);
+  renderJob();
   area.focus();
   if (before.trim() && before !== preset.text) {
     previousPrompt = before;
@@ -857,6 +897,7 @@ function applyPreset(preset: Preset): void {
         if (previousPrompt === null) return;
         area.value = previousPrompt;
         setPrompt(previousPrompt);
+        renderJob();
         previousPrompt = null;
         hideToast();
       },
@@ -908,7 +949,7 @@ function renderJobSources(): void {
   $('job-sources').replaceChildren(
     ...view.sources.map((entry) => {
       const title = capturedTitle(entry);
-      const box = h('input', { attrs: { type: 'checkbox' } });
+      const box = h('input', { attrs: { type: 'checkbox', 'data-focus': `job:${entry.source.id}` } });
       box.checked = !excluded.has(entry.source.id);
       box.addEventListener('change', () => {
         const set = new Set(settings.excluded_source_ids);
@@ -937,8 +978,24 @@ function setStage(next: Stage, focus = false): void {
   if (focus) $(next === 'prepare' ? 'stage-prepare' : 'stage-result').focus();
 }
 
+let jobRenderTimer: ReturnType<typeof setTimeout> | undefined;
+/** Pause in typing after which the Research Job draft is rebuilt. */
+const JOB_RENDER_DELAY_MS = 250;
+
+/** Rebuilds the draft after a pause in typing: building it reads all selected text, which takes long in large sessions. */
+function scheduleJobRender(): void {
+  clearTimeout(jobRenderTimer);
+  if (currentView === 'job') jobRenderTimer = setTimeout(renderJob, JOB_RENDER_DELAY_MS);
+}
+
+/**
+ * Renders the Research Job view. The draft is built only while the view is
+ * shown; selectTab renders it when the view opens, and Copy, Open in and
+ * Export re-read the session and rebuild it before delivering.
+ */
 function renderJob(): void {
-  if (!view) return;
+  clearTimeout(jobRenderTimer);
+  if (!view || currentView !== 'job') return;
   const excluded = new Set(settings.excluded_source_ids);
   const selectedCount = view.sources.filter((s) => !excluded.has(s.source.id)).length;
   $('job-sources-heading').textContent = `Sources · ${selectedCount} of ${view.sources.length}`;
@@ -1192,6 +1249,29 @@ function helpSheet(): void {
   ]);
 }
 
+// ---------- Library ----------
+
+/**
+ * Opens the library on a session or source, in the library tab that is
+ * already open if there is one (runtime.getContexts needs no permission).
+ */
+async function openLibrary(params: Record<string, string>): Promise<void> {
+  const base = browser.runtime.getURL('/library.html');
+  const url = `${base}#${new URLSearchParams(params).toString()}`;
+  try {
+    const contexts = await browser.runtime.getContexts({ contextTypes: ['TAB'] });
+    const open = contexts.find((c) => c.documentUrl?.startsWith(base) && c.tabId >= 0);
+    if (open) {
+      await browser.tabs.update(open.tabId, { url, active: true });
+      await browser.windows.update(open.windowId, { focused: true });
+      return;
+    }
+  } catch {
+    // Open a new library tab instead.
+  }
+  await browser.tabs.create({ url, windowId });
+}
+
 // ---------- Views and action bar ----------
 
 function renderBars(): void {
@@ -1219,6 +1299,7 @@ function bind(): void {
   rovingKeys($('tab-collect').parentElement!, (button) => selectTab(button.id === 'tab-collect' ? 'collect' : 'job'));
 
   $('session-button').addEventListener('click', () => void openSessionsSheet());
+  $('library-button').addEventListener('click', () => void openLibrary({ view: activeId }));
 
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));
@@ -1337,6 +1418,9 @@ function bind(): void {
 async function init(): Promise<void> {
   bind();
   modifier = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+  // Edits here refresh other panels and the library; their edits and captures refresh this panel.
+  setWriteListener(announceDataChange);
+  onDataChange(() => void refreshData({ external: true }));
   try {
     db = await openDb();
     windowId = (await browser.windows.getCurrent()).id;

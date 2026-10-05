@@ -7,7 +7,9 @@ import {
   commitCaptures,
   createSession,
   listSessions,
+  loadLibrary,
   loadSessionView,
+  loadSnapshotText,
   moveSource,
   openDb,
   readAllData,
@@ -26,6 +28,32 @@ import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './he
 
 const URL_A = 'https://example.com/a';
 const URL_B = 'https://example.com/b';
+
+/** Creates a database with the store layout of schema 1 and 2 at the given version, filled by `fill`. */
+function legacyDb(name: string, version: 1 | 2, fill: (tx: IDBTransaction) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open(name, version);
+    request.onupgradeneeded = () => {
+      const old = request.result;
+      old.createObjectStore('sessions', { keyPath: 'id' });
+      const sources = old.createObjectStore('sources', { keyPath: 'id' });
+      sources.createIndex('session_dedup_url', ['session_id', 'dedup_url'], { unique: true });
+      sources.createIndex('session_number', ['session_id', 'number'], { unique: true });
+      sources.createIndex('session', 'session_id');
+      const captures = old.createObjectStore('captures', { keyPath: 'id' });
+      captures.createIndex('source', 'source_id');
+      captures.createIndex('session', 'session_id');
+      old.createObjectStore('snapshots', { keyPath: 'id' }).createIndex('session', 'session_id');
+      old.createObjectStore('jobs', { keyPath: 'id' }).createIndex('session_created', ['session_id', 'created_at']);
+      fill(request.transaction!);
+    };
+    request.onsuccess = () => {
+      request.result.close();
+      resolve();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
 
 describe('sessions', () => {
   it('creates the Inbox automatically and supports creating and renaming sessions', async () => {
@@ -53,32 +81,34 @@ describe('sessions', () => {
 
   it('upgrades a schema 1 database without losing records', async () => {
     const name = `v1-${crypto.randomUUID()}`;
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(name, 1);
-      request.onupgradeneeded = () => {
-        const v1 = request.result;
-        v1.createObjectStore('sessions', { keyPath: 'id' }).add({ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '' });
-        const sources = v1.createObjectStore('sources', { keyPath: 'id' });
-        sources.createIndex('session_dedup_url', ['session_id', 'dedup_url'], { unique: true });
-        sources.createIndex('session_number', ['session_id', 'number'], { unique: true });
-        sources.createIndex('session', 'session_id');
-        sources.add({ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x' });
-        const captures = v1.createObjectStore('captures', { keyPath: 'id' });
-        captures.createIndex('source', 'source_id');
-        captures.createIndex('session', 'session_id');
-        v1.createObjectStore('snapshots', { keyPath: 'id' }).createIndex('session', 'session_id');
-        v1.createObjectStore('jobs', { keyPath: 'id' }).createIndex('session_created', ['session_id', 'created_at']);
-      };
-      request.onsuccess = () => {
-        request.result.close();
-        resolve();
-      };
-      request.onerror = () => reject(request.error);
+    await legacyDb(name, 1, (tx) => {
+      tx.objectStore('sessions').add({ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '' });
+      tx.objectStore('sources').add({ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x' });
     });
     const db = await openDb(name);
     const data = await readAllData(db);
     expect(data.sessions).toEqual([{ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '', archived_at: null }]);
     expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '' }]);
+  });
+
+  it('upgrades a schema 2 database by moving snapshot texts to their own store, unchanged', async () => {
+    const name = `v2-${crypto.randomUUID()}`;
+    const draft = await pageDraft(URL_A, 'Text kept across the upgrade', '2026-10-05T10:00:00.000Z');
+    const snapshot = { ...draft.snapshot!, id: 'snap-1', capture_id: 'cap-1', source_id: 'src-1', session_id: INBOX_SESSION_ID } as OkSnapshot;
+    await legacyDb(name, 2, (tx) => {
+      tx.objectStore('sessions').add({ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: '', notes: '', archived_at: null });
+      tx.objectStore('sources').add({ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '' });
+      const { snapshot: _, ...capture } = { ...draft, id: 'cap-1', source_id: 'src-1', snapshot_id: 'snap-1', note: '' };
+      tx.objectStore('captures').add(capture);
+      tx.objectStore('snapshots').add(snapshot);
+    });
+    const db = await openDb(name);
+    expect((await readAllData(db)).snapshots).toEqual([snapshot]);
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources[0]!.captures[0]!.snapshot).toEqual(snapshot);
+    const library = await loadLibrary(db);
+    expect(library.sources[0]!.captures[0]!.snapshot).not.toHaveProperty('text');
+    expect(chooseSnapshot(library.sources[0]!).status).toBe('ok');
+    expect(await loadSnapshotText(db, 'snap-1')).toBe(snapshot.text);
   });
 });
 
@@ -224,6 +254,7 @@ describe('undoCapture', () => {
     const first = await commitCapture(db, await pageDraft(URL_A, 'one', '2026-10-05T10:00:00.000Z'));
     const second = await commitCapture(db, await pageDraft(URL_A, 'two', '2026-10-05T10:01:00.000Z'));
     expect(await undoCapture(db, second.capture.id)).toEqual({ removed: true, sourceRemoved: false });
+    expect(await loadSnapshotText(db, second.snapshot!.id)).toBeUndefined();
     let view = await loadSessionView(db, INBOX_SESSION_ID);
     expect(view.sources[0]!.captures.map((c) => c.capture.id)).toEqual([first.capture.id]);
 

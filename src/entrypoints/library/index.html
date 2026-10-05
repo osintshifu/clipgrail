@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClipGrail Library</title>
+  </head>
+  <body>
+    <div id="narrow-top" class="narrow-top">
+      <select id="view-select" aria-label="Show sources of"></select>
+      <button id="back-button" class="link back" type="button" hidden></button>
+      <span id="narrow-position" class="small"></span>
+    </div>
+
+    <nav id="nav" class="col nav" aria-label="Sessions">
+      <div class="brand"><h1>Library</h1><span class="small">ClipGrail</span></div>
+      <div id="nav-list" class="nav-list"></div>
+      <p class="nav-foot">Research data is stored only in this browser profile. Uninstalling ClipGrail deletes it, so back up from the side panel menu.</p>
+    </nav>
+
+    <section id="list-col" class="col list-col" aria-labelledby="list-title">
+      <div class="list-top">
+        <h2 id="list-title"></h2>
+        <input id="search" type="search" placeholder="Search title or address" aria-label="Search title or address" autocomplete="off" />
+        <div class="filters">
+          <select id="status-filter" aria-label="Status">
+            <option value="any">All statuses</option>
+            <option value="ok">Text saved</option>
+            <option value="partial">Partial text</option>
+            <option value="pending">Address only</option>
+            <option value="failed">Capture failed</option>
+            <option value="none">Selections only</option>
+          </select>
+          <select id="sort" aria-label="Sort"></select>
+          <button id="clear-filters" class="link" type="button" hidden>Clear filters</button>
+          <span id="result-count" class="count" role="status"></span>
+        </div>
+      </div>
+      <ul id="rows" class="rows" aria-labelledby="list-title"></ul>
+      <div id="list-empty" class="empty" hidden></div>
+    </section>
+
+    <section id="reader-col" class="col reader-col" aria-label="Source">
+      <div id="reader" class="reader"></div>
+    </section>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

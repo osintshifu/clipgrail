@@ -1,9 +1,12 @@
-import type { SourceEntry } from '../../lib/db';
-import type { Capture, Snapshot } from '../../lib/model';
-import { sourceLabel } from '../../lib/model';
-import type { SourceStatus } from '../../lib/selection';
-import { chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from '../../lib/selection';
-import { plural } from '../../lib/text';
+import type { SourceEntry as FullSourceEntry } from './db';
+import type { Capture, OkSnapshotMeta, SnapshotMeta } from './model';
+import { sourceLabel } from './model';
+import type { SourceStatus } from './selection';
+import { chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from './selection';
+import { plural } from './text';
+
+/** Descriptions need only snapshot metadata, so they work for the side panel and the library alike. */
+type SourceEntry = FullSourceEntry<SnapshotMeta>;
 
 /** User-facing status names. The status itself always comes from chooseSnapshot(), never from the page title. */
 export const STATUS_LABELS: Record<SourceStatus, string> = {
@@ -88,7 +91,7 @@ export function captureHead(capture: Capture, index: number): string {
 }
 
 /** What one capture saved, for the Captures list. */
-export function captureLine(capture: Capture, snapshot: Snapshot | undefined): string {
+export function captureLine(capture: Capture, snapshot: SnapshotMeta | undefined): string {
   if (capture.kind === 'selection' && capture.fragment) {
     return `${fmtNumber(capture.fragment.character_count)} characters${capture.fragment.truncated ? ', partial' : ''}`;
   }
@@ -122,38 +125,47 @@ export interface DetailRow {
   mono: boolean;
 }
 
+/** Rows that describe the source itself, whatever capture is shown. */
+export function sourceRows(entry: SourceEntry, sessionName: string): DetailRow[] {
+  const { source } = entry;
+  return [
+    { label: 'Label', value: `${sourceLabel(source)} · assigned in ${sessionName}, never reused`, mono: false },
+    { label: 'Address', value: source.dedup_url, mono: true },
+    { label: 'Captures', value: `${entry.captures.length} (${entry.captures.map((c) => c.capture.kind).join(', ')})`, mono: false },
+  ];
+}
+
+/** Rows of one successful snapshot: when it was taken, how, its size and SHA-256. */
+function snapshotRows(ok: OkSnapshotMeta): DetailRow[] {
+  return [
+    { label: 'Snapshot taken', value: fmtTime(ok.captured_at), mono: false },
+    {
+      label: 'Extraction',
+      value:
+        ok.extraction_method === 'readability'
+          ? 'Readability (article text)'
+          : `Visible page text (${(ok.fallback_reason ?? 'fallback').replace(/_/g, ' ')})`,
+      mono: false,
+    },
+    {
+      label: 'Characters',
+      value: ok.truncated
+        ? `${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} (cut at capture)`
+        : fmtNumber(ok.character_count),
+      mono: false,
+    },
+    { label: 'SHA-256', value: ok.sha256, mono: true },
+  ];
+}
+
 /** Technical details of a source, shown on demand. */
 export function detailRows(entry: SourceEntry, sessionName: string): DetailRow[] {
   const choice = chooseSnapshot(entry);
   const ok = okSnapshotOf(choice);
   const failed = failedSnapshotOf(choice);
   const { source } = entry;
-  const rows: DetailRow[] = [
-    { label: 'Label', value: `${sourceLabel(source)} · assigned in ${sessionName}, never reused`, mono: false },
-    { label: 'Address', value: source.dedup_url, mono: true },
-    { label: 'Captures', value: `${entry.captures.length} (${entry.captures.map((c) => c.capture.kind).join(', ')})`, mono: false },
-  ];
-  if (ok) {
-    rows.push(
-      { label: 'Snapshot taken', value: fmtTime(ok.captured_at), mono: false },
-      {
-        label: 'Extraction',
-        value:
-          ok.extraction_method === 'readability'
-            ? 'Readability (article text)'
-            : `Visible page text (${(ok.fallback_reason ?? 'fallback').replace(/_/g, ' ')})`,
-        mono: false,
-      },
-      {
-        label: 'Characters',
-        value: ok.truncated
-          ? `${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} (cut at capture)`
-          : fmtNumber(ok.character_count),
-        mono: false,
-      },
-      { label: 'SHA-256', value: ok.sha256, mono: true },
-    );
-  }
+  const rows: DetailRow[] = sourceRows(entry, sessionName);
+  if (ok) rows.push(...snapshotRows(ok));
   if (failed) {
     rows.push({
       label: 'Last attempt',
@@ -163,5 +175,29 @@ export function detailRows(entry: SourceEntry, sessionName: string): DetailRow[]
   }
   const visited = [...new Set(entry.captures.map((c) => c.capture.original_url))].filter((u) => u !== source.dedup_url);
   if (visited.length) rows.push({ label: 'As visited', value: visited.join('\n'), mono: true });
+  return rows;
+}
+
+/** Technical details of one capture and what it saved, for reading a single version in the library. */
+export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | undefined, dedupUrl: string): DetailRow[] {
+  const rows: DetailRow[] = [{ label: 'Captured', value: `${fmtTime(capture.captured_at)} · ${KIND_LABELS[capture.kind]}`, mono: false }];
+  if (capture.original_url !== dedupUrl) rows.push({ label: 'As visited', value: capture.original_url, mono: true });
+  if (capture.kind === 'link') {
+    rows.push({ label: 'Found on', value: `${capture.found_on ?? 'unknown page'}${capture.anchor_text ? ` · link text “${capture.anchor_text}”` : ''}`, mono: false });
+  }
+  if (capture.fragment) {
+    rows.push(
+      { label: 'Characters', value: fmtNumber(capture.fragment.character_count) + (capture.fragment.truncated ? ' (cut at capture)' : ''), mono: false },
+      { label: 'SHA-256', value: capture.fragment.sha256, mono: true },
+    );
+  }
+  if (snapshot?.status === 'ok') rows.push(...snapshotRows(snapshot));
+  if (snapshot?.status === 'failed') {
+    rows.push({
+      label: 'Result',
+      value: `${describeFailure(snapshot)}${snapshot.http_status ? ` (browser reported HTTP ${snapshot.http_status})` : ''}`,
+      mono: false,
+    });
+  }
   return rows;
 }

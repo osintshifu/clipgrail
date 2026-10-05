@@ -1,5 +1,5 @@
 import type { CaptureEntry, SourceEntry } from './db';
-import type { FailedSnapshot, OkSnapshot } from './model';
+import type { FailedSnapshot, SnapshotMeta } from './model';
 
 /**
  * Display status of a source, from its best snapshot:
@@ -8,10 +8,10 @@ import type { FailedSnapshot, OkSnapshot } from './model';
  */
 export type SourceStatus = 'ok' | 'partial' | 'failed' | 'pending' | 'none';
 
-export interface SnapshotChoice {
+export interface SnapshotChoice<S extends SnapshotMeta = SnapshotMeta> {
   status: SourceStatus;
   /** Capture whose snapshot was chosen (undefined when status is none). */
-  entry: CaptureEntry | undefined;
+  entry: CaptureEntry<S> | undefined;
   /** 1-based position of that capture among all captures of the source, oldest first. */
   position: number;
   total: number;
@@ -21,9 +21,9 @@ export interface SnapshotChoice {
  * The snapshot shown and used for a source: the latest successful one;
  * if none succeeded, the latest attempt so its failure or pending state stays visible.
  */
-export function chooseSnapshot(source: SourceEntry): SnapshotChoice {
+export function chooseSnapshot<S extends SnapshotMeta>(source: SourceEntry<S>): SnapshotChoice<S> {
   const total = source.captures.length;
-  let latestAttempt: { entry: CaptureEntry; position: number } | undefined;
+  let latestAttempt: { entry: CaptureEntry<S>; position: number } | undefined;
   for (let i = total - 1; i >= 0; i--) {
     const entry = source.captures[i];
     if (!entry?.snapshot) continue;
@@ -37,9 +37,10 @@ export function chooseSnapshot(source: SourceEntry): SnapshotChoice {
   return { status, entry: latestAttempt.entry, position: latestAttempt.position, total };
 }
 
-export function okSnapshotOf(choice: SnapshotChoice): OkSnapshot | undefined {
+/** The chosen successful snapshot: with its text when the entries carry texts, else its metadata. */
+export function okSnapshotOf<S extends SnapshotMeta>(choice: SnapshotChoice<S>): Extract<S, { status: 'ok' }> | undefined {
   const snapshot = choice.entry?.snapshot;
-  return snapshot?.status === 'ok' ? snapshot : undefined;
+  return snapshot?.status === 'ok' ? (snapshot as Extract<S, { status: 'ok' }>) : undefined;
 }
 
 export function failedSnapshotOf(choice: SnapshotChoice): FailedSnapshot | undefined {
@@ -48,7 +49,7 @@ export function failedSnapshotOf(choice: SnapshotChoice): FailedSnapshot | undef
 }
 
 /** Display title: title of the chosen successful snapshot, else the latest tab title, else null. */
-export function capturedTitle(source: SourceEntry): string | null {
+export function capturedTitle(source: SourceEntry<SnapshotMeta>): string | null {
   const ok = okSnapshotOf(chooseSnapshot(source));
   if (ok?.title) return ok.title;
   for (let i = source.captures.length - 1; i >= 0; i--) {
