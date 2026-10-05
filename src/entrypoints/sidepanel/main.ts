@@ -3,18 +3,23 @@ import { browser } from 'wxt/browser';
 import { backupFileName, createBackup, restoreBackup, summarize, validateBackup } from '../../lib/backup';
 import type { Backup } from '../../lib/backup';
 import {
+  commitCaptures,
   createSession,
   latestJob,
   listSessions,
   loadSessionView,
+  moveSource,
   openDb,
   readAllData,
   renameSession,
   replaceAllData,
   saveJob,
+  setSessionArchived,
   undoCapture,
+  undoCaptures,
   updateCaptureNote,
   updateSessionText,
+  updateSourceNote,
 } from '../../lib/db';
 import type { SessionView, SourceEntry } from '../../lib/db';
 import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations';
@@ -39,6 +44,8 @@ import {
   savePresets,
   setActiveSessionId,
 } from '../../lib/settings';
+import { savedTabsMessage, tabDrafts } from '../../lib/tabs';
+import { plural } from '../../lib/text';
 
 // ---------- DOM helpers (page content is only ever inserted as text) ----------
 
@@ -148,6 +155,16 @@ async function undoCaptureWithToast(captureId: string): Promise<void> {
   await refreshData();
 }
 
+async function undoTabsWithToast(captureIds: string[]): Promise<void> {
+  try {
+    const results = await undoCaptures(db, captureIds);
+    showToast(results.some((r) => r.removed) ? 'Saved tabs removed. Earlier captures are kept.' : 'Those tabs were already removed.');
+  } catch (error) {
+    showToast(`Undo failed: ${errorText(error)}`, { level: 'error' });
+  }
+  await refreshData();
+}
+
 function handleNotice(notice: Notice | undefined): void {
   if (!notice || notice.id === lastNoticeId) return;
   if (notice.window_id !== null && windowId !== undefined && notice.window_id !== windowId) return;
@@ -162,12 +179,47 @@ function handleNotice(notice: Notice | undefined): void {
 
 // ---------- Sessions ----------
 
+/** Session options: sessions in the main list first, then an Archived group. */
+function sessionOptions(list: Session[]): HTMLElement[] {
+  const option = (s: Session) => h('option', { attrs: { value: s.id } }, [s.name]);
+  const archived = list.filter((s) => s.archived_at !== null);
+  return [
+    ...list.filter((s) => s.archived_at === null).map(option),
+    ...(archived.length ? [h('optgroup', { attrs: { label: 'Archived' } }, archived.map(option))] : []),
+  ];
+}
+
 function renderSessions(): void {
   const select = $<HTMLSelectElement>('session-select');
-  select.replaceChildren(...sessions.map((s) => h('option', { attrs: { value: s.id } }, [s.name])));
+  select.replaceChildren(...sessionOptions(sessions));
   select.value = activeId;
-  $<HTMLButtonElement>('rename-session').disabled = activeId === INBOX_SESSION_ID;
-  $<HTMLButtonElement>('rename-session').title = activeId === INBOX_SESSION_ID ? 'The Inbox keeps its name' : '';
+  const isInbox = activeId === INBOX_SESSION_ID;
+  const archived = sessions.find((s) => s.id === activeId)?.archived_at != null;
+  $<HTMLButtonElement>('rename-session').disabled = isInbox;
+  $<HTMLButtonElement>('rename-session').title = isInbox ? 'The Inbox keeps its name' : '';
+  $('archived-line').hidden = !archived;
+  const archive = $<HTMLButtonElement>('archive-button');
+  archive.textContent = archived ? 'Unarchive session' : 'Archive session';
+  archive.disabled = isInbox;
+  archive.title = isInbox ? 'The Inbox cannot be archived' : '';
+}
+
+async function setArchived(archived: boolean): Promise<void> {
+  toggleMenu(false);
+  const session = sessions.find((s) => s.id === activeId);
+  if (!session) return;
+  try {
+    await setSessionArchived(db, session.id, archived);
+    if (archived) {
+      await switchSession(INBOX_SESSION_ID);
+      showToast(`Session "${session.name}" archived. Find it under Archived in the session list.`);
+    } else {
+      await loadActiveSession();
+      showToast(`Session "${session.name}" unarchived.`);
+    }
+  } catch (error) {
+    showToast(errorText(error), { level: 'error' });
+  }
 }
 
 function openSessionForm(mode: 'create' | 'rename'): void {
@@ -233,7 +285,7 @@ function sourceMeta(entry: SourceEntry): Child[] {
   const parts: string[] = [];
   if (ok) parts.push(ok.truncated ? `${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} chars` : `${fmtNumber(ok.character_count)} chars`);
   if (failed) parts.push(describeFailure(failed));
-  if (choice.status === 'pending') parts.push('link saved, not opened');
+  if (choice.status === 'pending') parts.push(choice.entry?.capture.kind === 'tab' ? 'tab saved, not read' : 'link saved, not opened');
   parts.push(`${entry.captures.length} ${entry.captures.length === 1 ? 'capture' : 'captures'}`);
   if (selections) parts.push(`${selections} ${selections === 1 ? 'selection' : 'selections'}`);
   return [
@@ -348,15 +400,40 @@ function renderDetail(): void {
   } else if (failed) {
     snapshotInfo = [`No text saved. Latest attempt ${fmtTime(failed.captured_at)} failed: ${describeFailure(failed)}.`];
   } else if (choice.status === 'pending') {
-    snapshotInfo = ['Pending: the link was saved without opening the page. Open it and clip the page to capture its text.'];
+    snapshotInfo = [
+      choice.entry?.capture.kind === 'tab'
+        ? 'Only the address was saved; the page was not read. Open the page and clip it to capture its text.'
+        : 'Pending: the link was saved without opening the page. Open it and clip the page to capture its text.',
+    ];
   } else {
     snapshotInfo = ['No page snapshot: only selections were captured for this source.'];
   }
+  const label = sourceLabel(entry.source);
+  const others = sessions.filter((s) => s.id !== entry.source.session_id);
+  const moveSelect = h('select', { attrs: { id: 'move-target', 'aria-label': `Move ${label} to session` } }, [
+    h('option', { attrs: { value: '' } }, ['Move to…']),
+    ...sessionOptions(others),
+  ]);
+  const moveButton = h('button', { attrs: { type: 'button' }, on: { click: () => void moveDetailSource(entry, moveSelect.value) } }, ['Move']);
+  moveButton.disabled = true;
+  moveSelect.addEventListener('change', () => (moveButton.disabled = !moveSelect.value));
+  const note = h('textarea', { class: 'source-note', attrs: { id: 'source-note', rows: '2', placeholder: 'Add a private note about this source…' } });
+  note.value = entry.source.note;
+  note.addEventListener('input', () => {
+    entry.source.note = note.value;
+    updateSourceNote(db, entry.source.id, note.value).catch(reportSaveError('Note'));
+    renderJob();
+  });
   panel.replaceChildren(
     h('div', { class: 'detail' }, [
-      h('button', { class: 'link', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, ['‹ Back to sources']),
-      h('h3', {}, [h('span', { class: 'sid' }, [sourceLabel(entry.source)]), ' ', title ?? '(title not captured)']),
+      h('div', { class: 'row detail-top' }, [
+        h('button', { class: 'link', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, ['‹ Back to sources']),
+        others.length ? h('span', { class: 'row' }, [moveSelect, moveButton]) : null,
+      ]),
+      h('h3', {}, [h('span', { class: 'sid' }, [label]), ' ', title ?? '(title not captured)']),
       h('a', { class: 'url-link', attrs: { href: entry.source.dedup_url, target: '_blank', rel: 'noopener noreferrer' } }, [entry.source.dedup_url]),
+      h('label', { class: 'visually-hidden', attrs: { for: 'source-note' } }, [`Note for ${label}`]),
+      note,
       h('div', { class: 'snapmeta' }, [badge(choice.status), ' ', ...snapshotInfo]),
       ok ? h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': 'Snapshot text' } }, [ok.text]) : null,
       h('ul', {}, entry.captures.map((c, i) => captureBlock(c.capture, entry, i))),
@@ -374,6 +451,86 @@ async function clip(what: 'page' | 'selection'): Promise<void> {
     if (!response) showToast('Capture failed: no response from ClipGrail.', { level: 'error' });
   } catch (error) {
     showToast(`Capture failed: ${errorText(error)}`, { level: 'error' });
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+async function moveDetailSource(entry: SourceEntry, targetId: string): Promise<void> {
+  const target = sessions.find((s) => s.id === targetId);
+  if (!target || !view) return;
+  const label = sourceLabel(entry.source);
+  const from = view.session.name;
+  try {
+    const result = await moveSource(db, entry.source.id, target.id);
+    // The source has left this session, so it no longer belongs in this session's job selection.
+    if (settings.excluded_source_ids.includes(entry.source.id)) {
+      settings = { ...settings, excluded_source_ids: settings.excluded_source_ids.filter((id) => id !== entry.source.id) };
+      persistSettings(activeId, settings);
+    }
+    detailSourceId = null;
+    await refreshData();
+    const where = result.joined
+      ? `${target.name}: it joined ${sourceLabel(result.source)}, which has the same address`
+      : `${target.name} as ${sourceLabel(result.source)}`;
+    showToast(`Moved ${label} to ${where}. ${label} is not reused in ${from}.`);
+    (document.querySelector<HTMLButtonElement>('#source-list .src') ?? $('clip-page')).focus();
+  } catch (error) {
+    showToast(`Source not moved: ${errorText(error)}`, { level: 'error' });
+  }
+}
+
+/** Updates the Save tabs buttons with the number of selected and open tabs (no permission needed for counts). */
+async function updateTabCounts(): Promise<void> {
+  if (windowId === undefined) return;
+  try {
+    const [all, selected] = await Promise.all([
+      browser.tabs.query({ windowId }),
+      browser.tabs.query({ windowId, highlighted: true }),
+    ]);
+    $('save-selected').textContent = selected.length > 1 ? `${selected.length} selected tabs` : 'This tab';
+    $('save-all').textContent = `All in window (${all.length})`;
+  } catch {
+    // The counts are only labels; saving queries the tabs again.
+  }
+}
+
+/**
+ * Saves the address and title of the selected tabs (the current tab unless
+ * several are selected) or of all tabs in this window, without reading the
+ * pages. Needs the optional tabs permission, which Chrome asks for once.
+ */
+async function saveTabs(which: 'selected' | 'all'): Promise<void> {
+  let granted: boolean;
+  try {
+    // Requested first, inside the click: Chrome shows its permission prompt only during a user action.
+    granted = await browser.permissions.request({ permissions: ['tabs'] });
+  } catch (error) {
+    showToast(`Tabs not saved: ${errorText(error)}`, { level: 'error' });
+    return;
+  }
+  if (!granted) {
+    showToast("Tabs not saved: ClipGrail needs Chrome's permission to read tab addresses.", { level: 'error' });
+    return;
+  }
+  const buttons = [$<HTMLButtonElement>('save-selected'), $<HTMLButtonElement>('save-all')];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    if (windowId === undefined) throw new Error('Unknown window.');
+    const tabs = await browser.tabs.query(which === 'all' ? { windowId } : { windowId, highlighted: true });
+    tabs.sort((a, b) => a.index - b.index);
+    const { drafts, skipped } = tabDrafts(tabs, activeId, new Date().toISOString());
+    if (!drafts.length) {
+      const what = which === 'all' ? 'none of the tabs in this window is' : tabs.length === 1 ? 'this tab is not' : 'none of the selected tabs is';
+      showToast(`No tabs saved: ${what} an http or https page.`, { level: 'error' });
+      return;
+    }
+    const results = await commitCaptures(db, drafts);
+    const captureIds = results.map((r) => r.capture.id);
+    showToast(savedTabsMessage(results, skipped), { undo: () => undoTabsWithToast(captureIds) });
+    await refreshData();
+  } catch (error) {
+    showToast(`Tabs not saved: ${errorText(error)}`, { level: 'error' });
   } finally {
     buttons.forEach((b) => (b.disabled = false));
   }
@@ -625,7 +782,25 @@ async function deliver(id: DestinationId): Promise<void> {
 function toggleMenu(open: boolean): void {
   $('menu').hidden = !open;
   $('menu-button').setAttribute('aria-expanded', String(open));
-  if (open) $('backup-button').focus();
+  if (!open) return;
+  Array.from($('menu').querySelectorAll('button')).find((b) => !b.hidden && !b.disabled)?.focus();
+  // Turn off tab access is offered only while ClipGrail has the permission.
+  browser.permissions.contains({ permissions: ['tabs'] }).then(
+    (has) => ($('tab-access-button').hidden = !has),
+    () => ($('tab-access-button').hidden = true),
+  );
+}
+
+async function turnOffTabAccess(): Promise<void> {
+  toggleMenu(false);
+  try {
+    const removed = await browser.permissions.remove({ permissions: ['tabs'] });
+    // Chrome keeps the earlier consent, so the next Save tabs gets the permission back without a prompt.
+    if (removed) showToast('Tab access turned off. Save tabs turns it on again.');
+    else showToast('Tab access could not be turned off.', { level: 'error' });
+  } catch (error) {
+    showToast(`Tab access could not be turned off: ${errorText(error)}`, { level: 'error' });
+  }
 }
 
 async function backup(): Promise<void> {
@@ -640,7 +815,7 @@ async function backup(): Promise<void> {
     const name = backupFileName(createdAt);
     await saveFile(name, 'application/json;charset=utf-8', content);
     const s = summarize(data, createdAt);
-    showToast(`Backup export started: ${name} (${s.sessions} sessions, ${s.sources} sources, ${s.captures} captures).`);
+    showToast(`Backup export started: ${name} (${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}).`);
   } catch (error) {
     showToast(`Backup failed: ${errorText(error)}`, { level: 'error' });
   }
@@ -669,8 +844,8 @@ async function checkRestoreFile(file: File): Promise<void> {
   const current = summarize(await readAllData(db), '');
   const s = check.summary;
   showRestorePanel(
-    `Backup from ${fmtTime(s.created_at)} is valid: ${s.sessions} sessions, ${s.sources} sources, ${s.captures} captures, ${s.jobs} jobs; all texts match their SHA-256.\n` +
-      `Restoring replaces all current data (${current.sessions} sessions, ${current.sources} sources, ${current.captures} captures). Back up the current data first if you may need it.`,
+    `Backup from ${fmtTime(s.created_at)} is valid: ${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}, ${plural(s.jobs, 'job')}; all texts match their SHA-256.\n` +
+      `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). Back up the current data first if you may need it.`,
     true,
   );
 }
@@ -762,6 +937,12 @@ function bind(): void {
 
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));
+  $('save-selected').addEventListener('click', () => void saveTabs('selected'));
+  $('save-all').addEventListener('click', () => void saveTabs('all'));
+  for (const event of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onHighlighted, browser.tabs.onAttached, browser.tabs.onDetached]) {
+    event.addListener(() => void updateTabCounts());
+  }
+  $('unarchive-button').addEventListener('click', () => void setArchived(false));
 
   $<HTMLTextAreaElement>('session-notes').addEventListener('input', (event) => {
     const notes = (event.target as HTMLTextAreaElement).value;
@@ -801,6 +982,8 @@ function bind(): void {
   document.addEventListener('click', (event) => {
     if (!$('menu').hidden && !(event.target as HTMLElement).closest('.menu-wrap')) toggleMenu(false);
   });
+  $('archive-button').addEventListener('click', () => void setArchived(!sessions.find((s) => s.id === activeId)?.archived_at));
+  $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
   $('backup-button').addEventListener('click', () => void backup());
   $('restore-button').addEventListener('click', () => {
     toggleMenu(false);
@@ -849,6 +1032,9 @@ async function init(): Promise<void> {
     shortcut = commands.find((c) => c.name === 'clip-page')?.shortcut ?? '';
     $('clip-hint').textContent =
       `Right-click a link to save it without opening it.${shortcut ? ` ${shortcut} clips the current page.` : ''}`;
+    const modifier = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+    $('save-tabs-hint').textContent = `Keeps the address and title only; pages are not read. ${modifier}+click tabs in the tab strip to select several.`;
+    void updateTabCounts();
     renderPresets();
     await loadActiveSession();
     // Show a capture result that arrived while the panel was opening.

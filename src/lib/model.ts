@@ -16,6 +16,8 @@ export interface Session {
   prompt: string;
   /** Private notes. */
   notes: string;
+  /** When the session was archived; null while it is in the main session list. */
+  archived_at: string | null;
 }
 
 export interface Source {
@@ -27,9 +29,12 @@ export interface Source {
   /** URL used for deduplication (see normalizeUrl). */
   dedup_url: string;
   created_at: string;
+  /** Private note about the source. */
+  note: string;
 }
 
-export type CaptureKind = 'page' | 'selection' | 'link';
+/** tab: the address and title of an open tab, saved without reading the page. */
+export type CaptureKind = 'page' | 'selection' | 'link' | 'tab';
 
 /** Text the user selected on a page. */
 export interface Fragment {
@@ -52,7 +57,7 @@ export interface Capture {
   captured_at: string;
   /** URL exactly as Chrome reported it (tab URL, or link target). Browsing provenance; exports use dedup_url. */
   original_url: string;
-  /** Tab title at capture time; empty for links saved without opening. */
+  /** Tab title at capture time (page, selection and tab captures); empty for links saved without opening. */
   tab_title: string;
   /** Link captures: page the link was found on. Private provenance. */
   found_on: string | null;
@@ -60,7 +65,7 @@ export interface Capture {
   anchor_text: string | null;
   /** Selection captures only. */
   fragment: Fragment | null;
-  /** Page and link captures have a snapshot; selection captures do not. */
+  /** Page, link and tab captures have a snapshot; selection captures do not. */
   snapshot_id: string | null;
   /** Private note. */
   note: string;
@@ -123,7 +128,7 @@ export interface FailedSnapshot extends SnapshotBase {
   http_status: number | null;
 }
 
-/** Text not captured yet: a link saved without opening it. */
+/** Text not captured yet: a link or a tab address saved without reading the page. */
 export interface PendingSnapshot extends SnapshotBase {
   status: 'pending';
 }

@@ -1,6 +1,11 @@
 /** Longest snapshot text stored, in Unicode code points. Longer text is cut and marked truncated. */
 export const MAX_SNAPSHOT_CHARACTERS = 1_000_000;
 
+/** "1 source", "2 sources". */
+export function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : pluralForm}`;
+}
+
 /** Counts Unicode code points (a surrogate pair counts once). */
 export function countCharacters(text: string): number {
   let count = 0;

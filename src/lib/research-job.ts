@@ -3,7 +3,7 @@ import type { ExtractionMethod, FallbackReason, Fragment } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
 import { capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, okSnapshotOf } from './selection';
-import { countCharacters, truncateToCharacters } from './text';
+import { countCharacters, plural, truncateToCharacters } from './text';
 
 export const RESEARCH_JOB_FORMAT = 'clipgrail-research-job';
 export const RESEARCH_JOB_FORMAT_VERSION = 1;
@@ -85,6 +85,7 @@ export interface JobSource {
   snapshot: JobSnapshot | null;
   selections: JobSelection[];
   /** Private fields: null unless the matching option was enabled. */
+  source_note: string | null;
   notes: Array<{ capture_id: string; note: string }> | null;
   link_context: Array<{ capture_id: string; found_on: string | null; anchor_text: string | null }> | null;
   capture_times: Array<{ capture_id: string; kind: string; captured_at: string }> | null;
@@ -147,7 +148,11 @@ class Budget {
 
 function missingSnapshotReason(entry: SourceEntry, status: SourceStatus): string {
   const choice = chooseSnapshot(entry);
-  if (status === 'pending') return 'Snapshot pending: the link was saved without opening the page, so no text was captured.';
+  if (status === 'pending') {
+    return choice.entry?.capture.kind === 'tab'
+      ? 'Snapshot pending: only the tab address was saved, so no text was captured.'
+      : 'Snapshot pending: the link was saved without opening the page, so no text was captured.';
+  }
   const failed = failedSnapshotOf(choice);
   if (failed) return `Capture failed (${describeFailure(failed)}), so no text was saved.`;
   return 'No page snapshot was captured for this source.';
@@ -220,6 +225,7 @@ function buildJobSource(entry: SourceEntry, settings: JobSettings): JobSource {
     missing_reason: missingReason,
     snapshot,
     selections,
+    source_note: settings.include_notes && entry.source.note.trim() ? entry.source.note : null,
     notes: settings.include_notes
       ? captures.filter((c) => c.note.trim()).map((c) => ({ capture_id: c.id, note: c.note }))
       : null,
@@ -241,10 +247,6 @@ const RULES = [
   'Base your answer on the provided material. Say clearly when the material does not answer something, and label anything you add from outside knowledge.',
   'Some material may be incomplete. Missing snapshots, failed captures and text shortened to a limit are marked; do not guess what is missing.',
 ];
-
-function count(n: number, singular: string, plural = `${singular}s`): string {
-  return `${n} ${n === 1 ? singular : plural}`;
-}
 
 function snapshotLine(s: JobSnapshot): string {
   const method = `extracted with ${s.extraction_method}${s.fallback_reason ? ` (fallback: ${s.fallback_reason})` : ''}`;
@@ -300,6 +302,9 @@ function renderSource(source: JobSource): string[] {
       ...fenced(selection.text),
     );
   });
+  if (source.source_note) {
+    lines.push('', 'Researcher note on this source (written by the user, not page content):', ...fenced(source.source_note));
+  }
   for (const note of source.notes ?? []) {
     lines.push('', 'Researcher note (written by the user, not page content):', ...fenced(note.note));
   }
@@ -328,7 +333,7 @@ export function buildResearchJob({ view, settings, id, createdAt }: BuildJobInpu
   lines.push('', '# RULES', '', ...RULES.map((r) => `- ${r}`), '', '# SOURCE MATERIAL', '');
   const ids = sources.map((s) => `[${s.label}]`).join(', ');
   lines.push(
-    `Context: ${CONTEXT_MODE_LABELS[settings.context_mode]}. ${count(sources.length, 'source')}${ids ? `: ${ids}` : ''}.` +
+    `Context: ${CONTEXT_MODE_LABELS[settings.context_mode]}. ${plural(sources.length, 'source')}${ids ? `: ${ids}` : ''}.` +
       (settings.context_mode === 'links' ? '' : ' Page text is quoted verbatim inside fenced blocks.'),
   );
   for (const source of sources) lines.push(...renderSource(source));

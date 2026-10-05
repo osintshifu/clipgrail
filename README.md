@@ -2,7 +2,7 @@
 
 Local web research capture for Chrome.
 
-ClipGrail saves the pages, text selections and links you find while browsing and keeps a readable text copy of each page in your browser. When you are ready, it turns a research session into a Research Job: your prompt plus the material you chose, with every source labelled [S1], [S2] and so on. You can paste the job into an AI chat or save it as Markdown or JSON.
+ClipGrail saves the pages, text selections, links and tab addresses you collect while browsing and keeps a readable text copy of each clipped page in your browser. When you are ready, it turns a research session into a Research Job: your prompt plus the material you chose, with every source labelled [S1], [S2] and so on. You can paste the job into an AI chat or save it as Markdown or JSON.
 
 ClipGrail is useful without AI. A chat service is one place to take the result, not a requirement.
 
@@ -25,9 +25,9 @@ npm run build
 
 | Area | What you get |
 |---|---|
-| Capture | Clip the current page, a text selection, or a link without opening it |
+| Capture | Clip the current page, a text selection, or a link without opening it; save the addresses of open tabs |
 | Preserve | Readable page text with capture time, extraction method, character count and SHA-256 |
-| Organize | Sessions with a default Inbox, stable source labels, notes on sessions and captures |
+| Organize | Sessions with a default Inbox and an archive, stable source labels, moving sources between sessions, notes on sessions, sources and captures |
 | Prompt | A prompt for each session and editable presets: Analyze, Compare, Fact Check, Custom |
 | Research Job | Prompt, rules and selected material in one text, with citations by source label |
 | Open and export | Copy, open ChatGPT, Claude, Gemini or Perplexity, export Markdown or JSON |
@@ -42,12 +42,15 @@ The side panel has two views: **Collect** for gathering material and **Research 
 | Clip the current page | **Clip current page**, Alt+Shift+K, or right-click > **Clip page to ClipGrail** | Readable text of the page |
 | Clip a selection | Select text, then **Clip selection** or right-click > **Clip selection to ClipGrail** | The selected text |
 | Save a link | Right-click a link > **Save link to ClipGrail (not opened)** | The link address and, when it is unambiguous, the link text; the linked page is not opened or downloaded |
+| Save tabs | **Save tabs: This tab**, **N selected tabs** or **All in window** | The address and title of each tab; the pages are not read |
 
 Chrome lets ClipGrail read a tab only after you act on that tab: click the toolbar icon, press the shortcut or use the right-click menu. A button inside the panel is not enough for a tab you have just switched to. If the panel says it can't read the tab, press Alt+Shift+K or click the toolbar icon on that tab. You can change the shortcut at `chrome://extensions/shortcuts`.
 
+Saving tabs needs Chrome's permission to read tab addresses. Chrome asks for it the first time you click **Save tabs** and calls it "Read your browsing history". ClipGrail reads the addresses and titles of the tabs in the current window only when you click **Save tabs**. **··· > Turn off tab access** withdraws the permission; Chrome remembers your earlier consent, so the next **Save tabs** turns it on again without asking. To save several tabs, select them in the tab strip with Ctrl+click (Cmd+click on a Mac) or Shift+click.
+
 Each source gets a label within its session: S1, S2, S3. Clipping the same address again adds a new capture to the same source and keeps the earlier text. Known tracking parameters such as `utm_*`, `gclid` and `fbclid` are ignored when ClipGrail matches addresses; the address as you visited it stays with the capture. A label is never given to another source, also after Undo.
 
-After every capture the panel shows a short message with **Undo**. Undo removes only that capture.
+After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after **Save tabs**, the captures of that save.
 
 ### Snapshot status
 
@@ -57,7 +60,7 @@ A snapshot is the saved text of a page. Every source in the list shows the statu
 |---|---|
 | OK | Readable text saved |
 | Partial | The text was longer than 1,000,000 characters and was cut; the cut is marked everywhere the text appears |
-| Pending | Link saved without opening it; there is no text yet. Open the page and clip it to add text |
+| Pending | Link or tab address saved without reading the page; there is no text yet. Open the page and clip it to add text |
 | Failed | The address is saved without text: the server returned an HTTP error, the browser showed an error page, the page had no readable text, or extraction failed |
 | No snapshot | Only selections were clipped from this page |
 
@@ -66,6 +69,13 @@ A later failed capture never removes an earlier successful snapshot.
 ClipGrail uses Mozilla Readability to get the article text of a page. When Readability finds no article, ClipGrail saves the visible page text instead and marks the source **Page text**.
 
 Click a source to see its saved text, when the snapshot was taken, the extraction method, the SHA-256, every capture and its note. The SHA-256 identifies the exact saved text, so you can check that a copy is unchanged. It does not prove what the page showed or who published it.
+
+## Organizing sessions
+
+- **New** and **Rename** next to the session list create and rename sessions. The Inbox can't be renamed or archived.
+- **··· > Archive session** moves the active session to the Archived group at the end of the session list and switches to the Inbox. An archived session keeps all its data and can still be opened; while it is open, new captures go to it. **Unarchive** returns it to the main list.
+- **Move to** in the source details moves a source with all its captures, snapshots and notes to another session. There it gets the next free label, or joins the source with the same address if the session already has one. Its old label is not given to another source.
+- Each source has a private note in the source details, next to the notes on the session and on each capture.
 
 ## Preparing a Research Job
 
@@ -88,7 +98,7 @@ Private data is left out unless you tick it. The source address, with tracking p
 
 | Option | Adds to the job |
 |---|---|
-| Notes | Session notes and capture notes |
+| Notes | Session, source and capture notes |
 | Where links were found | The page where you saved a link and the link text |
 | Capture timestamps | When each capture and snapshot was taken |
 | Original URLs | Addresses exactly as visited, which may contain tracking or personal parameters |
@@ -139,12 +149,13 @@ ClipGrail has no account, server or telemetry and loads no external fonts or scr
 | `contextMenus` | The right-click menu items |
 | `storage` | Settings, presets, the active session and capture messages |
 | `unlimitedStorage` | Keeping research data from being removed when disk space runs low |
+| `tabs` (optional) | Reading the addresses and titles of the tabs in the current window when you click **Save tabs**; Chrome asks for it the first time |
 
-ClipGrail cannot read tabs you have not acted on and cannot see your browsing history.
+ClipGrail reads the content of a tab only after you act on that tab. With the optional `tabs` permission it can also see the addresses and titles of open tabs, and reads them only when you click **Save tabs**. It does not access your browsing history list.
 
 ## Limitations
 
-- Only `http` and `https` pages can be clipped. Browser pages (`chrome://`) and the Chrome Web Store are closed to extensions.
+- Only `http` and `https` pages can be clipped or saved as tabs. Browser pages (`chrome://`) and the Chrome Web Store are closed to extensions.
 - PDF files, images and video are not supported; there is no text recognition (OCR).
 - Text extraction stops after 30 seconds and the capture is saved as failed.
 - Page text and selections are cut at 1,000,000 characters and marked Partial.

@@ -7,7 +7,13 @@ import { commitCapture, createSession, loadSessionView, openDb, updateCaptureNot
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { pageDraft } from './helpers';
 
-const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, copied: [] as string[] }));
+const fake = vi.hoisted(() => ({
+  local: {} as Record<string, unknown>,
+  copied: [] as string[],
+  tabsPermission: false,
+  tabs: [] as Array<{ index: number; highlighted: boolean; url?: string; title?: string }>,
+}));
+const tabEvent = vi.hoisted(() => ({ addListener: () => undefined }));
 
 vi.mock('wxt/browser', () => ({
   browser: {
@@ -29,7 +35,20 @@ vi.mock('wxt/browser', () => ({
     windows: { getCurrent: async () => ({ id: 1 }) },
     commands: { getAll: async () => [] },
     runtime: { sendMessage: async () => undefined },
-    tabs: { create: async () => ({}) },
+    tabs: {
+      create: async () => ({}),
+      query: async (query: { highlighted?: boolean }) => fake.tabs.filter((t) => !query.highlighted || t.highlighted),
+      onCreated: tabEvent,
+      onRemoved: tabEvent,
+      onHighlighted: tabEvent,
+      onAttached: tabEvent,
+      onDetached: tabEvent,
+    },
+    permissions: {
+      request: async () => fake.tabsPermission,
+      contains: async () => fake.tabsPermission,
+      remove: async () => !(fake.tabsPermission = false),
+    },
   },
 }));
 
@@ -104,5 +123,28 @@ describe('side panel', () => {
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
     type(`note-${a.capture.id}`, 'Edited here');
     expect(copy.disabled).toBe(true);
+  });
+
+  it('saves tabs only with Chrome permission, as addresses without text, and Undo removes the save', async () => {
+    const db = await openDb();
+    const count = async () => (await loadSessionView(db, INBOX_SESSION_ID)).sources.length;
+    const before = await count();
+    fake.tabs = [
+      { index: 1, highlighted: false, url: 'https://example.com/tab-b', title: 'Tab B' },
+      { index: 0, highlighted: true, url: 'chrome://newtab/', title: 'New Tab' },
+    ];
+    $('save-all').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe("Tabs not saved: ClipGrail needs Chrome's permission to read tab addresses."));
+    expect(await count()).toBe(before);
+
+    fake.tabsPermission = true;
+    $('save-all').click();
+    await vi.waitFor(() =>
+      expect($('toast-text').textContent).toBe('Saved 1 tab: 1 new source (S2). Skipped 1 tab without an http or https address.'),
+    );
+    const saved = (await loadSessionView(db, INBOX_SESSION_ID)).sources.at(-1)!;
+    expect(saved.captures.map((c) => [c.capture.kind, c.capture.tab_title, c.snapshot?.status])).toEqual([['tab', 'Tab B', 'pending']]);
+    $('toast-undo').click();
+    await vi.waitFor(async () => expect(await count()).toBe(before));
   });
 });

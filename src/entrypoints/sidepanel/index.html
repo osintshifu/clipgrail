@@ -12,6 +12,8 @@
         <div class="menu-wrap">
           <button id="menu-button" class="icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" title="Data">···</button>
           <div id="menu" role="menu" hidden>
+            <button id="archive-button" role="menuitem" type="button">Archive session</button>
+            <button id="tab-access-button" role="menuitem" type="button" hidden>Turn off tab access</button>
             <button id="backup-button" role="menuitem" type="button">Back up all data (JSON)</button>
             <button id="restore-button" role="menuitem" type="button">Restore from backup…</button>
           </div>
@@ -30,6 +32,10 @@
         <button id="session-save" class="primary" type="submit">Create</button>
         <button id="session-cancel" type="button">Cancel</button>
       </form>
+      <div id="archived-line" class="row archived" hidden>
+        <span>Archived. New captures still go here.</span>
+        <button id="unarchive-button" type="button">Unarchive</button>
+      </div>
       <div class="tabs" role="tablist" aria-label="Views">
         <button id="tab-collect" role="tab" type="button" aria-selected="true" aria-controls="view-collect">Collect</button>
         <button id="tab-job" role="tab" type="button" aria-selected="false" aria-controls="view-job" tabindex="-1">Research Job</button>
@@ -53,6 +59,12 @@
             <button id="clip-selection" type="button">Clip selection</button>
           </div>
           <p id="clip-hint" class="hint"></p>
+          <div class="row save-tabs" role="group" aria-labelledby="save-tabs-label">
+            <span id="save-tabs-label" class="lbl">Save tabs:</span>
+            <button id="save-selected" type="button">This tab</button>
+            <button id="save-all" type="button">All in window</button>
+          </div>
+          <p id="save-tabs-hint" class="hint">Keeps the address and title only; pages are not read. Ctrl+click tabs in the tab strip to select several.</p>
         </div>
         <div id="sources-panel">
           <h2 id="sources-heading" class="pad-x">Sources</h2>

@@ -4,13 +4,23 @@ import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 1;
+export const DB_SCHEMA_VERSION = 2;
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
 const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots'] as const;
 
 export function newInboxSession(createdAt: string): Session {
-  return { id: INBOX_SESSION_ID, name: 'Inbox', created_at: createdAt, next_source_number: 1, prompt: '', notes: '' };
+  return { id: INBOX_SESSION_ID, name: 'Inbox', created_at: createdAt, next_source_number: 1, prompt: '', notes: '', archived_at: null };
+}
+
+/** Adds fields introduced by a schema upgrade to every record of a store, keeping values that already exist. */
+function backfill(store: IDBObjectStore, defaults: Record<string, unknown>): void {
+  store.openCursor().onsuccess = (event) => {
+    const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+    if (!cursor) return;
+    cursor.update({ ...defaults, ...(cursor.value as Record<string, unknown>) });
+    cursor.continue();
+  };
 }
 
 /**
@@ -36,6 +46,11 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         const jobs = db.createObjectStore('jobs', { keyPath: 'id' });
         jobs.createIndex('session_created', ['session_id', 'created_at']);
         request.transaction?.objectStore('sessions').add(newInboxSession(new Date().toISOString()));
+      }
+      if (event.oldVersion >= 1 && event.oldVersion < 2 && request.transaction) {
+        // v2: sessions can be archived and sources have a note.
+        backfill(request.transaction.objectStore('sessions'), { archived_at: null });
+        backfill(request.transaction.objectStore('sources'), { note: '' });
       }
     };
     request.onsuccess = () => {
@@ -125,6 +140,7 @@ export function createSession(db: IDBDatabase, name: string, createdAt = new Dat
     next_source_number: 1,
     prompt: '',
     notes: '',
+    archived_at: null,
   };
   return inTransaction(db, ['sessions'], 'readwrite', async (tx) => {
     tx.objectStore('sessions').add(session);
@@ -137,6 +153,25 @@ export function renameSession(db: IDBDatabase, id: string, name: string): Promis
   const cleaned = cleanName(name);
   return inTransaction(db, ['sessions'], 'readwrite', async (tx) => {
     const updated = { ...(await getSession(tx, id)), name: cleaned };
+    tx.objectStore('sessions').put(updated);
+    return updated;
+  });
+}
+
+/**
+ * Archives or unarchives a session. Archiving only moves the session to the
+ * Archived group of the session list; its data and S-numbers are unchanged.
+ */
+export function setSessionArchived(
+  db: IDBDatabase,
+  id: string,
+  archived: boolean,
+  at = new Date().toISOString(),
+): Promise<Session> {
+  if (id === INBOX_SESSION_ID && archived) return Promise.reject(new Error('The Inbox cannot be archived.'));
+  return inTransaction(db, ['sessions'], 'readwrite', async (tx) => {
+    const session = await getSession(tx, id);
+    const updated = { ...session, archived_at: archived ? (session.archived_at ?? at) : null };
     tx.objectStore('sessions').put(updated);
     return updated;
   });
@@ -165,6 +200,16 @@ export function updateCaptureNote(db: IDBDatabase, captureId: string, note: stri
   });
 }
 
+export function updateSourceNote(db: IDBDatabase, sourceId: string, note: string): Promise<Source> {
+  return inTransaction(db, ['sources'], 'readwrite', async (tx) => {
+    const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
+    if (!source) throw new Error('This source no longer exists.');
+    const updated = { ...source, note };
+    tx.objectStore('sources').put(updated);
+    return updated;
+  });
+}
+
 // Captures
 
 export interface CaptureDraft {
@@ -177,7 +222,7 @@ export interface CaptureDraft {
   found_on: string | null;
   anchor_text: string | null;
   fragment: Fragment | null;
-  /** Required for page and link captures, absent for selections. */
+  /** Required for page, link and tab captures, absent for selections. */
   snapshot: SnapshotDraft | null;
 }
 
@@ -191,65 +236,78 @@ export interface CommitResult {
 }
 
 /**
- * Saves one capture atomically: finds the session's source by dedup URL or
- * creates it with the next S-number, then adds the capture and its snapshot.
- * Earlier captures and snapshots are never modified. IndexedDB serializes
- * overlapping read-write transactions, so concurrent captures cannot take
- * the same S-number; unique indexes reject duplicates as a second guard.
+ * Saves captures atomically, in order: for each, finds the session's source by
+ * dedup URL or creates it with the next S-number, then adds the capture and
+ * its snapshot. Earlier captures and snapshots are never modified. Either all
+ * captures are saved or none. IndexedDB serializes overlapping read-write
+ * transactions, so concurrent captures cannot take the same S-number; unique
+ * indexes reject duplicates as a second guard.
  */
-export function commitCapture(db: IDBDatabase, draft: CaptureDraft): Promise<CommitResult> {
+export function commitCaptures(db: IDBDatabase, drafts: CaptureDraft[]): Promise<CommitResult[]> {
   return inTransaction(db, CAPTURE_STORES, 'readwrite', async (tx) => {
-    const sessions = tx.objectStore('sessions');
-    const sources = tx.objectStore('sources');
-    const session = await getSession(tx, draft.session_id);
+    const results: CommitResult[] = [];
+    for (const draft of drafts) results.push(await addCapture(tx, draft));
+    return results;
+  });
+}
 
-    let source = (await result(sources.index('session_dedup_url').get([session.id, draft.dedup_url]))) as
-      | Source
-      | undefined;
-    const isNewSource = !source;
-    if (!source) {
-      source = {
-        id: crypto.randomUUID(),
-        session_id: session.id,
-        number: session.next_source_number,
-        dedup_url: draft.dedup_url,
-        created_at: draft.captured_at,
-      };
-      sessions.put({ ...session, next_source_number: session.next_source_number + 1 });
-      sources.add(source);
-    }
+export async function commitCapture(db: IDBDatabase, draft: CaptureDraft): Promise<CommitResult> {
+  const [committed] = await commitCaptures(db, [draft]);
+  return committed!;
+}
 
-    const captureId = crypto.randomUUID();
-    const snapshotId = draft.snapshot ? crypto.randomUUID() : null;
-    const capture: Capture = {
-      id: captureId,
+async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<CommitResult> {
+  const sessions = tx.objectStore('sessions');
+  const sources = tx.objectStore('sources');
+  const session = await getSession(tx, draft.session_id);
+
+  let source = (await result(sources.index('session_dedup_url').get([session.id, draft.dedup_url]))) as
+    | Source
+    | undefined;
+  const isNewSource = !source;
+  if (!source) {
+    source = {
+      id: crypto.randomUUID(),
       session_id: session.id,
-      source_id: source.id,
-      kind: draft.kind,
-      captured_at: draft.captured_at,
-      original_url: draft.original_url,
-      tab_title: draft.tab_title,
-      found_on: draft.found_on,
-      anchor_text: draft.anchor_text,
-      fragment: draft.fragment,
-      snapshot_id: snapshotId,
+      number: session.next_source_number,
+      dedup_url: draft.dedup_url,
+      created_at: draft.captured_at,
       note: '',
     };
-    tx.objectStore('captures').add(capture);
-    let snapshot: Snapshot | null = null;
-    if (draft.snapshot && snapshotId) {
-      snapshot = {
-        ...draft.snapshot,
-        id: snapshotId,
-        capture_id: captureId,
-        source_id: source.id,
-        session_id: session.id,
-      } as Snapshot;
-      tx.objectStore('snapshots').add(snapshot);
-    }
-    const captureCount = await result(tx.objectStore('captures').index('source').count(source.id));
-    return { source, capture, snapshot, isNewSource, captureCount };
-  });
+    sessions.put({ ...session, next_source_number: session.next_source_number + 1 });
+    sources.add(source);
+  }
+
+  const captureId = crypto.randomUUID();
+  const snapshotId = draft.snapshot ? crypto.randomUUID() : null;
+  const capture: Capture = {
+    id: captureId,
+    session_id: session.id,
+    source_id: source.id,
+    kind: draft.kind,
+    captured_at: draft.captured_at,
+    original_url: draft.original_url,
+    tab_title: draft.tab_title,
+    found_on: draft.found_on,
+    anchor_text: draft.anchor_text,
+    fragment: draft.fragment,
+    snapshot_id: snapshotId,
+    note: '',
+  };
+  tx.objectStore('captures').add(capture);
+  let snapshot: Snapshot | null = null;
+  if (draft.snapshot && snapshotId) {
+    snapshot = {
+      ...draft.snapshot,
+      id: snapshotId,
+      capture_id: captureId,
+      source_id: source.id,
+      session_id: session.id,
+    } as Snapshot;
+    tx.objectStore('snapshots').add(snapshot);
+  }
+  const captureCount = await result(tx.objectStore('captures').index('source').count(source.id));
+  return { source, capture, snapshot, isNewSource, captureCount };
 }
 
 export interface UndoResult {
@@ -259,17 +317,79 @@ export interface UndoResult {
   sourceRemoved: boolean;
 }
 
-/** Removes exactly one capture and its snapshot. Other captures of the source stay untouched. */
-export function undoCapture(db: IDBDatabase, captureId: string): Promise<UndoResult> {
+/** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
+export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<UndoResult[]> {
   return inTransaction(db, ['captures', 'snapshots', 'sources'], 'readwrite', async (tx) => {
     const captures = tx.objectStore('captures');
-    const capture = (await result(captures.get(captureId))) as Capture | undefined;
-    if (!capture) return { removed: false, sourceRemoved: false };
-    if (capture.snapshot_id) tx.objectStore('snapshots').delete(capture.snapshot_id);
-    captures.delete(capture.id);
-    const remaining = await result(captures.index('source').count(capture.source_id));
-    if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
-    return { removed: true, sourceRemoved: remaining === 0 };
+    const results: UndoResult[] = [];
+    for (const captureId of captureIds) {
+      const capture = (await result(captures.get(captureId))) as Capture | undefined;
+      if (!capture) {
+        results.push({ removed: false, sourceRemoved: false });
+        continue;
+      }
+      if (capture.snapshot_id) tx.objectStore('snapshots').delete(capture.snapshot_id);
+      captures.delete(capture.id);
+      const remaining = await result(captures.index('source').count(capture.source_id));
+      if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
+      results.push({ removed: true, sourceRemoved: remaining === 0 });
+    }
+    return results;
+  });
+}
+
+export async function undoCapture(db: IDBDatabase, captureId: string): Promise<UndoResult> {
+  const [undone] = await undoCaptures(db, [captureId]);
+  return undone!;
+}
+
+// Moving sources
+
+export interface MoveResult {
+  /** The source in the target session: the moved source with its new S-number, or the source it joined. */
+  source: Source;
+  /** True when the target session already had a source with the same address and the captures joined it. */
+  joined: boolean;
+}
+
+function joinNotes(...notes: string[]): string {
+  return notes.filter((note) => note.trim()).join('\n\n');
+}
+
+/**
+ * Moves a source with all its captures and snapshots to another session in
+ * one transaction. It gets the next S-number there, or joins the source with
+ * the same address (keeping that source's label, with both notes). The old
+ * S-number stays retired in the original session.
+ */
+export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: string): Promise<MoveResult> {
+  return inTransaction(db, CAPTURE_STORES, 'readwrite', async (tx) => {
+    const sources = tx.objectStore('sources');
+    const source = (await result(sources.get(sourceId))) as Source | undefined;
+    if (!source) throw new Error('This source no longer exists.');
+    if (source.session_id === targetSessionId) throw new Error('The source is already in this session.');
+    const target = await getSession(tx, targetSessionId);
+    const existing = (await result(sources.index('session_dedup_url').get([target.id, source.dedup_url]))) as
+      | Source
+      | undefined;
+    let moved: Source;
+    if (existing) {
+      moved = { ...existing, note: joinNotes(existing.note, source.note) };
+      sources.delete(source.id);
+    } else {
+      moved = { ...source, session_id: target.id, number: target.next_source_number };
+      tx.objectStore('sessions').put({ ...target, next_source_number: target.next_source_number + 1 });
+    }
+    sources.put(moved);
+    const captures = tx.objectStore('captures');
+    const snapshots = tx.objectStore('snapshots');
+    for (const capture of (await result(captures.index('source').getAll(source.id))) as Capture[]) {
+      captures.put({ ...capture, source_id: moved.id, session_id: target.id });
+      if (!capture.snapshot_id) continue;
+      const snapshot = (await result(snapshots.get(capture.snapshot_id))) as Snapshot | undefined;
+      if (snapshot) snapshots.put({ ...snapshot, source_id: moved.id, session_id: target.id });
+    }
+    return { source: moved, joined: !!existing };
   });
 }
 

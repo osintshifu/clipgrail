@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { commitCapture, createSession, loadSessionView, saveJob, latestJob, updateCaptureNote, updateSessionText } from '../src/lib/db';
+import { commitCapture, createSession, loadSessionView, saveJob, latestJob, updateCaptureNote, updateSessionText, updateSourceNote } from '../src/lib/db';
 import type { JobSettings } from '../src/lib/research-job';
 import { DEFAULT_JOB_SETTINGS, buildResearchJob, fenced, isJobOutdated, researchJobToJson } from '../src/lib/research-job';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
@@ -15,6 +15,7 @@ async function sessionWithMaterial() {
   await commitCapture(db, failedDraft('https://maps.example.net/results', '2026-10-05T10:07:00.000Z', s));
   await updateSessionText(db, s, { prompt: 'Check the turnout figures.', notes: 'Ask the commission about late ballots.' });
   await updateCaptureNote(db, page.capture.id, 'First version, before the correction.');
+  await updateSourceNote(db, page.source.id, 'Official outlet; compare with the PDF.');
   return { db, sessionId: s };
 }
 
@@ -45,6 +46,7 @@ describe('buildResearchJob', () => {
     // Private data stays out by default.
     expect(text).not.toContain('Ask the commission');
     expect(text).not.toContain('First version, before the correction.');
+    expect(text).not.toContain('Official outlet');
     expect(text).not.toContain('utm_source');
     expect(text).not.toContain('fbclid');
     expect(text).not.toContain('2026-10-05T10:0');
@@ -67,6 +69,7 @@ describe('buildResearchJob', () => {
     const notes = build({ include_notes: true });
     expect(notes).toContain('Ask the commission about late ballots.');
     expect(notes).toContain('First version, before the correction.');
+    expect(notes).toContain('Researcher note on this source (written by the user, not page content):\n```text\nOfficial outlet; compare with the PDF.\n```');
 
     const links = build({ include_link_context: true });
     expect(links).toContain('found on <https://news.example.com/recount>, link text "Turnout data"');

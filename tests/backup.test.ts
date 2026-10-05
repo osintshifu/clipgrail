@@ -87,10 +87,28 @@ describe('backup and restore', () => {
       ['snapshot with original_character_count 0', (b) => (okSnapshot(b).original_character_count = 0)],
       ['snapshot marked truncated with equal counts', (b) => (okSnapshot(b).truncated = true)],
       ['job settings of an unknown session', (b) => (b.settings.job_settings = { nope: DEFAULT_JOB_SETTINGS })],
+      ['archived Inbox', (b) => ((b.data.sessions[0] as R).archived_at = '2026-10-05T12:00:00.000Z')],
+      ['source without a note', (b) => delete (b.data.sources[0] as R).note],
     ];
     for (const [name, change] of cases) {
       expect((await broken(change)).ok, name).toBe(false);
     }
+  });
+
+  it('accepts a backup from database schema 1 and fills the fields added later', async () => {
+    const db = await populated();
+    const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z') as unknown as Record<string, unknown>;
+    const data = backup.data as Record<string, Array<Record<string, unknown>>>;
+    backup.db_schema_version = 1;
+    for (const session of data.sessions!) delete session.archived_at;
+    for (const source of data.sources!) delete source.note;
+    for (const jobSource of (data.jobs![0]!.sources as Array<Record<string, unknown>>)) delete jobSource.source_note;
+    const check = await validateBackup(JSON.stringify(backup));
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    expect(check.backup.db_schema_version).toBe(2);
+    expect(check.backup.data.sessions).toEqual([expect.objectContaining({ archived_at: null })]);
+    expect(check.backup.data.sources.every((s) => (s as { note: unknown }).note === '')).toBe(true);
   });
 
   it('reports whether data was replaced when a restore step fails', async () => {

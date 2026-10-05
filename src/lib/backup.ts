@@ -210,6 +210,8 @@ function validateJob(j: Rec, sessions: Map<string, Rec>): void {
       bool(sel, 'truncated_at_capture', w);
       oneOf(sel, 'method', ['dom-selection', 'menu-selection-text'] as const, w);
     }
+    // Jobs generated before sources had notes have no source_note.
+    if (s.source_note !== undefined) strOrNull(s, 'source_note', w);
     for (const n of nullableList(s.notes, `${w} notes`) ?? []) {
       str(n, 'capture_id', w, false);
       str(n, 'note', w);
@@ -221,7 +223,7 @@ function validateJob(j: Rec, sessions: Map<string, Rec>): void {
     }
     for (const t of nullableList(s.capture_times, `${w} capture_times`) ?? []) {
       str(t, 'capture_id', w, false);
-      oneOf(t, 'kind', ['page', 'selection', 'link'] as const, w);
+      oneOf(t, 'kind', ['page', 'selection', 'link', 'tab'] as const, w);
       str(t, 'captured_at', w, false);
     }
     if (s.original_urls !== null) {
@@ -271,8 +273,9 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     if (root.format_version !== BACKUP_FORMAT_VERSION) {
       throw new Invalid(`Unsupported backup format version ${String(root.format_version)}.`);
     }
-    if (root.db_schema_version !== DB_SCHEMA_VERSION) {
-      throw new Invalid(`Unsupported database schema version ${String(root.db_schema_version)}.`);
+    const schemaVersion = root.db_schema_version;
+    if (schemaVersion !== 1 && schemaVersion !== DB_SCHEMA_VERSION) {
+      throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);
     const dataRoot = obj(root.data, 'Backup data');
@@ -281,6 +284,11 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       const list = dataRoot[store];
       if (!Array.isArray(list)) throw new Invalid(`Backup data: "${store}" must be a list.`);
       data[store] = list.map((item, i) => obj(item, `${store}[${i}]`));
+    }
+    if (schemaVersion === 1) {
+      // Schema 1 had no archived sessions and no source notes; the database upgrade adds the same defaults.
+      data.sessions = data.sessions.map((s) => ({ archived_at: null, ...s }));
+      data.sources = data.sources.map((s) => ({ note: '', ...s }));
     }
 
     const sessions = uniqueIds(data.sessions, 'sessions');
@@ -292,6 +300,9 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       int(s, 'next_source_number', where, 1);
       str(s, 'prompt', where);
       str(s, 'notes', where);
+      const archivedAt = strOrNull(s, 'archived_at', where);
+      if (archivedAt === '') throw new Invalid(`${where}: "archived_at" must be a time or null.`);
+      if (archivedAt !== null && s.id === INBOX_SESSION_ID) throw new Invalid('The Inbox cannot be archived.');
     }
 
     const sources = uniqueIds(data.sources, 'sources');
@@ -313,6 +324,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       numbers.add(numberKey);
       dedupUrls.add(urlKey);
       str(s, 'created_at', where, false);
+      str(s, 'note', where);
     }
 
     const snapshots = uniqueIds(data.snapshots, 'snapshots');
@@ -322,7 +334,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       const where = `capture ${String(c.id)}`;
       const source = sources.get(str(c, 'source_id', where, false));
       if (!source || source.session_id !== c.session_id) throw new Invalid(`${where}: unknown source or session mismatch.`);
-      const kind = oneOf(c, 'kind', ['page', 'selection', 'link'] as const, where);
+      const kind = oneOf(c, 'kind', ['page', 'selection', 'link', 'tab'] as const, where);
       str(c, 'captured_at', where, false);
       webUrl(c, 'original_url', where);
       str(c, 'tab_title', where);

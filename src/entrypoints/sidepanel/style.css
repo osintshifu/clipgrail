@@ -80,6 +80,14 @@ textarea { width: 100%; resize: vertical; padding: 6px 8px; }
 .session-row, .session-form { margin-top: 8px; }
 .session-row select { flex: 1; min-width: 0; padding: 4px 6px; }
 .session-form input { flex: 1; min-width: 0; }
+.archived {
+  margin-top: 6px; padding: 5px 8px; border-radius: 6px; background: var(--pend-bg); color: var(--pend);
+  font-size: 12px; justify-content: space-between;
+}
+.archived button { font-size: 12px; padding: 1px 8px; }
+.save-tabs { margin-top: 8px; flex-wrap: wrap; }
+.save-tabs .lbl { font-size: 12px; font-weight: 600; color: var(--muted); }
+.save-tabs button { font-size: 12px; padding: 3px 8px; }
 .menu-wrap { position: relative; }
 #menu {
   position: absolute; right: 0; top: calc(100% + 4px); background: var(--bg); border: 1px solid var(--line);
@@ -120,6 +128,10 @@ ul { list-style: none; margin: 0; padding: 0; }
 footer { padding: 8px 12px; font-size: 11.5px; color: var(--muted); }
 
 .detail { padding: 8px 12px 12px; }
+.detail-top { justify-content: space-between; }
+.detail-top select { max-width: 150px; min-width: 0; font-size: 12px; padding: 2px 4px; }
+.detail-top button:not(.link) { font-size: 12px; padding: 2px 8px; }
+.source-note { margin-top: 8px; font-size: 12.5px; }
 .detail h3 { font-size: 14px; margin: 6px 0 4px; overflow-wrap: anywhere; }
 .detail .url-link { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
 .detail .snapmeta { font-size: 12px; color: var(--muted); margin-top: 6px; }

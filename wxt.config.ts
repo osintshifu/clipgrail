@@ -19,6 +19,8 @@ export default defineConfig({
       // Keeps research data in IndexedDB out of quota limits and storage eviction.
       'unlimitedStorage',
     ],
+    // Asked for the first time the user saves tabs: the addresses and titles of the tabs in the window.
+    optional_permissions: ['tabs'],
     action: { default_title: 'Open ClipGrail' },
     commands: {
       'clip-page': {
