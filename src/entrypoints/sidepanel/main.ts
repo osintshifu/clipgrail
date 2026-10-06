@@ -7,8 +7,12 @@ import { $, h } from '../../lib/dom';
 import type { Child } from '../../lib/dom';
 import {
   commitCaptures,
+  countForDeletion,
   countSourcesBySession,
   createSession,
+  deleteSession,
+  deleteSource,
+  emptyInbox,
   latestJob,
   listSessions,
   loadSessionView,
@@ -21,6 +25,7 @@ import {
   saveJob,
   setSessionArchived,
   setWriteListener,
+  summarizeData,
   undoCapture,
   undoCaptures,
   updateCaptureNote,
@@ -41,21 +46,27 @@ import type { SourceStatus } from '../../lib/selection';
 import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
 import type { Preset } from '../../lib/settings';
 import {
+  dropExcludedSources,
   getActiveSessionId,
   getJobSettings,
   getAllJobSettings,
+  getLastBackupAt,
   getPresets,
+  removeJobSettings,
   saveJobSettings,
   replaceAllJobSettings,
   resolveActiveSessionId,
   savePresets,
   setActiveSessionId,
+  setLastBackupAt,
 } from '../../lib/settings';
 import { savedTabsMessage, tabDrafts } from '../../lib/tabs';
 import { plural } from '../../lib/text';
 import { finishNoteWrites, noteEditor } from '../../lib/note-editor';
+import type { DeletionText } from '../../lib/describe';
 import {
   STATUS_LABELS,
+  backupLine,
   captureExtra,
   captureHead,
   captureLine,
@@ -64,8 +75,12 @@ import {
   fmtNumber,
   fmtTime,
   hostOf,
+  inboxEmptyingText,
+  sessionDeletionText,
+  sourceDeletionText,
   sourceMeta,
   statusSentence,
+  storageLines,
 } from '../../lib/describe';
 
 // ---------- Helpers ----------
@@ -270,11 +285,28 @@ function toggleMenu(open: boolean): void {
   if (!open) return;
   togglePresetsMenu(false);
   Array.from($('menu').querySelectorAll('button')).find((b) => !b.hidden && !b.disabled)?.focus();
+  void renderStorageSummary();
   // Turn off tab access is offered only while ClipGrail has the permission.
   browser.permissions.contains({ permissions: ['tabs'] }).then(
     (has) => ($('tab-access-button').hidden = !has),
     () => ($('tab-access-button').hidden = true),
   );
+}
+
+/** What ClipGrail stores, roughly how much space it takes (Chrome's estimate) and when the last backup was made. */
+async function renderStorageSummary(): Promise<void> {
+  const box = $('storage-summary');
+  try {
+    const [summary, lastBackupAt, estimate] = await Promise.all([
+      summarizeData(db),
+      getLastBackupAt(),
+      (navigator.storage?.estimate?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+    ]);
+    const [what, size] = storageLines(summary, typeof estimate?.usage === 'number' ? estimate.usage : null);
+    box.replaceChildren(what, h('br'), size, h('br'), backupLine(lastBackupAt));
+  } catch {
+    box.textContent = 'Stored data could not be counted.';
+  }
 }
 
 function togglePresetsMenu(open: boolean): void {
@@ -325,6 +357,14 @@ async function openSessionsSheet(): Promise<void> {
   ]);
   archive.disabled = isInbox;
   if (isInbox) archive.title = 'The Inbox cannot be archived';
+  const activeCounts = await countForDeletion(db, activeId).catch(() => null);
+  const remove = h('button', { class: 'delete', attrs: { type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void (isInbox ? openEmptyInboxSheet() : openDeleteSessionSheet()) } }, [
+    isInbox ? 'Empty Inbox…' : 'Delete session…',
+  ]);
+  if (isInbox && activeCounts && !activeCounts.sources && !activeCounts.jobs) {
+    remove.disabled = true;
+    remove.title = 'The Inbox is empty';
+  }
   openSheet('sessions', 'Sessions', [
     h('ul', { class: 'pick-list' }, current.map(row)),
     archived.length ? h('div', { class: 'section-title' }, ['Archived']) : null,
@@ -333,6 +373,7 @@ async function openSessionsSheet(): Promise<void> {
       h('button', { class: 'primary', attrs: { type: 'button' }, on: { click: () => openSessionForm('create') } }, ['New session']),
       rename,
       archive,
+      remove,
     ]),
     h('p', { class: 'small' }, ['New captures go to the selected session. Archived sessions stay available here and still accept captures.']),
   ]);
@@ -399,6 +440,92 @@ async function setArchived(archived: boolean): Promise<void> {
   } catch (error) {
     sheetError(errorText(error));
   }
+}
+
+// ---------- Deleting ----------
+
+/** A deletion confirmation. Cancel has focus, so Enter never deletes by accident. */
+function openDeletionSheet(kind: string, title: string, text: DeletionText, confirmLabel: string, confirm: () => void): void {
+  const cancel = h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Cancel']);
+  openSheet(
+    kind,
+    title,
+    [
+      ...text.main.map((line) => h('p', {}, [line])),
+      ...text.small.map((line) => h('p', { class: 'small' }, [line])),
+      h('div', { class: 'sheet-actions' }, [h('button', { class: 'danger', attrs: { id: 'confirm-delete', type: 'button' }, on: { click: confirm } }, [confirmLabel]), cancel]),
+    ],
+    cancel,
+  );
+}
+
+async function openDeleteSourceSheet(entry: SourceEntry): Promise<void> {
+  const label = sourceLabel(entry.source);
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, entry.source.session_id, entry.source.id), getLastBackupAt()]);
+  const text = sourceDeletionText(label, capturedTitle(entry) ?? entry.source.dedup_url, counts, lastBackupAt);
+  openDeletionSheet('delete-source', `Delete ${label}?`, text, `Delete ${label}`, () => void deleteDetailSource(entry));
+}
+
+async function deleteDetailSource(entry: SourceEntry): Promise<void> {
+  const label = sourceLabel(entry.source);
+  try {
+    // Edits of this source's notes finish first; a note that failed to save does not block deleting it.
+    await finishNoteWrites().catch(() => undefined);
+    await deleteSource(db, entry.source.id);
+  } catch (error) {
+    sheetError(`${label} not deleted: ${errorText(error)}`);
+    return;
+  }
+  await dropExcludedSources(entry.source.session_id, [entry.source.id]).catch(() => undefined);
+  closeSheet(false);
+  detailSourceId = null;
+  await refreshData({ external: true });
+  showToast(`${label} deleted.`);
+  (document.querySelector<HTMLButtonElement>('#source-list .src') ?? $('clip-page')).focus();
+}
+
+async function openDeleteSessionSheet(): Promise<void> {
+  const session = sessions.find((s) => s.id === activeId);
+  if (!session || session.id === INBOX_SESSION_ID) return;
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, session.id), getLastBackupAt()]);
+  const text = sessionDeletionText(session.name, counts, true, lastBackupAt);
+  openDeletionSheet('delete-session', `Delete session "${session.name}"?`, text, 'Delete session', () => void removeActiveSession(session));
+}
+
+async function removeActiveSession(session: Session): Promise<void> {
+  try {
+    await finishNoteWrites().catch(() => undefined);
+    await deleteSession(db, session.id);
+  } catch (error) {
+    sheetError(`Session not deleted: ${errorText(error)}`);
+    return;
+  }
+  await removeJobSettings(session.id).catch(() => undefined);
+  closeSheet();
+  await switchSession(INBOX_SESSION_ID);
+  showToast(`Session "${session.name}" deleted. New clips go to the Inbox.`);
+}
+
+async function openEmptyInboxSheet(): Promise<void> {
+  const inbox = sessions.find((s) => s.id === INBOX_SESSION_ID);
+  if (!inbox) return;
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, INBOX_SESSION_ID), getLastBackupAt()]);
+  openDeletionSheet('empty-inbox', 'Empty Inbox?', inboxEmptyingText(counts, inbox.next_source_number, lastBackupAt), 'Empty Inbox', () => void clearInbox());
+}
+
+async function clearInbox(): Promise<void> {
+  try {
+    await finishNoteWrites().catch(() => undefined);
+    await emptyInbox(db);
+  } catch (error) {
+    sheetError(`Inbox not emptied: ${errorText(error)}`);
+    return;
+  }
+  await dropExcludedSources(INBOX_SESSION_ID, 'all').catch(() => undefined);
+  closeSheet();
+  detailSourceId = null;
+  await refreshData({ external: true });
+  showToast('Inbox emptied.');
 }
 
 // ---------- Loading ----------
@@ -509,12 +636,24 @@ async function refreshData(options: { external?: boolean } = {}): Promise<void> 
     settings = freshSettings;
     fillJobForm();
   }
-  if (lost) showToast(`${sourceLabel(lost.source)} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`);
+  if (lost) void explainLostSource(lost);
   if (options.external) renderHeader();
   renderCollect();
   renderJobSources();
   renderJob();
   restore();
+}
+
+/** The open source left this session in another window: moved (its captures still exist) or deleted. */
+async function explainLostSource(lost: SourceEntry): Promise<void> {
+  const label = sourceLabel(lost.source);
+  const captureId = lost.captures[0]?.capture.id;
+  const moved = captureId !== undefined && (await loadNote(db, 'capture', captureId).catch(() => undefined)) !== undefined;
+  showToast(
+    moved
+      ? `${label} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`
+      : `${label} was deleted in another ClipGrail window.`,
+  );
 }
 
 // ---------- Collect: source list ----------
@@ -548,7 +687,6 @@ function renderCollect(): void {
             on: { click: () => openDetail(entry.source.id) },
           },
           [
-            h('span', { class: 'sid' }, [label]),
             h('span', { class: 'src-body' }, [
               h('span', { class: `src-title${title ? '' : ' untitled'}` }, [title ?? entry.source.dedup_url]),
               h('span', { class: 'src-meta' }, [
@@ -720,6 +858,7 @@ function renderDetail(): void {
       h('span', { class: 'detail-actions' }, [
         h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, ['Move to…']),
         h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, ['Open page ↗']),
+        h('button', { class: 'delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openDeleteSourceSheet(entry) } }, ['Delete…']),
       ]),
     ]),
     h('div', {}, [
@@ -1225,6 +1364,7 @@ async function backup(): Promise<void> {
     const content = JSON.stringify(createBackup(data, settings, createdAt), null, 1);
     const name = backupFileName(createdAt);
     await saveFile(name, 'application/json;charset=utf-8', content);
+    await setLastBackupAt(createdAt).catch(() => undefined);
     const s = summarize(data, createdAt);
     showToast(`Backup export started: ${name} (${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}).`);
   } catch (error) {

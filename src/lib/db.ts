@@ -456,6 +456,157 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
   });
 }
 
+// Deleting
+
+/** What a deletion removed, or would remove. */
+export interface DeletionCounts {
+  sources: number;
+  captures: number;
+  jobs: number;
+}
+
+/** Research Jobs of a session; with a source ID, only those that include that source (they hold a copy of its text). */
+async function sessionJobs(tx: IDBTransaction, sessionId: string, sourceId?: string): Promise<ResearchJob[]> {
+  const range = IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']);
+  const jobs = (await result(tx.objectStore('jobs').index('session_created').getAll(range))) as ResearchJob[];
+  return sourceId === undefined ? jobs : jobs.filter((job) => job.sources.some((s) => s.source_id === sourceId));
+}
+
+/** Deletes captures with their snapshots and texts. */
+function deleteCaptures(tx: IDBTransaction, captures: Capture[]): void {
+  for (const capture of captures) {
+    if (capture.snapshot_id) {
+      tx.objectStore('snapshots').delete(capture.snapshot_id);
+      tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
+    }
+    tx.objectStore('captures').delete(capture.id);
+  }
+}
+
+/**
+ * Deletes a source with all its captures, snapshots, texts and its note, and
+ * the Research Jobs of its session that include it. The session's next
+ * S-number is unchanged, so the source's label is never given to another source.
+ */
+export function deleteSource(db: IDBDatabase, sourceId: string): Promise<DeletionCounts> {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+    const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
+    if (!source) throw new Error('This source no longer exists.');
+    const removed = await removeSource(tx, source);
+    return { sources: 1, captures: removed.captures, jobs: removed.jobIds.length };
+  });
+}
+
+/** Deletes several sources in one transaction, as deleteSource does; sources already gone are skipped. */
+export function deleteSources(db: IDBDatabase, sourceIds: string[]): Promise<DeletionCounts> {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+    const jobIds = new Set<string>();
+    let sources = 0;
+    let captures = 0;
+    for (const id of sourceIds) {
+      const source = (await result(tx.objectStore('sources').get(id))) as Source | undefined;
+      if (!source) continue;
+      const removed = await removeSource(tx, source);
+      sources += 1;
+      captures += removed.captures;
+      for (const jobId of removed.jobIds) jobIds.add(jobId);
+    }
+    return { sources, captures, jobs: jobIds.size };
+  });
+}
+
+async function removeSource(tx: IDBTransaction, source: Source): Promise<{ captures: number; jobIds: string[] }> {
+  const captures = (await result(tx.objectStore('captures').index('source').getAll(source.id))) as Capture[];
+  const jobs = await sessionJobs(tx, source.session_id, source.id);
+  deleteCaptures(tx, captures);
+  for (const job of jobs) tx.objectStore('jobs').delete(job.id);
+  tx.objectStore('sources').delete(source.id);
+  return { captures: captures.length, jobIds: jobs.map((job) => job.id) };
+}
+
+/** Deletes every source, capture, snapshot, text and Research Job of a session; the session record stays. */
+async function clearSession(tx: IDBTransaction, sessionId: string): Promise<DeletionCounts> {
+  const sourceIds = (await result(tx.objectStore('sources').index('session').getAllKeys(sessionId))) as string[];
+  const captures = (await result(tx.objectStore('captures').index('session').getAll(sessionId))) as Capture[];
+  const jobs = await sessionJobs(tx, sessionId);
+  deleteCaptures(tx, captures);
+  for (const id of sourceIds) tx.objectStore('sources').delete(id);
+  for (const job of jobs) tx.objectStore('jobs').delete(job.id);
+  return { sources: sourceIds.length, captures: captures.length, jobs: jobs.length };
+}
+
+/** Deletes a session with everything in it, including its Research Jobs. The Inbox can only be emptied. */
+export function deleteSession(db: IDBDatabase, sessionId: string): Promise<DeletionCounts> {
+  if (sessionId === INBOX_SESSION_ID) return Promise.reject(new Error('The Inbox cannot be deleted. Empty it instead.'));
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+    await getSession(tx, sessionId);
+    const removed = await clearSession(tx, sessionId);
+    tx.objectStore('sessions').delete(sessionId);
+    return removed;
+  });
+}
+
+/** Deletes everything in the Inbox. The Inbox stays with its prompt, notes and S-number counter. */
+export function emptyInbox(db: IDBDatabase): Promise<DeletionCounts> {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', (tx) => clearSession(tx, INBOX_SESSION_ID));
+}
+
+/** What deleting a source (with `sourceId`) or a whole session would remove, for the confirmation. */
+export function countForDeletion(db: IDBDatabase, sessionId: string, sourceId?: string): Promise<DeletionCounts> {
+  return inTransaction(db, ['sources', 'captures', 'jobs'], 'readonly', async (tx) => {
+    const jobs = (await sessionJobs(tx, sessionId, sourceId)).length;
+    if (sourceId !== undefined) {
+      return { sources: 1, captures: await result(tx.objectStore('captures').index('source').count(sourceId)), jobs };
+    }
+    const [sources, captures] = await Promise.all([
+      result(tx.objectStore('sources').index('session').count(sessionId)),
+      result(tx.objectStore('captures').index('session').count(sessionId)),
+    ]);
+    return { sources, captures, jobs };
+  });
+}
+
+/** What deleting these sources would remove; a Research Job that includes several of them counts once. */
+export function countSourcesForDeletion(db: IDBDatabase, sourceIds: string[]): Promise<DeletionCounts> {
+  return inTransaction(db, ['sources', 'captures', 'jobs'], 'readonly', async (tx) => {
+    const jobIds = new Set<string>();
+    let sources = 0;
+    let captures = 0;
+    for (const id of sourceIds) {
+      const source = (await result(tx.objectStore('sources').get(id))) as Source | undefined;
+      if (!source) continue;
+      sources += 1;
+      captures += await result(tx.objectStore('captures').index('source').count(id));
+      for (const job of await sessionJobs(tx, source.session_id, id)) jobIds.add(job.id);
+    }
+    return { sources, captures, jobs: jobIds.size };
+  });
+}
+
+export interface DataSummary {
+  sessions: number;
+  sources: number;
+  captures: number;
+  /** Characters of saved text: successful snapshots plus selections. */
+  characters: number;
+}
+
+/** Totals of everything stored, for the side panel menu. Reads snapshot metadata, not snapshot texts. */
+export function summarizeData(db: IDBDatabase): Promise<DataSummary> {
+  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots'], 'readonly', async (tx) => {
+    const [sessions, sources, captures, snapshots] = await Promise.all([
+      result(tx.objectStore('sessions').count()),
+      result(tx.objectStore('sources').count()),
+      result(tx.objectStore('captures').getAll()) as Promise<Capture[]>,
+      result(tx.objectStore('snapshots').getAll()) as Promise<SnapshotMeta[]>,
+    ]);
+    const characters =
+      snapshots.reduce((sum, s) => sum + (s.status === 'ok' ? s.character_count : 0), 0) +
+      captures.reduce((sum, c) => sum + (c.fragment?.character_count ?? 0), 0);
+    return { sessions, sources, captures: captures.length, characters };
+  });
+}
+
 // Reading
 
 /** A capture with its snapshot: with the snapshot text by default, or only its metadata (library lists). */

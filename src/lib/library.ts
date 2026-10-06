@@ -18,7 +18,7 @@ export interface LibraryRow {
   last_captured_at: string;
   /** When the source was first saved. */
   added_at: string;
-  /** Lowercase title and address, the fields searched. */
+  /** Lowercase title and address, searched together with the label. */
   haystack: string;
 }
 
@@ -65,6 +65,9 @@ export function libraryRows(data: LibraryData): LibraryRow[] {
 }
 
 /** Rows of the chosen view that contain every word of the query and have the chosen status, in the chosen order. */
+/** A search word such as "s3" also finds the source with that label. */
+const LABEL_WORD = /^s[1-9]\d*$/;
+
 export function filterRows(rows: LibraryRow[], filter: LibraryFilter): LibraryRow[] {
   const words = filter.query.toLowerCase().split(/\s+/).filter(Boolean);
   const key = filter.sort.startsWith('last') ? 'last_captured_at' : 'added_at';
@@ -74,7 +77,7 @@ export function filterRows(rows: LibraryRow[], filter: LibraryFilter): LibraryRo
       (row) =>
         (filter.view === ALL_SOURCES || row.session.id === filter.view) &&
         (filter.status === 'any' || row.status === filter.status) &&
-        words.every((word) => row.haystack.includes(word)),
+        words.every((word) => row.haystack.includes(word) || (LABEL_WORD.test(word) && row.label.toLowerCase() === word)),
     )
     .sort(
       (a, b) =>

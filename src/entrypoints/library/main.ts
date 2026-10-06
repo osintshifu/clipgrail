@@ -1,8 +1,9 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { loadLibrary, loadSnapshotText, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
+import type { DeletionText } from '../../lib/describe';
 import {
   STATUS_LABELS,
   captureDetailRows,
@@ -11,6 +12,10 @@ import {
   fmtNumber,
   fmtTime,
   hostOf,
+  inboxEmptyingText,
+  sessionDeletionText,
+  sourceDeletionText,
+  sourcesDeletionText,
   sourceMeta,
   sourceRows,
   statusSentence,
@@ -23,7 +28,7 @@ import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
-import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout } from '../../lib/settings';
+import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout, getLastBackupAt, dropExcludedSources, removeJobSettings } from '../../lib/settings';
 import type { LibraryLayout } from '../../lib/settings';
 
 import { finishNoteWrites, keepNoteFocus, noteEditor } from '../../lib/note-editor';
@@ -42,6 +47,9 @@ let detailsOpen = false;
 const texts = new Map<string, string>();
 const wide = window.matchMedia('(min-width: 901px)');
 let layout: LibraryLayout = { sessions_hidden: false, reader_expanded: false };
+/** Sources selected to delete several at once; always a subset of the sources shown. */
+const picked = new Set<string>();
+let pickAnchor: string | null = null;
 const expandButton = $<HTMLButtonElement>('expand-reader');
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -111,7 +119,7 @@ function renderNav(): void {
       session?.id === activeId ? h('span', { class: 'active-tag', attrs: { title: 'Active session: new clips go here' } }, ['Active']) : null,
       h('span', { class: 'count' }, [fmtNumber(n)]),
     ]);
-    if (!session || session.id === INBOX_SESSION_ID) return button;
+    if (!session) return button;
     return h('div', { class: 'nav-row' }, [button,
       h('button', { class: 'session-actions', attrs: { type: 'button', 'data-session': session.id, 'aria-label': `Actions for ${name}`, 'aria-haspopup': 'dialog' }, on: { click: (event) => openSessionActions(session, event.currentTarget as HTMLElement) } }, ['···']),
     ]);
@@ -148,6 +156,7 @@ function renderNav(): void {
 }
 
 function setView(view: string): void {
+  clearPicked();
   filter.view = view;
   if (selectedId && view !== ALL_SOURCES && selectedRow()?.session.id !== view) {
     selectedId = null;
@@ -167,7 +176,15 @@ function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
   const { entry } = row;
   const meta = [sourceMeta(entry), `last ${fmtTime(row.last_captured_at)}`].filter(Boolean).join(' · ');
   const name = row.title ?? entry.source.dedup_url;
-  return h('li', {}, [
+  const id = entry.source.id;
+  const box: HTMLInputElement = h('input', {
+    class: 'pick-box',
+    attrs: { type: 'checkbox', tabindex: '-1', 'data-pick': id, 'aria-label': `Select ${row.label}${mixed ? ` in ${row.session.name}` : ''}` },
+    on: { click: (event) => pick(id, (event as MouseEvent).shiftKey, box.checked) },
+  });
+  box.checked = picked.has(id);
+  return h('li', { class: picked.has(id) ? 'picked' : '' }, [
+    box,
     h(
       'button',
       {
@@ -175,14 +192,20 @@ function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
         attrs: {
           type: 'button',
           tabindex: '-1',
-          'data-id': entry.source.id,
-          'aria-current': String(entry.source.id === selectedId),
+          'data-id': id,
+          'aria-current': String(id === selectedId),
           'aria-label': `${row.label}${mixed ? ` in ${row.session.name}` : ''}: ${name}, ${STATUS_LABELS[row.status]}`,
         },
-        on: { click: () => openSource(entry.source.id, true) },
+        on: {
+          click: (event) => {
+            // Ctrl/Cmd+click and Shift+click select, as in file lists; a plain click opens the source.
+            const { ctrlKey, metaKey, shiftKey } = event as MouseEvent;
+            if (ctrlKey || metaKey || shiftKey) pick(id, shiftKey, shiftKey || !picked.has(id));
+            else openSource(id, true);
+          },
+        },
       },
       [
-        h('span', { class: 'sid' }, [row.label]),
         h('span', { class: 'src-body' }, [
           h('span', { class: `src-title${row.title ? '' : ' untitled'}` }, [name]),
           h('span', { class: 'src-meta' }, [
@@ -202,11 +225,56 @@ const rowButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>
 /** One row is reachable with Tab: the open source if it is listed, else the first. */
 function markSelected(): void {
   const buttons = rowButtons();
-  const focusable = buttons.find((b) => b.dataset.id === selectedId) ?? buttons[0];
-  for (const button of buttons) {
-    button.setAttribute('aria-current', String(button.dataset.id === selectedId));
-    button.tabIndex = button === focusable ? 0 : -1;
+  for (const button of buttons) button.setAttribute('aria-current', String(button.dataset.id === selectedId));
+  setTabStop(buttons.find((b) => b.dataset.id === selectedId) ?? buttons[0]);
+}
+
+/** One row of the list is reachable with Tab: its checkbox and its button. */
+function setTabStop(row: HTMLButtonElement | undefined): void {
+  for (const button of rowButtons()) {
+    const index = button === row ? 0 : -1;
+    button.tabIndex = index;
+    const box = button.previousElementSibling;
+    if (box instanceof HTMLInputElement) box.tabIndex = index;
   }
+}
+
+// ---------- Selecting several sources ----------
+
+/** Selects or clears one source, or with `range` every source shown between the last one picked and this one. */
+function pick(id: string, range: boolean, state: boolean): void {
+  const ids = shown.map((r) => r.entry.source.id);
+  const from = range && pickAnchor ? ids.indexOf(pickAnchor) : -1;
+  const to = ids.indexOf(id);
+  const chosen = from >= 0 ? ids.slice(Math.min(from, to), Math.max(from, to) + 1) : [id];
+  for (const each of chosen) {
+    if (state) picked.add(each);
+    else picked.delete(each);
+  }
+  pickAnchor = id;
+  renderSelection();
+}
+
+/** Keeps only shown sources selected and updates the checkboxes and the selection bar. */
+function renderSelection(): void {
+  const ids = new Set(shown.map((r) => r.entry.source.id));
+  for (const id of picked) if (!ids.has(id)) picked.delete(id);
+  for (const box of document.querySelectorAll<HTMLInputElement>('#rows .pick-box')) {
+    const on = picked.has(box.dataset.pick ?? '');
+    box.checked = on;
+    box.closest('li')?.classList.toggle('picked', on);
+  }
+  $('selection-bar').hidden = picked.size === 0;
+  $('selection-count').textContent = `${fmtNumber(picked.size)} of ${fmtNumber(shown.length)} selected`;
+  const all = $<HTMLInputElement>('select-all');
+  all.checked = picked.size > 0 && picked.size === shown.length;
+  all.indeterminate = picked.size > 0 && picked.size < shown.length;
+}
+
+/** A new view, search or filter starts without a selection, so nothing hidden is deleted. */
+function clearPicked(): void {
+  picked.clear();
+  pickAnchor = null;
 }
 
 function renderList(): void {
@@ -231,9 +299,11 @@ function renderList(): void {
     ]);
   }
   markSelected();
+  renderSelection();
 }
 
 function clearFilters(): void {
+  clearPicked();
   filter.query = '';
   filter.status = 'any';
   $<HTMLInputElement>('search').value = '';
@@ -403,7 +473,7 @@ function renderReaderContents(): void {
   const row = selectedRow();
   renderNarrowTop(row);
   const actionSession = row?.session ?? sessionOf(filter.view);
-  $('narrow-session-actions').hidden = !actionSession || actionSession.id === INBOX_SESSION_ID;
+  $('narrow-session-actions').hidden = !actionSession;
   expandButton.hidden = !row;
   applyLayout();
   if (!row) {
@@ -411,7 +481,7 @@ function renderReaderContents(): void {
       h('div', { class: 'empty' }, [
         h('p', {}, [
           selectedId
-            ? 'This source is no longer in the library. It joined another source when it was moved, or its only capture was undone.'
+            ? 'This source is no longer in the library. It was deleted, joined another source when it was moved, or its only capture was undone.'
             : 'Select a source to read its saved text and earlier versions.',
         ]),
       ]),
@@ -459,6 +529,7 @@ function renderReaderContents(): void {
       h('button', { class: 'link', attrs: { type: 'button', title: `Show all sources of ${session.name}` }, on: { click: () => setView(session.id) } }, [session.name]),
       session.archived_at ? h('span', { class: 'chip pending' }, ['Archived']) : null,
       h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, ['Move to…']),
+      h('button', { class: 'btn-sm delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmDeleteSource(row) } }, ['Delete…']),
       expandButton,
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
@@ -517,11 +588,17 @@ function dialogFailure(message: string): void {
 }
 
 function openSessionActions(session: Session, opener: HTMLElement): void {
-  if (session.id === INBOX_SESSION_ID) return;
+  if (session.id === INBOX_SESSION_ID) {
+    openDialog(session.name, [
+      h('button', { class: 'delete', attrs: { type: 'button', id: 'empty-inbox' }, on: { click: () => void confirmEmptyInbox(opener) } }, ['Empty Inbox…']),
+    ], opener, true);
+    return;
+  }
   const archive = session.archived_at === null;
   openDialog(session.name, [
     h('button', { attrs: { type: 'button', id: 'archive-session' }, on: { click: () => void archiveSession(session, archive) } }, [archive ? 'Archive session' : 'Unarchive session']),
     h('p', { class: 'small' }, [archive ? (session.id === activeId ? 'Keeps all data. New clips go to Inbox.' : 'Keeps all data in Archived.') : 'Returns to Sessions. Active session unchanged.']),
+    h('button', { class: 'delete', attrs: { type: 'button', id: 'delete-session' }, on: { click: () => void confirmDeleteSession(session, opener) } }, ['Delete session…']),
   ], opener, true);
 }
 
@@ -542,6 +619,110 @@ async function archiveSession(session: Session, archive: boolean): Promise<void>
   } catch (error) {
     dialogFailure(`${changed ? 'Session changed; refresh or active-session update failed' : 'Session not changed'}: ${errorText(error)}`);
   } finally { button.disabled = false; }
+}
+
+// ---------- Deleting ----------
+
+/** A deletion confirmation. Cancel has focus, so Enter never deletes by accident. */
+function openDeletion(title: string, text: DeletionText, confirmLabel: string, run: () => Promise<void>, opener: HTMLElement | null): void {
+  const cancel = h('button', { attrs: { type: 'button' }, on: { click: () => dialog.close() } }, ['Cancel']);
+  openDialog(title, [
+    ...text.main.map((line) => h('p', {}, [line])),
+    ...text.small.map((line) => h('p', { class: 'small' }, [line])),
+    h('div', { class: 'row' }, [h('button', { class: 'danger', attrs: { type: 'button', id: 'confirm-delete' }, on: { click: () => void run() } }, [confirmLabel]), cancel]),
+  ], opener);
+  cancel.focus();
+}
+
+/** Runs a deletion from the open confirmation and reports what happened, also when only the refresh failed. */
+async function runDeletion(work: () => Promise<string>, failed: string, refreshFailed: string): Promise<void> {
+  const button = $<HTMLButtonElement>('confirm-delete');
+  button.disabled = true;
+  let done = false;
+  try {
+    // Note edits finish first; a note that failed to save does not block deleting it.
+    await finishNoteWrites().catch(() => undefined);
+    const message = await work();
+    done = true;
+    writeHash();
+    await reload();
+    dialog.close();
+    notice(message);
+  } catch (error) {
+    dialogFailure(`${done ? refreshFailed : failed}: ${errorText(error)}`);
+  } finally { button.disabled = false; }
+}
+
+async function confirmDeleteSource(row: LibraryRow, opener: HTMLElement = $('delete-source')): Promise<void> {
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, row.session.id, row.entry.source.id), getLastBackupAt()]);
+  const text = sourceDeletionText(row.label, row.title ?? row.entry.source.dedup_url, counts, lastBackupAt);
+  openDeletion(`Delete ${row.label}?`, text, `Delete ${row.label}`, () => runDeletion(async () => {
+    await deleteSource(db, row.entry.source.id);
+    selectedId = null;
+    viewedCaptureId = null;
+    await dropExcludedSources(row.session.id, [row.entry.source.id]).catch(() => undefined);
+    return `${row.label} deleted.`;
+  }, `${row.label} not deleted`, `${row.label} deleted; refresh failed`), opener);
+}
+
+async function confirmDeleteSelected(): Promise<void> {
+  const chosen = shown.filter((r) => picked.has(r.entry.source.id));
+  if (chosen.length === 1) return confirmDeleteSource(chosen[0]!, $('delete-selected'));
+  if (!chosen.length) return;
+  const ids = chosen.map((r) => r.entry.source.id);
+  const sessionIds = [...new Set(chosen.map((r) => r.session.id))];
+  const labels = chosen.map((r) => r.entry.source.number).sort((a, b) => a - b).map((n) => `S${n}`);
+  const [counts, lastBackupAt] = await Promise.all([countSourcesForDeletion(db, ids), getLastBackupAt()]);
+  const what = count(chosen.length, 'source');
+  openDeletion(`Delete ${what}?`, sourcesDeletionText(labels, sessionIds.length, counts, lastBackupAt), `Delete ${what}`, () => runDeletion(async () => {
+    await deleteSources(db, ids);
+    clearPicked();
+    if (selectedId && ids.includes(selectedId)) {
+      selectedId = null;
+      viewedCaptureId = null;
+    }
+    for (const sessionId of sessionIds) {
+      await dropExcludedSources(sessionId, chosen.filter((r) => r.session.id === sessionId).map((r) => r.entry.source.id)).catch(() => undefined);
+    }
+    return `${what} deleted.`;
+  }, 'Sources not deleted', 'Sources deleted; refresh failed'), $('delete-selected'));
+}
+
+async function confirmDeleteSession(session: Session, opener: HTMLElement): Promise<void> {
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, session.id), getLastBackupAt()]);
+  const active = session.id === activeId;
+  openDeletion(`Delete session "${session.name}"?`, sessionDeletionText(session.name, counts, active, lastBackupAt), 'Delete session', () => runDeletion(async () => {
+    await deleteSession(db, session.id);
+    await removeJobSettings(session.id).catch(() => undefined);
+    if (await getActiveSessionId() === session.id) await setActiveSessionId(INBOX_SESSION_ID);
+    activeId = await getActiveSessionId();
+    if (filter.view === session.id) filter.view = ALL_SOURCES;
+    if (selectedRow()?.session.id === session.id) {
+      selectedId = null;
+      viewedCaptureId = null;
+    }
+    return `Session "${session.name}" deleted.${active ? ' New clips go to the Inbox.' : ''}`;
+  }, 'Session not deleted', 'Session deleted; refresh failed'), opener);
+}
+
+async function confirmEmptyInbox(opener: HTMLElement): Promise<void> {
+  const inbox = sessionOf(INBOX_SESSION_ID);
+  if (!inbox) return;
+  const [counts, lastBackupAt] = await Promise.all([countForDeletion(db, INBOX_SESSION_ID), getLastBackupAt()]);
+  if (!counts.sources && !counts.jobs) {
+    dialog.close();
+    notice('The Inbox is empty.');
+    return;
+  }
+  openDeletion('Empty Inbox?', inboxEmptyingText(counts, inbox.next_source_number, lastBackupAt), 'Empty Inbox', () => runDeletion(async () => {
+    await emptyInbox(db);
+    await dropExcludedSources(INBOX_SESSION_ID, 'all').catch(() => undefined);
+    if (selectedRow()?.session.id === INBOX_SESSION_ID) {
+      selectedId = null;
+      viewedCaptureId = null;
+    }
+    return 'Inbox emptied.';
+  }, 'Inbox not emptied', 'Inbox emptied; refresh failed'), opener);
 }
 
 function openMove(row: LibraryRow): void {
@@ -617,12 +798,14 @@ function bind(): void {
   $<HTMLInputElement>('search').addEventListener('input', (event) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
+      clearPicked();
       filter.query = (event.target as HTMLInputElement).value;
       renderList();
       renderNarrowTop(selectedRow());
     }, 120);
   });
   $<HTMLSelectElement>('status-filter').addEventListener('change', (event) => {
+    clearPicked();
     filter.status = (event.target as HTMLSelectElement).value as LibraryFilter['status'];
     renderList();
   });
@@ -631,6 +814,17 @@ function bind(): void {
     renderList();
   });
   $('clear-filters').addEventListener('click', clearFilters);
+  $<HTMLInputElement>('select-all').addEventListener('change', (event) => {
+    if ((event.target as HTMLInputElement).checked) for (const row of shown) picked.add(row.entry.source.id);
+    else clearPicked();
+    renderSelection();
+  });
+  $('clear-selection').addEventListener('click', () => {
+    clearPicked();
+    renderSelection();
+    rowButtons().find((b) => b.tabIndex === 0)?.focus();
+  });
+  $('delete-selected').addEventListener('click', () => void confirmDeleteSelected());
   $('hide-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: true }, $('show-sessions')));
   $('show-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: false }, $('hide-sessions')));
   expandButton.addEventListener('click', () => changeLayout({ reader_expanded: !document.body.classList.contains('reader-expanded') }));
@@ -648,7 +842,7 @@ function bind(): void {
     event.preventDefault();
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : Math.min(buttons.length - 1, Math.max(0, index + (event.key === 'ArrowDown' ? 1 : -1)));
     const button = buttons[next]!;
-    for (const b of buttons) b.tabIndex = b === button ? 0 : -1;
+    setTabStop(button);
     button.focus();
     if (wide.matches && button.dataset.id) openSource(button.dataset.id, false);
   });

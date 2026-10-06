@@ -147,7 +147,10 @@ describe('organizing in the library', () => {
     $('archive-session').click();
     await vi.waitFor(async () => expect((await listSessions(db)).find((s) => s.id === session.id)!.archived_at).toBeNull());
     expect(fake.local.activeSessionId).toBe('inbox');
-    expect(document.querySelector('[data-session="inbox"]')).toBeNull();
+    // The Inbox can only be emptied, never archived.
+    document.querySelector<HTMLButtonElement>('[data-session="inbox"]')!.click();
+    expect([document.getElementById('archive-session'), document.getElementById('empty-inbox')?.textContent]).toEqual([null, 'Empty Inbox…']);
+    $<HTMLDialogElement>('library-dialog').close();
   });
 
   it('hides the sessions and expands the reader only while a source is open, and remembers the layout', async () => {
@@ -170,5 +173,61 @@ describe('organizing in the library', () => {
     expect(document.getElementById('expand-reader')).toBeNull();
     $('show-sessions').click();
     expect(document.body.classList.contains('sessions-hidden')).toBe(false);
+  });
+
+  it('deletes the open source and empties the Inbox after confirmation', async () => {
+    const { db, session, capture } = await openExample('Delete');
+    $('delete-source').click();
+    await vi.waitFor(() => expect(document.getElementById('confirm-delete')).not.toBeNull());
+    expect($('library-dialog').querySelector('h2')!.textContent).toBe('Delete S1?');
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('S1 deleted.'));
+    expect((await loadSessionView(db, session.id)).sources).toHaveLength(0);
+    expect(location.hash).not.toContain(capture.source.id);
+
+    const inboxSources = (await loadSessionView(db, 'inbox')).sources.length;
+    expect(inboxSources).toBeGreaterThan(0);
+    document.querySelector<HTMLButtonElement>('[data-session="inbox"]')!.click();
+    $('empty-inbox').click();
+    await vi.waitFor(() => expect($('library-dialog').querySelector('h2')!.textContent).toBe('Empty Inbox?'));
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Inbox emptied.'));
+    expect((await loadSessionView(db, 'inbox')).sources).toHaveLength(0);
+    expect((await listSessions(db)).some((s) => s.id === 'inbox')).toBe(true);
+  });
+
+  it('selects several sources with checkboxes, Shift+click and Ctrl+click and deletes them together', async () => {
+    const { db, session } = await openExample('Several');
+    for (const n of [2, 3, 4]) await commitCapture(db, await pageDraft(`https://example.test/several-${n}`, `Text ${n}.`, new Date(Date.now() + n * 1000).toISOString(), session.id));
+    fake.refresh();
+    document.querySelector<HTMLButtonElement>(`[data-session="${session.id}"]`)!.closest('.nav-row')!.querySelector<HTMLButtonElement>('.nav-item')!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll('#rows .src')).toHaveLength(4));
+    expect($('selection-bar').hidden).toBe(true);
+    const boxes = () => Array.from(document.querySelectorAll<HTMLInputElement>('#rows .pick-box'));
+    const rows = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'));
+
+    // Checkbox, then Shift+click selects the range; Ctrl+click takes one out again.
+    boxes()[0]!.click();
+    rows()[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    expect(boxes().map((b) => b.checked)).toEqual([true, true, true, false]);
+    rows()[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+    expect(boxes().map((b) => b.checked)).toEqual([true, false, true, false]);
+    expect($('selection-count').textContent).toBe('2 of 4 selected');
+    expect($<HTMLInputElement>('select-all').indeterminate).toBe(true);
+
+    $('delete-selected').click();
+    await vi.waitFor(() => expect($('library-dialog').querySelector('h2')?.textContent).toBe('Delete 2 sources?'));
+    expect($('library-dialog').textContent).toContain('S2 and S4 are deleted with their 2 captures');
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('2 sources deleted.'));
+    expect((await loadSessionView(db, session.id)).sources).toHaveLength(2);
+    expect($('selection-bar').hidden).toBe(true);
+
+    // Select all shown, then a new view starts without a selection.
+    $<HTMLInputElement>('select-all').click();
+    expect(boxes().every((b) => b.checked)).toBe(true);
+    document.querySelector<HTMLButtonElement>('#nav-list > .nav-item')!.click();
+    expect($('selection-bar').hidden).toBe(true);
   });
 });

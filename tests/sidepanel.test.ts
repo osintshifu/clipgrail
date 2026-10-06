@@ -237,4 +237,47 @@ describe('side panel', () => {
     await vi.waitFor(async () => expect((await loadSessionView(db, INBOX_SESSION_ID)).session.prompt).toBe('Inbox prompt, typed during the switch'));
     expect((await loadSessionView(db, second.id)).session.prompt).toBe(secondPrompt);
   });
+
+  it('deletes the open source and the active session only after confirmation, and shows what is stored', async () => {
+    const db = await openDb();
+    const second = (await listSessions(db)).find((s) => s.name === 'Second')!;
+    await vi.waitFor(() => expect($('session-name').textContent).toBe('Second'));
+    $('tab-collect').click();
+    await vi.waitFor(() => expect(document.querySelector('#source-list .src')).not.toBeNull());
+    const before = (await loadSessionView(db, second.id)).sources;
+    document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
+    const label = $('detail-panel').querySelector('.sid')!.textContent!;
+
+    // Cancel has focus and keeps the source.
+    $('delete-source').click();
+    await vi.waitFor(() => expect($('sheet-title').textContent).toBe(`Delete ${label}?`));
+    expect($('sheet-body').textContent).toContain(`${label} is not given to another source.`);
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    (document.activeElement as HTMLButtonElement).click();
+    expect((await loadSessionView(db, second.id)).sources).toHaveLength(before.length);
+
+    $('delete-source').click();
+    await vi.waitFor(() => expect(document.getElementById('confirm-delete')).not.toBeNull());
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe(`${label} deleted.`));
+    expect((await loadSessionView(db, second.id)).sources).toHaveLength(before.length - 1);
+
+    // The menu shows what is stored and when the last backup was made.
+    fake.local.lastBackupAt = '2026-10-06T10:00:00.000Z';
+    $('menu-button').click();
+    await vi.waitFor(() => expect($('storage-summary').textContent).toMatch(/^\d+ sessions? · \d+ sources? · \d+ captures?\d[\d,]* characters?Last backup: 2026-10-06 \d\d:00$/));
+    $('menu-button').click();
+
+    // Deleting the active session switches the panel to the Inbox.
+    $('session-button').click();
+    await vi.waitFor(() => expect(Array.from(document.querySelectorAll('#sheet-body button')).some((b) => b.textContent === 'Delete session…')).toBe(true));
+    Array.from(document.querySelectorAll<HTMLButtonElement>('#sheet-body button')).find((b) => b.textContent === 'Delete session…')!.click();
+    await vi.waitFor(() => expect($('sheet-title').textContent).toBe('Delete session "Second"?'));
+    expect($('sheet-body').textContent).toContain('New clips will go to the Inbox.');
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Session "Second" deleted. New clips go to the Inbox.'));
+    expect($('session-name').textContent).toBe('Inbox');
+    expect((await listSessions(db)).some((s) => s.id === second.id)).toBe(false);
+    expect(fake.local.activeSessionId).toBe(INBOX_SESSION_ID);
+  });
 });

@@ -83,12 +83,12 @@ Click a source to see its status and saved text (**Text**), every capture with i
 **Library ↗** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
 
 - **All sources** lists the sources of every session, including the Inbox and archived sessions. Each source shows its label together with its session name, because every session has its own S1.
-- Search finds sources by title or address. You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
+- Search finds sources by title, address or label, for example S3. You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
 - Click a source to read it. **Captures** lists every capture of the source, newest first. Choosing an earlier capture shows the text saved at that time. **Current text** marks the version a Research Job uses; an earlier version is shown for reading only.
 - **Open page ↗** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
 - When a source has earlier text versions, its details in the side panel link to them with **Open in library ↗**.
 
-The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move sources between sessions, and archive or unarchive sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles and addresses, not the saved text.
+The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles, addresses and labels, not the saved text.
 
 ## Preparing a Research Job
 
@@ -139,6 +139,17 @@ Every button uses the generated job exactly as shown in the preview.
 | Export ▾ > JSON | Saves `clipgrail-session.json`: the same job text plus the sources, settings and counts as structured fields, format `clipgrail-research-job`, version 1 |
 
 ClipGrail never sends a message for you; you paste and send it yourself. If copying fails, ClipGrail does not open the site and tells you so. You can then select the text in the preview or export the job.
+
+## Deleting data
+
+- **Delete…** in the source details, in the side panel or the library, deletes a source with all its captures, saved text and notes. Research Jobs that include the source are deleted too, because they contain a copy of its text. Its label is not given to another source.
+- In the library, select several sources with their checkboxes, Ctrl+click (Cmd+click on a Mac) or Shift+click; **Delete…** in the selection bar deletes them together.
+- **Delete session…** in the session list deletes a session with everything in it, including its Research Jobs. If it was the active session, new clips go to the Inbox.
+- **Empty Inbox…** deletes everything in the Inbox; the Inbox itself stays.
+
+Deleting cannot be undone. ClipGrail asks first and shows when you last made a backup. Files you exported, text you pasted into a chat and backups you saved are not affected.
+
+**···** in the side panel shows how much ClipGrail stores and when you last made a backup.
 
 ## Backup and restore
 

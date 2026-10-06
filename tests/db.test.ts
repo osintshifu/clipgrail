@@ -2,10 +2,17 @@
 import 'fake-indexeddb/auto';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { createBackup, validateBackup } from '../src/lib/backup';
 import {
   commitCapture,
   commitCaptures,
+  countForDeletion,
+  countSourcesForDeletion,
   createSession,
+  deleteSession,
+  deleteSource,
+  deleteSources,
+  emptyInbox,
   listSessions,
   loadLibrary,
   loadSessionView,
@@ -14,6 +21,7 @@ import {
   openDb,
   readAllData,
   renameSession,
+  saveJob,
   setSessionArchived,
   undoCapture,
   undoCaptures,
@@ -23,7 +31,9 @@ import {
 } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import type { OkSnapshot } from '../src/lib/model';
+import { DEFAULT_JOB_SETTINGS, buildResearchJob } from '../src/lib/research-job';
 import { chooseSnapshot } from '../src/lib/selection';
+import { DEFAULT_PRESETS } from '../src/lib/settings';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 const URL_A = 'https://example.com/a';
@@ -266,5 +276,67 @@ describe('undoCapture', () => {
     expect(c.source.number).toBe(3);
     view = await loadSessionView(db, INBOX_SESSION_ID);
     expect(view.sources.map((s) => s.source.number)).toEqual([1, 3]);
+  });
+
+  /** A backup of what is left must still pass the restore checks. */
+  async function remainderIsValid(db: IDBDatabase): Promise<boolean> {
+    const settings = { active_session_id: INBOX_SESSION_ID, presets: DEFAULT_PRESETS, job_settings: {} };
+    return (await validateBackup(JSON.stringify(createBackup(await readAllData(db), settings, '2026-10-06T12:00:00.000Z')))).ok;
+  }
+  const generate = async (db: IDBDatabase, sessionId: string, id: string, excluded: string[] = []) =>
+    saveJob(db, buildResearchJob({ view: await loadSessionView(db, sessionId), settings: { ...DEFAULT_JOB_SETTINGS, excluded_source_ids: excluded }, id, createdAt: '2026-10-06T10:00:00.000Z' }));
+
+  it('deletes a source with its captures, texts and the Research Jobs that include it, and never reuses its label', async () => {
+    const db = await freshDb();
+    const a = await commitCapture(db, await pageDraft(URL_A, 'Alpha text', '2026-10-06T09:00:00.000Z'));
+    await commitCapture(db, await selectionDraft(URL_A, 'Alpha', '2026-10-06T09:01:00.000Z'));
+    const b = await commitCapture(db, await pageDraft(URL_B, 'Beta text', '2026-10-06T09:02:00.000Z'));
+    await generate(db, INBOX_SESSION_ID, 'with-a');
+    await generate(db, INBOX_SESSION_ID, 'without-a', [a.source.id]);
+
+    expect(await countForDeletion(db, INBOX_SESSION_ID, a.source.id)).toEqual({ sources: 1, captures: 2, jobs: 1 });
+    // Several sources: a job that includes both counts once.
+    expect(await countSourcesForDeletion(db, [a.source.id, b.source.id])).toEqual({ sources: 2, captures: 3, jobs: 2 });
+    expect(await deleteSource(db, a.source.id)).toEqual({ sources: 1, captures: 2, jobs: 1 });
+    const data = await readAllData(db);
+    expect(data.sources.map((s) => (s as { id: string }).id)).toEqual([b.source.id]);
+    expect(data.captures).toHaveLength(1);
+    expect(data.jobs.map((j) => (j as { id: string }).id)).toEqual(['without-a']);
+    expect(await loadSnapshotText(db, a.snapshot!.id)).toBeUndefined();
+    await expect(deleteSource(db, a.source.id)).rejects.toThrow('no longer exists');
+
+    const c = await commitCapture(db, await pageDraft('https://example.com/c', 'c', '2026-10-06T09:03:00.000Z'));
+    expect(c.source.number).toBe(3);
+    expect(await remainderIsValid(db)).toBe(true);
+
+    // Deleting several at once skips sources that are already gone.
+    expect(await deleteSources(db, [b.source.id, a.source.id, c.source.id])).toEqual({ sources: 2, captures: 2, jobs: 1 });
+    expect((await readAllData(db)).sources).toHaveLength(0);
+  });
+
+  it('deletes a session with everything in it and empties the Inbox, keeping the Inbox and its numbering', async () => {
+    const db = await freshDb();
+    const other = await createSession(db, 'Port strike');
+    await commitCapture(db, await pageDraft(URL_A, 'Inbox text', '2026-10-06T09:00:00.000Z'));
+    await commitCapture(db, await pageDraft(URL_A, 'Strike text', '2026-10-06T09:01:00.000Z', other.id));
+    await commitCapture(db, linkDraft(URL_B, '2026-10-06T09:02:00.000Z', URL_A, other.id));
+    await generate(db, INBOX_SESSION_ID, 'inbox-job');
+    await generate(db, other.id, 'strike-job');
+
+    expect(await countForDeletion(db, other.id)).toEqual({ sources: 2, captures: 2, jobs: 1 });
+    expect(await deleteSession(db, other.id)).toEqual({ sources: 2, captures: 2, jobs: 1 });
+    expect((await listSessions(db)).map((s) => s.id)).toEqual([INBOX_SESSION_ID]);
+    const left = await readAllData(db);
+    expect([...left.sources, ...left.captures, ...left.snapshots, ...left.jobs].every((r) => (r as { session_id: string }).session_id === INBOX_SESSION_ID)).toBe(true);
+    expect(left.jobs).toHaveLength(1);
+    await expect(deleteSession(db, INBOX_SESSION_ID)).rejects.toThrow('cannot be deleted');
+
+    await updateSessionText(db, INBOX_SESSION_ID, { prompt: 'Kept prompt' });
+    expect(await emptyInbox(db)).toEqual({ sources: 1, captures: 1, jobs: 1 });
+    const inbox = await loadSessionView(db, INBOX_SESSION_ID);
+    expect([inbox.sources.length, inbox.session.prompt, inbox.session.next_source_number]).toEqual([0, 'Kept prompt', 2]);
+    expect((await readAllData(db)).jobs).toHaveLength(0);
+    expect((await commitCapture(db, await pageDraft(URL_B, 'b', '2026-10-06T09:03:00.000Z'))).source.number).toBe(2);
+    expect(await remainderIsValid(db)).toBe(true);
   });
 });

@@ -19,7 +19,7 @@ async function library() {
 }
 
 describe('library', () => {
-  it('lists the sources of every session with their own session and label, and searches title and address', async () => {
+  it('lists the sources of every session with their own session and label, and searches title, address and label', async () => {
     const { other, rows } = await library();
     expect(filterRows(rows, all).map((r) => `${r.session.name} ${r.label} ${r.status}`)).toEqual([
       'Inbox S1 ok',
@@ -29,6 +29,9 @@ describe('library', () => {
     expect(filterRows(rows, { ...all, query: 'DOCS.example recycling' }).map((r) => r.entry.source.dedup_url)).toEqual(['https://docs.example.org/recycling']);
     expect(filterRows(rows, { ...all, query: 'missing PAGE' }).map((r) => r.title)).toEqual(['Missing page']);
     expect(filterRows(rows, { ...all, view: other.id }).map((r) => r.label)).toEqual(['S1']);
+    // A label finds that source in every session it exists in, but S1 does not find S10.
+    expect(filterRows(rows, { ...all, query: 's2' }).map((r) => `${r.session.name} ${r.label}`)).toEqual(['Inbox S2']);
+    expect(filterRows(rows, { ...all, query: 'S1' }).map((r) => `${r.session.name} ${r.label}`)).toEqual(['Inbox S1', 'Port strike S1']);
   });
 
   it('filters by status and sorts by last capture or by date added without changing labels', async () => {

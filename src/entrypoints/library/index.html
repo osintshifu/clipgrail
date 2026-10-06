@@ -21,7 +21,6 @@
         <h1>Library</h1><span class="small">ClipGrail</span>
       </div>
       <div id="nav-list" class="nav-list"></div>
-      <p class="nav-foot">Stored locally. Uninstalling deletes data. Back up from the side panel.</p>
     </nav>
 
     <section id="list-col" class="col list-col" aria-labelledby="list-title">
@@ -32,7 +31,7 @@
           </button>
           <h2 id="list-title"></h2>
         </div>
-        <input id="search" type="search" placeholder="Search title or address" aria-label="Search title or address" autocomplete="off" />
+        <input id="search" type="search" placeholder="Search title, address or label" aria-label="Search title, address or label" autocomplete="off" />
         <div class="filters">
           <select id="status-filter" aria-label="Status">
             <option value="any">All statuses</option>
@@ -45,6 +44,15 @@
           <select id="sort" aria-label="Sort"></select>
           <button id="clear-filters" class="link" type="button" hidden>Clear filters</button>
           <span id="result-count" class="count" role="status"></span>
+        </div>
+        <div id="selection-bar" class="selection-bar" hidden>
+          <input id="select-all" type="checkbox" title="Select all shown sources" aria-label="Select all shown sources" />
+          <b id="selection-count" role="status"></b>
+          <span class="grow"></span>
+          <button id="delete-selected" class="btn-sm delete" type="button" aria-haspopup="dialog">Delete…</button>
+          <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+          </button>
         </div>
       </div>
       <ul id="rows" class="rows" aria-labelledby="list-title"></ul>

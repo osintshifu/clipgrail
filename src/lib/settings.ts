@@ -34,6 +34,8 @@ export const DEFAULT_PRESETS: Preset[] = [
 const ACTIVE_SESSION_KEY = 'activeSessionId';
 const PRESETS_KEY = 'presets';
 const LIBRARY_LAYOUT_KEY = 'libraryLayout';
+/** When the last backup file was handed to Chrome for download; whether it was saved is not known. */
+const LAST_BACKUP_KEY = 'lastBackupAt';
 /** One key per session, so saving one session's settings never rewrites another's. */
 const JOB_SETTINGS_PREFIX = 'jobSettings.';
 
@@ -58,6 +60,15 @@ export async function resolveActiveSessionId(db: IDBDatabase): Promise<string> {
   // Replace only the missing session, not one another page stored meanwhile.
   if ((await getActiveSessionId()) === id) await setActiveSessionId(INBOX_SESSION_ID);
   return INBOX_SESSION_ID;
+}
+
+export async function getLastBackupAt(): Promise<string | null> {
+  const value = (await browser.storage.local.get(LAST_BACKUP_KEY))[LAST_BACKUP_KEY];
+  return typeof value === 'string' ? value : null;
+}
+
+export async function setLastBackupAt(at: string): Promise<void> {
+  await browser.storage.local.set({ [LAST_BACKUP_KEY]: at });
 }
 
 /** Columns the library hides in wide windows. */
@@ -119,6 +130,18 @@ export async function getJobSettings(sessionId: string): Promise<JobSettings> {
 
 export async function saveJobSettings(sessionId: string, settings: JobSettings): Promise<void> {
   await browser.storage.local.set({ [JOB_SETTINGS_PREFIX + sessionId]: cleanJobSettings(settings) });
+}
+
+/** Takes deleted sources out of a session's Research Job selection; `all` after the session was emptied. */
+export async function dropExcludedSources(sessionId: string, sourceIds: string[] | 'all'): Promise<void> {
+  const settings = await getJobSettings(sessionId);
+  const kept = sourceIds === 'all' ? [] : settings.excluded_source_ids.filter((id) => !sourceIds.includes(id));
+  if (kept.length !== settings.excluded_source_ids.length) await saveJobSettings(sessionId, { ...settings, excluded_source_ids: kept });
+}
+
+/** Removes the Research Job settings of a deleted session. */
+export async function removeJobSettings(sessionId: string): Promise<void> {
+  await browser.storage.local.remove(JOB_SETTINGS_PREFIX + sessionId);
 }
 
 /** Research Job settings of every session, keyed by session ID (for backups). */

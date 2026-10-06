@@ -1,4 +1,4 @@
-import type { SourceEntry as FullSourceEntry } from './db';
+import type { DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
 import type { Capture, OkSnapshotMeta, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
@@ -203,4 +203,76 @@ export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | und
     });
   }
   return rows;
+}
+
+// ---------- Deleting data ----------
+
+/** Confirmation text: what is deleted (main) and what deleting cannot reach plus the last backup (small). */
+export interface DeletionText {
+  main: string[];
+  small: string[];
+}
+
+export const NOT_AFFECTED = 'Copies you exported, pasted into a chat or saved in a backup are not affected.';
+
+/** "Last backup: …" or "No backup yet"; the date is when the backup file was handed to Chrome. */
+export function backupLine(lastBackupAt: string | null): string {
+  return lastBackupAt ? `Last backup: ${fmtTime(lastBackupAt)}` : 'No backup yet';
+}
+
+export function sourceDeletionText(label: string, name: string, counts: DeletionCounts, lastBackupAt: string | null): DeletionText {
+  const what = counts.captures === 1 ? 'its capture, saved text and notes' : `its ${counts.captures} captures, saved texts and notes`;
+  const jobs =
+    counts.jobs === 1
+      ? `1 Research Job that includes ${label} is deleted too.`
+      : `${counts.jobs} Research Jobs that include ${label} are deleted too.`;
+  return {
+    main: [`"${name}" is deleted with ${what}. ${label} is not given to another source.`, counts.jobs ? jobs : ''].filter(Boolean),
+    small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`],
+  };
+}
+
+/** "S1, S2 and S4", or the first five and how many more. */
+function labelList(labels: string[]): string {
+  const first = labels.slice(0, 5);
+  const more = labels.length - first.length;
+  if (more > 0) return `${first.join(', ')} and ${more} more`;
+  return first.length > 1 ? `${first.slice(0, -1).join(', ')} and ${first.at(-1)}` : (first[0] ?? '');
+}
+
+/** Several sources: their labels when they share a session, else how many sessions they come from. */
+export function sourcesDeletionText(labels: string[], sessionCount: number, counts: DeletionCounts, lastBackupAt: string | null): DeletionText {
+  const who = sessionCount === 1 ? labelList(labels) : `${plural(labels.length, 'source')} from ${plural(sessionCount, 'session')}`;
+  const main = [`${who} are deleted with their ${plural(counts.captures, 'capture')}, saved texts and notes. Their labels are not given to other sources.`];
+  if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job that includes them is deleted too.' : `${counts.jobs} Research Jobs that include them are deleted too.`);
+  return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
+}
+
+export function sessionDeletionText(name: string, counts: DeletionCounts, active: boolean, lastBackupAt: string | null): DeletionText {
+  const main =
+    counts.sources === 0
+      ? [`Session "${name}" is empty. Deleting it removes its prompt and notes.`]
+      : [`It is deleted with its ${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')}, their saved texts and notes, and the session prompt.`];
+  if (counts.jobs) main.push(counts.jobs === 1 ? 'Its 1 Research Job is deleted too.' : `Its ${counts.jobs} Research Jobs are deleted too.`);
+  if (active) main.push('New clips will go to the Inbox.');
+  return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
+}
+
+export function inboxEmptyingText(counts: DeletionCounts, nextNumber: number, lastBackupAt: string | null): DeletionText {
+  const all = counts.sources > 1 ? 'All ' : '';
+  const main = [`${all}${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')} in the Inbox are deleted with their saved texts and notes.`];
+  if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job is deleted too.' : `${counts.jobs} Research Jobs are deleted too.`);
+  main.push(`The Inbox stays. New sources continue from S${nextNumber}.`);
+  return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
+}
+
+/** Two lines for the side panel menu: what is stored and roughly how much space it takes. */
+export function storageLines(summary: DataSummary, usageBytes: number | null): [string, string] {
+  const characters =
+    summary.characters >= 1_000_000 ? `${(summary.characters / 1_000_000).toFixed(1)} million characters` : `${fmtNumber(summary.characters)} characters`;
+  const size = usageBytes === null ? '' : usageBytes < 100_000 ? ' · less than 0.1 MB' : ` · about ${(usageBytes / 1_000_000).toFixed(1)} MB`;
+  return [
+    `${plural(summary.sessions, 'session')} · ${plural(summary.sources, 'source')} · ${plural(summary.captures, 'capture')}`,
+    `${characters}${size}`,
+  ];
 }
