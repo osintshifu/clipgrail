@@ -44,13 +44,16 @@ import type { ContextMode, JobSettings, ResearchJob } from '../../lib/research-j
 import { buildResearchJob, isJobOutdated } from '../../lib/research-job';
 import type { SourceStatus } from '../../lib/selection';
 import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
-import type { Preset } from '../../lib/settings';
+import { openLibrary } from '../../lib/library-tab';
+import type { OpenMode, Preset } from '../../lib/settings';
 import {
+  OPEN_MODE_KEY,
   dropExcludedSources,
   getActiveSessionId,
   getJobSettings,
   getAllJobSettings,
   getLastBackupAt,
+  getOpenMode,
   getPresets,
   removeJobSettings,
   saveJobSettings,
@@ -59,6 +62,7 @@ import {
   savePresets,
   setActiveSessionId,
   setLastBackupAt,
+  setOpenMode,
 } from '../../lib/settings';
 import { savedTabsMessage, tabDrafts } from '../../lib/tabs';
 import { plural } from '../../lib/text';
@@ -180,6 +184,12 @@ function startEdit(state: EditState): () => void {
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastUndo: (() => Promise<void>) | null = null;
+/**
+ * A popup opened by the shortcut or the page menu gets no focus, so a click
+ * on the page does not close it. A popup without focus closes with its
+ * message instead, unless it was used.
+ */
+let closeWithToast = false;
 
 function showToast(text: string, options: { level?: 'info' | 'error'; undo?: () => Promise<void> } = {}): void {
   const toast = $('toast');
@@ -195,6 +205,7 @@ function showToast(text: string, options: { level?: 'info' | 'error'; undo?: () 
 function hideToast(): void {
   $('toast').hidden = true;
   toastUndo = null;
+  if (closeWithToast && !document.hasFocus()) window.close();
 }
 
 async function undoCaptureWithToast(captureId: string): Promise<void> {
@@ -291,6 +302,25 @@ function toggleMenu(open: boolean): void {
     (has) => ($('tab-access-button').hidden = !has),
     () => ($('tab-access-button').hidden = true),
   );
+}
+
+function renderOpenMode(mode: OpenMode): void {
+  $('open-in-panel').setAttribute('aria-checked', String(mode === 'panel'));
+  $('open-in-popup').setAttribute('aria-checked', String(mode === 'popup'));
+}
+
+/** Sets what the toolbar button opens; the background applies it to the button. */
+async function chooseOpenMode(mode: OpenMode): Promise<void> {
+  toggleMenu(false);
+  $('menu-button').focus();
+  if ($(mode === 'panel' ? 'open-in-panel' : 'open-in-popup').getAttribute('aria-checked') === 'true') return;
+  try {
+    await setOpenMode(mode);
+    renderOpenMode(mode);
+    showToast(mode === 'popup' ? 'The toolbar button now opens a popup.' : 'The toolbar button now opens the side panel.');
+  } catch (error) {
+    showToast(`Setting not saved: ${errorText(error)}`, { level: 'error' });
+  }
 }
 
 /** What ClipGrail stores, roughly how much space it takes (Chrome's estimate) and when the last backup was made. */
@@ -744,7 +774,7 @@ function textSection(entry: SourceEntry): Child[] {
         h('span', {}, [`${plural(earlier, 'earlier text version')} kept.`]),
         h(
           'button',
-          { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id }) } },
+          { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id }, windowId) } },
           ['Open in library ↗'],
         ),
       ]),
@@ -1467,29 +1497,6 @@ function helpSheet(): void {
   ]);
 }
 
-// ---------- Library ----------
-
-/**
- * Opens the library on a session or source, in the library tab that is
- * already open if there is one (runtime.getContexts needs no permission).
- */
-async function openLibrary(params: Record<string, string>): Promise<void> {
-  const base = browser.runtime.getURL('/library.html');
-  const url = `${base}#${new URLSearchParams(params).toString()}`;
-  try {
-    const contexts = await browser.runtime.getContexts({ contextTypes: ['TAB'] });
-    const open = contexts.find((c) => c.documentUrl?.startsWith(base) && c.tabId >= 0);
-    if (open) {
-      await browser.tabs.update(open.tabId, { url, active: true });
-      await browser.windows.update(open.windowId, { focused: true });
-      return;
-    }
-  } catch {
-    // Open a new library tab instead.
-  }
-  await browser.tabs.create({ url, windowId });
-}
-
 // ---------- Views and action bar ----------
 
 function renderBars(): void {
@@ -1517,7 +1524,7 @@ function bind(): void {
   rovingKeys($('tab-collect').parentElement!, (button) => selectTab(button.id === 'tab-collect' ? 'collect' : 'job'));
 
   $('session-button').addEventListener('click', () => void openSessionsSheet());
-  $('library-button').addEventListener('click', () => void openLibrary({ view: activeId }));
+  $('library-button').addEventListener('click', () => void openLibrary({ view: activeId }, windowId));
 
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));
@@ -1610,6 +1617,8 @@ function bind(): void {
     if (file) void checkRestoreFile(file).catch((error: unknown) => showRestoreSheet(`Backup rejected: ${errorText(error)}\nCurrent data is unchanged.`, false));
   });
   $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
+  $('open-in-panel').addEventListener('click', () => void chooseOpenMode('panel'));
+  $('open-in-popup').addEventListener('click', () => void chooseOpenMode('popup'));
   $('help-button').addEventListener('click', helpSheet);
   $('sheet-close').addEventListener('click', () => closeSheet());
   $('sheet-scrim').addEventListener('click', () => closeSheet());
@@ -1623,6 +1632,7 @@ function bind(): void {
 
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'session' && changes[NOTICE_KEY]) handleNotice(changes[NOTICE_KEY].newValue as Notice | undefined);
+    if (area === 'local' && changes[OPEN_MODE_KEY]) renderOpenMode(changes[OPEN_MODE_KEY].newValue === 'popup' ? 'popup' : 'panel');
     if (area === 'local' && changes.activeSessionId) {
       const id = changes.activeSessionId.newValue;
       if (typeof id === 'string' && id !== activeId) {
@@ -1636,6 +1646,13 @@ function bind(): void {
 }
 
 async function init(): Promise<void> {
+  // The same page serves as the side panel and as the toolbar popup.
+  const popup = new URLSearchParams(location.search).get('view') === 'popup';
+  document.documentElement.classList.toggle('popup', popup);
+  if (popup) {
+    closeWithToast = true;
+    for (const type of ['pointerdown', 'keydown']) addEventListener(type, () => (closeWithToast = false), { capture: true, once: true });
+  }
   bind();
   modifier = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
   // Edits here refresh other panels and the library; their edits and captures refresh this panel.
@@ -1646,6 +1663,7 @@ async function init(): Promise<void> {
     windowId = (await browser.windows.getCurrent()).id;
     presets = await getPresets();
     activeId = await getActiveSessionId();
+    renderOpenMode(await getOpenMode());
     const commands = await browser.commands.getAll();
     shortcut = commands.find((c) => c.name === 'clip-page')?.shortcut ?? '';
     renderPresetsMenu();

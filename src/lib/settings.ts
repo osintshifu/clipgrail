@@ -86,6 +86,18 @@ export async function saveLibraryLayout(layout: LibraryLayout): Promise<void> {
   await browser.storage.local.set({ [LIBRARY_LAYOUT_KEY]: layout });
 }
 
+/** What the toolbar button opens. */
+export type OpenMode = 'panel' | 'popup';
+export const OPEN_MODE_KEY = 'toolbarOpens';
+
+export async function getOpenMode(): Promise<OpenMode> {
+  return (await browser.storage.local.get(OPEN_MODE_KEY))[OPEN_MODE_KEY] === 'popup' ? 'popup' : 'panel';
+}
+
+export async function setOpenMode(mode: OpenMode): Promise<void> {
+  await browser.storage.local.set({ [OPEN_MODE_KEY]: mode });
+}
+
 /** Returns the four presets; stored texts replace the defaults, names and order stay fixed. */
 export function mergePresets(stored: unknown): Preset[] {
   const byId = new Map<string, string>();

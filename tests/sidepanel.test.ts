@@ -280,4 +280,16 @@ describe('side panel', () => {
     expect((await listSessions(db)).some((s) => s.id === second.id)).toBe(false);
     expect(fake.local.activeSessionId).toBe(INBOX_SESSION_ID);
   });
+
+  it('stores what the toolbar button opens and shows a choice made in another ClipGrail page', async () => {
+    const checked = () => Array.from(document.querySelectorAll('#menu [role="menuitemradio"]')).map((b) => `${b.textContent}:${b.getAttribute('aria-checked')}`);
+    expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
+    $('menu-button').click();
+    $('open-in-popup').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('The toolbar button now opens a popup.'));
+    expect(fake.local.toolbarOpens).toBe('popup');
+    expect(checked()).toEqual(['Side panel:false', 'Popup:true']);
+    storeElsewhere('toolbarOpens', 'panel');
+    expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
+  });
 });

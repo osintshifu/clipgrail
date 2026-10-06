@@ -2,6 +2,8 @@
 
 /* Side panel layout: header, scrolling main area and action bar fill the panel height. */
 body { display: flex; flex-direction: column; height: 100vh; min-width: 280px; overflow: hidden; }
+/* The toolbar popup has no size of its own; Chrome allows up to 800 × 600. */
+html.popup body { width: 400px; height: 600px; }
 
 /* Header */
 .top { flex: none; border-bottom: 1px solid var(--line); background: var(--bg); position: relative; z-index: 3; }
@@ -30,6 +32,9 @@ button.icon:hover:not(:disabled) { background: var(--soft); border-color: transp
 .storage-summary { color: var(--fg); }
 .detail-actions .delete, .sheet-actions .delete { color: var(--fail); }
 .menu-sep { border-top: 1px solid var(--line); margin: 4px 0; }
+.menu-heading { padding: 6px 12px 2px; }
+.menu [role='menuitemradio']::before { content: ''; display: inline-block; width: 18px; }
+.menu [role='menuitemradio'][aria-checked='true']::before { content: '✓'; }
 .presets-menu { min-width: 200px; top: calc(100% + 2px); }
 .presets-menu button { padding: 7px 12px; }
 .tabs { display: flex; margin-top: 4px; padding: 0 8px; }

@@ -38,6 +38,8 @@ npm run build
 
 The side panel has two views: **Clips** for clipping and reviewing sources and **Research Job** for preparing a job. Every capture goes to the active session, so ClipGrail does not ask where to save it.
 
+Clicking the toolbar icon opens the side panel, and clicking it again closes it. To use a popup instead, choose **··· > Toolbar button opens > Popup**. The shortcut and the right-click menu on a page then show the result in the popup, which closes by itself when the message goes away. Right-click the toolbar icon for **Open side panel** or **Open library**.
+
 | Action | How | What is saved |
 |---|---|---|
 | Clip the current page | **Clip page**, Alt+Shift+K, or right-click > **Clip page to ClipGrail** | Readable text of the page |
