@@ -22,6 +22,7 @@ vi.mock('wxt/browser', () => ({
       },
       onChanged: { addListener: () => undefined },
     },
+    runtime: { id: 'clipgrail-test' },
   },
 }));
 
@@ -34,6 +35,7 @@ describe('library page', () => {
     vi.stubGlobal('matchMedia', () => ({ matches: true }));
     Element.prototype.scrollIntoView = () => undefined;
     HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+    HTMLDialogElement.prototype.show = function () { this.setAttribute('open', ''); };
     HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
     document.documentElement.innerHTML = readFileSync('src/entrypoints/library/index.html', 'utf8');
     const db = await openDb();
@@ -150,7 +152,12 @@ describe('organizing in the library', () => {
     // The Inbox can only be emptied, never archived.
     document.querySelector<HTMLButtonElement>('[data-session="inbox"]')!.click();
     expect([document.getElementById('archive-session'), document.getElementById('empty-inbox')?.textContent]).toEqual([null, 'Empty Inbox…']);
-    $<HTMLDialogElement>('library-dialog').close();
+    // A press anywhere else closes the menu, and the click still opens what it was aimed at.
+    const source = document.querySelector<HTMLButtonElement>('#rows .src')!;
+    source.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    source.click();
+    expect($<HTMLDialogElement>('library-dialog').open).toBe(false);
+    await vi.waitFor(() => expect(source.getAttribute('aria-current')).toBe('true'));
   });
 
   it('hides the sessions and expands the reader only while a source is open, and remembers the layout', async () => {

@@ -142,6 +142,16 @@ describe('side panel', () => {
     $('tab-job').click();
     expect(copy.disabled).toBe(true);
     expect($('job-stale').hidden).toBe(false);
+    const services = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#bar-result .service'));
+    expect(services().every((b) => b.disabled)).toBe(true);
+
+    // Each chat service is one click away: it copies the job and opens the service.
+    $('generate').click();
+    await vi.waitFor(() => expect(copy.disabled).toBe(false));
+    expect(services().map((b) => b.textContent)).toEqual(['ChatGPT', 'Claude', 'Gemini', 'Perplexity']);
+    services()[1]!.click();
+    await vi.waitFor(() => expect(fake.copied).toHaveLength(1));
+    expect(fake.copied[0]).toContain('Edited here');
   });
 
   it('saves tabs only with Chrome permission, as addresses without text, and Undo removes the save', async () => {

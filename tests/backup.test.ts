@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { Backup } from '../src/lib/backup';
 import { createBackup, restoreBackup, validateBackup } from '../src/lib/backup';
-import { commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
+import { DB_SCHEMA_VERSION, commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
 import { DEFAULT_PRESETS, getActiveSessionId, resolveActiveSessionId, setActiveSessionId } from '../src/lib/settings';
@@ -101,6 +101,12 @@ describe('backup and restore', () => {
     }
   });
 
+  it('accepts a backup made before thumbnails were added (database schema 3)', async () => {
+    const backup = createBackup(await readAllData(await populated()), settings, '2026-10-06T12:00:00.000Z') as unknown as Record<string, unknown>;
+    backup.db_schema_version = 3;
+    expect((await validateBackup(JSON.stringify(backup))).ok).toBe(true);
+  });
+
   it('accepts a backup from database schema 1 and fills the fields added later', async () => {
     const db = await populated();
     const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z') as unknown as Record<string, unknown>;
@@ -112,7 +118,7 @@ describe('backup and restore', () => {
     const check = await validateBackup(JSON.stringify(backup));
     expect(check.ok).toBe(true);
     if (!check.ok) return;
-    expect(check.backup.db_schema_version).toBe(3);
+    expect(check.backup.db_schema_version).toBe(DB_SCHEMA_VERSION);
     expect(check.backup.data.sessions).toEqual([expect.objectContaining({ archived_at: null })]);
     expect(check.backup.data.sources.every((s) => (s as { note: unknown }).note === '')).toBe(true);
   });

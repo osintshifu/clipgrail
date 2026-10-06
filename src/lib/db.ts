@@ -4,13 +4,15 @@ import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 3;
+export const DB_SCHEMA_VERSION = 4;
 /** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
 /** Texts of successful snapshots, one record per snapshot, kept apart so lists and the library read without them. */
 const TEXT_STORE = 'snapshot_texts';
-const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE] as const;
+/** Small images of the clipped pages, one per capture. Not part of backups. */
+const THUMB_STORE = 'thumbnails';
+const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE, THUMB_STORE] as const;
 
 interface SnapshotText {
   snapshot_id: string;
@@ -94,6 +96,10 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         // v3: snapshot texts move to their own store.
         db.createObjectStore(TEXT_STORE, { keyPath: 'snapshot_id' });
         if (event.oldVersion >= 1 && request.transaction) moveTexts(request.transaction);
+      }
+      if (event.oldVersion < 4) {
+        // v4: page thumbnails, keyed by capture.
+        db.createObjectStore(THUMB_STORE, { keyPath: 'capture_id' });
       }
     };
     request.onsuccess = () => {
@@ -378,7 +384,7 @@ export interface UndoResult {
 
 /** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
 export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<UndoResult[]> {
-  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, 'sources'], 'readwrite', async (tx) => {
+  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
     const captures = tx.objectStore('captures');
     const results: UndoResult[] = [];
     for (const captureId of captureIds) {
@@ -391,6 +397,7 @@ export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<Und
         tx.objectStore('snapshots').delete(capture.snapshot_id);
         tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
       }
+      tx.objectStore(THUMB_STORE).delete(capture.id);
       captures.delete(capture.id);
       const remaining = await result(captures.index('source').count(capture.source_id));
       if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
@@ -479,6 +486,7 @@ function deleteCaptures(tx: IDBTransaction, captures: Capture[]): void {
       tx.objectStore('snapshots').delete(capture.snapshot_id);
       tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
     }
+    tx.objectStore(THUMB_STORE).delete(capture.id);
     tx.objectStore('captures').delete(capture.id);
   }
 }
@@ -747,8 +755,9 @@ export function readAllData(db: IDBDatabase): Promise<DataSnapshot> {
  * transaction aborts and the previous data stays exactly as it was.
  */
 export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<void> {
-  return inTransaction(db, [...DATA_STORES, TEXT_STORE], 'readwrite', async (tx) => {
-    for (const store of [...DATA_STORES, TEXT_STORE]) tx.objectStore(store).clear();
+  // Thumbnails are not in backups; the ones of the replaced data go with it.
+  return inTransaction(db, [...DATA_STORES, TEXT_STORE, THUMB_STORE], 'readwrite', async (tx) => {
+    for (const store of [...DATA_STORES, TEXT_STORE, THUMB_STORE]) tx.objectStore(store).clear();
     for (const store of DATA_STORES) {
       if (store === 'snapshots') continue;
       for (const record of data[store]) tx.objectStore(store).add(record);
@@ -759,4 +768,31 @@ export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<voi
       if (text) tx.objectStore(TEXT_STORE).add(text);
     }
   });
+}
+
+// Thumbnails
+
+interface Thumbnail {
+  capture_id: string;
+  /** A JPEG data URL. */
+  image: string;
+  created_at: string;
+}
+
+/** Stores the thumbnail of a capture, unless the capture was undone or deleted meanwhile. */
+export function saveThumbnail(db: IDBDatabase, captureId: string, image: string): Promise<void> {
+  return inTransaction(db, ['captures', THUMB_STORE], 'readwrite', async (tx) => {
+    if (!(await result(tx.objectStore('captures').get(captureId)))) return;
+    const record: Thumbnail = { capture_id: captureId, image, created_at: new Date().toISOString() };
+    tx.objectStore(THUMB_STORE).put(record);
+  });
+}
+
+/** The ids of the captures that have a thumbnail. */
+export async function thumbnailIds(db: IDBDatabase): Promise<Set<string>> {
+  return inTransaction(db, [THUMB_STORE], 'readonly', async (tx) => new Set((await result(tx.objectStore(THUMB_STORE).getAllKeys())) as string[]));
+}
+
+export function loadThumbnail(db: IDBDatabase, captureId: string): Promise<string | null> {
+  return inTransaction(db, [THUMB_STORE], 'readonly', async (tx) => ((await result(tx.objectStore(THUMB_STORE).get(captureId))) as Thumbnail | undefined)?.image ?? null);
 }

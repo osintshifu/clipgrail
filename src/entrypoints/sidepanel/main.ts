@@ -45,6 +45,8 @@ import { buildResearchJob, isJobOutdated } from '../../lib/research-job';
 import type { SourceStatus } from '../../lib/selection';
 import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
 import { openLibrary } from '../../lib/library-tab';
+import { faviconTile, faviconUrl } from '../../lib/favicon';
+import { hydrateIcons, icon } from '../../lib/icons';
 import type { OpenMode, Preset } from '../../lib/settings';
 import {
   OPEN_MODE_KEY,
@@ -691,7 +693,6 @@ async function explainLostSource(lost: SourceEntry): Promise<void> {
 function renderNotesToggle(): void {
   const empty = !(view?.session.notes.trim() ?? '');
   $('notes-label').textContent = `Session notes${empty ? ' · empty' : ''}`;
-  $('notes-chevron').textContent = notesOpen ? '▴' : '▾';
   $('notes-toggle').setAttribute('aria-expanded', String(notesOpen));
   $('session-notes').hidden = !notesOpen;
 }
@@ -717,6 +718,7 @@ function renderCollect(): void {
             on: { click: () => openDetail(entry.source.id) },
           },
           [
+            faviconTile(entry.source.dedup_url),
             h('span', { class: 'src-body' }, [
               h('span', { class: `src-title${title ? '' : ' untitled'}` }, [title ?? entry.source.dedup_url]),
               h('span', { class: 'src-meta' }, [
@@ -775,7 +777,7 @@ function textSection(entry: SourceEntry): Child[] {
         h(
           'button',
           { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id }, windowId) } },
-          ['Open in library ↗'],
+          ['Open in library', icon('arrow-up-right')],
         ),
       ]),
     );
@@ -884,16 +886,16 @@ function renderDetail(): void {
   const section = detailTab === 'text' ? textSection(entry) : detailTab === 'captures' ? capturesSection(entry) : detailsSection(entry);
   panel.replaceChildren(
     h('div', { class: 'detail-top' }, [
-      h('button', { class: 'link', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, ['‹ Sources']),
+      h('button', { class: 'back', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, [icon('arrow-left'), 'Sources']),
       h('span', { class: 'detail-actions' }, [
-        h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, ['Move to…']),
-        h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, ['Open page ↗']),
-        h('button', { class: 'delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openDeleteSourceSheet(entry) } }, ['Delete…']),
+        h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, [icon('folder-simple'), 'Move to…']),
+        h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer', title: 'Open page', 'aria-label': 'Open page' } }, [icon('arrow-square-out')]),
+        h('button', { class: 'delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog', title: 'Delete source', 'aria-label': 'Delete…' }, on: { click: () => void openDeleteSourceSheet(entry) } }, [icon('trash')]),
       ]),
     ]),
     h('div', {}, [
       h('div', { class: 'detail-title' }, [h('span', { class: 'sid' }, [label]), h('h3', { class: title ? '' : 'untitled' }, [title ?? '(title not captured)'])]),
-      h('a', { class: 'detail-url', attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, [url]),
+      h('a', { class: 'detail-url', attrs: { href: url, target: '_blank', rel: 'noopener noreferrer' } }, [h('img', { class: 'fav-sm', attrs: { src: faviconUrl(url), alt: '' } }), url]),
     ]),
     h('div', { class: 'card status-card' }, [chip(chooseSnapshot(entry).status), h('span', {}, [statusSentence(entry)])]),
     note,
@@ -1088,7 +1090,6 @@ function renderOptionsToggle(): void {
   const privateCount = [settings.include_notes, settings.include_link_context, settings.include_capture_times, settings.include_original_urls].filter(Boolean).length;
   const limit = settings.max_chars_per_source ? `limit ${fmtNumber(settings.max_chars_per_source)} chars/source` : 'no limit';
   $('options-summary').textContent = ` · ${limit}, ${privateCount} of 4 private fields`;
-  $('options-chevron').textContent = optionsOpen ? '▴' : '▾';
   $('options-toggle').setAttribute('aria-expanded', String(optionsOpen));
   $('options-body').hidden = !optionsOpen;
 }
@@ -1289,7 +1290,8 @@ function renderJob(): void {
     if ($('job-preview').textContent !== job.text) $('job-preview').textContent = job.text;
     $('job-preview').classList.toggle('outdated', outdated);
   }
-  for (const id of ['copy-job', 'open-in-button', 'export-button']) $<HTMLButtonElement>(id).disabled = !job || outdated;
+  for (const id of ['copy-job', 'export-button']) $<HTMLButtonElement>(id).disabled = !job || outdated;
+  for (const button of document.querySelectorAll<HTMLButtonElement>('#bar-result .service')) button.disabled = !job || outdated;
   renderBars();
 }
 
@@ -1351,20 +1353,6 @@ function deliverFromSheet(id: DestinationId): () => void {
     closeSheet();
     void deliver(id);
   };
-}
-
-function openInSheet(): void {
-  const services: DestinationId[] = ['chatgpt', 'claude', 'gemini', 'perplexity'];
-  openSheet('open-in', 'Open in a chat service', [
-    h('p', {}, [
-      "Copies the generated Research Job to the clipboard, then opens the service's start page in a new tab. Paste it into the chat yourself; nothing is sent for you.",
-    ]),
-    h(
-      'div',
-      { class: 'service-grid' },
-      services.map((id) => h('button', { attrs: { type: 'button', 'data-destination': id }, on: { click: deliverFromSheet(id) } }, [DESTINATIONS[id].name])),
-    ),
-  ]);
 }
 
 function exportSheet(): void {
@@ -1583,7 +1571,9 @@ function bind(): void {
   $('generate').addEventListener('click', () => void generateJob());
   $('generate-again').addEventListener('click', () => void generateJob());
   $('copy-job').addEventListener('click', () => void deliver('clipboard'));
-  $('open-in-button').addEventListener('click', openInSheet);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('#bar-result .service')) {
+    button.addEventListener('click', () => void deliver(button.dataset.destination as DestinationId));
+  }
   $('export-button').addEventListener('click', exportSheet);
 
   $('menu-button').addEventListener('click', () => toggleMenu($('menu').hidden === true));
@@ -1646,6 +1636,7 @@ function bind(): void {
 }
 
 async function init(): Promise<void> {
+  hydrateIcons();
   // The same page serves as the side panel and as the toolbar popup.
   const popup = new URLSearchParams(location.search).get('view') === 'popup';
   document.documentElement.classList.toggle('popup', popup);

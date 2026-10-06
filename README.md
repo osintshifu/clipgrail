@@ -82,13 +82,14 @@ Click a source to see its status and saved text (**Text**), every capture with i
 
 ## Library
 
-**Library ↗** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
+**Library** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
 
 - **All sources** lists the sources of every session, including the Inbox and archived sessions. Each source shows its label together with its session name, because every session has its own S1.
 - Search finds sources by title, address or label, for example S3. You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
 - Click a source to read it. **Captures** lists every capture of the source, newest first. Choosing an earlier capture shows the text saved at that time. **Current text** marks the version a Research Job uses; an earlier version is shown for reading only.
-- **Open page ↗** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
-- When a source has earlier text versions, its details in the side panel link to them with **Open in library ↗**.
+- When you clip a page or a selection, ClipGrail also saves a picture of the visible part of the page. The library shows it above the source's title and address. Links saved without opening and saved tab addresses have no picture.
+- **Open page** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
+- When a source has earlier text versions, its details in the side panel link to them with **Open in library**.
 
 The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles, addresses and labels, not the saved text.
 
@@ -136,7 +137,7 @@ Every button uses the generated job exactly as shown in the preview.
 | Button | What happens |
 |---|---|
 | Copy Research Job | Copies the job to the clipboard |
-| Open in ▾ > ChatGPT, Claude, Gemini, Perplexity | Copies the job and opens the service's start page; paste it into the chat |
+| ChatGPT, Claude, Gemini, Perplexity | Copies the job and opens the service's start page; paste it into the chat |
 | Export ▾ > Markdown | Saves `clipgrail-session.md` |
 | Export ▾ > JSON | Saves `clipgrail-session.json`: the same job text plus the sources, settings and counts as structured fields, format `clipgrail-research-job`, version 1 |
 
@@ -157,7 +158,7 @@ Deleting cannot be undone. ClipGrail asks first and shows when you last made a b
 
 ClipGrail keeps its data only in the current Chrome profile, and uninstalling the extension deletes it. Back up regularly if the research matters.
 
-- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets, Research Job settings and the active session.
+- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets, Research Job settings and the active session. Page pictures are not included in backups, so restored sources have no pictures.
 - **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm.
 
 Merging a backup with existing data is not supported.
@@ -168,10 +169,11 @@ ClipGrail has no account, server or telemetry and loads no external fonts or scr
 
 | Permission | Used for |
 |---|---|
-| `activeTab` | Reading the tab you acted on, after a click on the icon, the shortcut or the right-click menu |
+| `activeTab` | Reading the tab you acted on and saving a picture of its visible part, after a click on the icon, the shortcut or the right-click menu |
 | `scripting` | Running the text extractor in that tab |
 | `sidePanel` | The side panel |
 | `contextMenus` | The right-click menu items |
+| `favicon` | Showing each source's site icon from Chrome's own icon cache; nothing is downloaded |
 | `storage` | Settings, presets, the active session and capture messages |
 | `unlimitedStorage` | Keeping research data from being removed when disk space runs low |
 | `tabs` (optional) | Reading the addresses and titles of the tabs in the current window when you save tabs; Chrome asks for it the first time |
@@ -186,6 +188,10 @@ ClipGrail reads the content of a tab only after you act on that tab. With the op
 - Page text and selections are cut at 1,000,000 characters and marked Partial text.
 - None of the chat services accepts a job passed from ClipGrail, so you paste it.
 - Data lives in one Chrome profile and is not synchronized between devices.
+
+## Third-party material
+
+ClipGrail includes the Geist and Geist Mono fonts (SIL Open Font License 1.1) and icons from Phosphor Icons and LobeHub Icons (MIT). The licence texts are in `public/licenses` and ship with the extension. ChatGPT, Claude, Gemini and Perplexity and their logos are trademarks of their owners; ClipGrail is not affiliated with them.
 
 ## Development
 

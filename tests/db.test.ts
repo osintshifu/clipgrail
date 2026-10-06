@@ -21,8 +21,11 @@ import {
   openDb,
   readAllData,
   renameSession,
+  replaceAllData,
+  saveThumbnail,
   saveJob,
   setSessionArchived,
+  thumbnailIds,
   undoCapture,
   undoCaptures,
   updateCaptureNote,
@@ -338,5 +341,31 @@ describe('undoCapture', () => {
     expect((await readAllData(db)).jobs).toHaveLength(0);
     expect((await commitCapture(db, await pageDraft(URL_B, 'b', '2026-10-06T09:03:00.000Z'))).source.number).toBe(2);
     expect(await remainderIsValid(db)).toBe(true);
+  });
+});
+
+describe('thumbnails', () => {
+  it('keeps a thumbnail only as long as its capture, and leaves it out of backups', async () => {
+    const db = await freshDb();
+    const image = 'data:image/jpeg;base64,AAAA';
+    const first = await commitCapture(db, await pageDraft(URL_A, 'one', '2026-10-06T10:00:00.000Z'));
+    const second = await commitCapture(db, await pageDraft(URL_A, 'two', '2026-10-06T10:01:00.000Z'));
+    const other = await commitCapture(db, await pageDraft(URL_B, 'b', '2026-10-06T10:02:00.000Z'));
+    for (const c of [first, second, other]) await saveThumbnail(db, c.capture.id, image);
+    expect(await thumbnailIds(db)).toEqual(new Set([first.capture.id, second.capture.id, other.capture.id]));
+
+    // Undo takes the capture's thumbnail; deleting a source takes all of its thumbnails.
+    await undoCapture(db, second.capture.id);
+    await deleteSource(db, other.source.id);
+    expect(await thumbnailIds(db)).toEqual(new Set([first.capture.id]));
+    // A capture undone before its thumbnail arrives gets none.
+    await saveThumbnail(db, second.capture.id, image);
+    expect((await thumbnailIds(db)).has(second.capture.id)).toBe(false);
+
+    // Backups leave thumbnails out, so restoring replaces them with none.
+    const data = await readAllData(db);
+    expect(JSON.stringify(data)).not.toContain(image);
+    await replaceAllData(db, data);
+    expect(await thumbnailIds(db)).toEqual(new Set());
   });
 });

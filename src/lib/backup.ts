@@ -285,7 +285,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     }
     const schemaVersion = root.db_schema_version;
     // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
-    if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== DB_SCHEMA_VERSION) {
+    // Version 4 only added thumbnails, which backups leave out: version 3 data is the same.
+    if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3 && schemaVersion !== DB_SCHEMA_VERSION) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);

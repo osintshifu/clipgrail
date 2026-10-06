@@ -15,10 +15,8 @@
 
     <nav id="nav" class="col nav" aria-label="Sessions">
       <div class="brand">
-        <button id="hide-sessions" class="icon-btn" type="button" title="Hide sessions" aria-label="Hide sessions" aria-controls="nav">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></svg>
-        </button>
-        <h1>Library</h1><span class="small">ClipGrail</span>
+        <span data-mark></span><h1>Library</h1>
+        <button id="hide-sessions" class="icon-btn" type="button" title="Hide sessions" aria-label="Hide sessions" aria-controls="nav"><span data-icon="sidebar-simple"></span></button>
       </div>
       <div id="nav-list" class="nav-list"></div>
     </nav>
@@ -26,12 +24,10 @@
     <section id="list-col" class="col list-col" aria-labelledby="list-title">
       <div class="list-top">
         <div class="list-head">
-          <button id="show-sessions" class="icon-btn" type="button" title="Show sessions" aria-label="Show sessions" aria-controls="nav" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></svg>
-          </button>
+          <button id="show-sessions" class="icon-btn" type="button" title="Show sessions" aria-label="Show sessions" aria-controls="nav" hidden><span data-icon="sidebar-simple"></span></button>
           <h2 id="list-title"></h2>
         </div>
-        <input id="search" type="search" placeholder="Search title, address or label" aria-label="Search title, address or label" autocomplete="off" />
+        <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search title, address or label" aria-label="Search title, address or label" autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
         <div class="filters">
           <select id="status-filter" aria-label="Status">
             <option value="any">All statuses</option>
@@ -49,10 +45,8 @@
           <input id="select-all" type="checkbox" title="Select all shown sources" aria-label="Select all shown sources" />
           <b id="selection-count" role="status"></b>
           <span class="grow"></span>
-          <button id="delete-selected" class="btn-sm delete" type="button" aria-haspopup="dialog">Delete…</button>
-          <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-          </button>
+          <button id="delete-selected" class="btn-sm delete" type="button" aria-haspopup="dialog"><span data-icon="trash"></span>Delete…</button>
+          <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection"><span data-icon="x"></span></button>
         </div>
       </div>
       <ul id="rows" class="rows" aria-labelledby="list-title"></ul>
@@ -64,8 +58,8 @@
     </section>
     <!-- Shown next to Move to… while a source is open. -->
     <button id="expand-reader" class="icon-btn" type="button" data-id="expand-reader" aria-pressed="false" hidden>
-      <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path d="M21 3l-7 7" /><path d="M3 21l7-7" /></svg>
-      <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6" /><path d="M20 10h-6V4" /><path d="M14 10l7-7" /><path d="M3 21l7-7" /></svg>
+      <span class="icon-expand" data-icon="arrows-out-simple"></span>
+      <span class="icon-collapse" data-icon="arrows-in-simple"></span>
     </button>
     <dialog id="library-dialog" aria-label="Organize research"></dialog>
     <div id="library-notice" class="library-notice" role="status" hidden></div>

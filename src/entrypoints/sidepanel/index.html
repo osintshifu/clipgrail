@@ -8,20 +8,21 @@
   <body>
     <header id="top" class="top">
       <div class="head-row">
+        <span data-mark></span>
         <button id="session-button" class="session-button" type="button" aria-haspopup="dialog" title="Switch or manage sessions">
           <span class="session-label">Session</span>
           <span id="session-name" class="session-name"></span>
           <span id="session-archived" class="chip pending" hidden>Archived</span>
-          <span class="caret" aria-hidden="true">▾</span>
+          <span class="caret" data-icon="caret-down"></span>
         </button>
-        <button id="library-button" class="lib-btn" type="button" title="All sessions and sources in a browser tab">Library ↗</button>
+        <button id="library-button" class="lib-btn" type="button" title="All sessions and sources in a browser tab">Library<span data-icon="arrow-up-right"></span></button>
         <div class="menu-wrap">
-          <button id="menu-button" class="icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="Data and more">···</button>
+          <button id="menu-button" class="icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="Data and more"><span data-icon="dots-three"></span></button>
           <div id="menu" class="menu" role="menu" hidden>
             <p class="menu-note">Research data is stored only in this browser profile. Uninstalling ClipGrail deletes it.</p>
             <p id="storage-summary" class="menu-note storage-summary"></p>
-            <button id="backup-button" role="menuitem" type="button">Back up all data (JSON)</button>
-            <button id="restore-button" role="menuitem" type="button">Restore from backup…</button>
+            <button id="backup-button" role="menuitem" type="button"><span data-icon="download-simple"></span>Back up all data (JSON)</button>
+            <button id="restore-button" role="menuitem" type="button"><span data-icon="upload-simple"></span>Restore from backup…</button>
             <button id="tab-access-button" role="menuitem" type="button" hidden>Turn off tab access</button>
             <div class="menu-sep" role="separator"></div>
             <div role="group" aria-labelledby="open-in-title">
@@ -30,7 +31,7 @@
               <button id="open-in-popup" role="menuitemradio" aria-checked="false" type="button">Popup</button>
             </div>
             <div class="menu-sep" role="separator"></div>
-            <button id="help-button" role="menuitem" type="button">How capture works</button>
+            <button id="help-button" role="menuitem" type="button"><span data-icon="question"></span>How capture works</button>
           </div>
         </div>
       </div>
@@ -53,7 +54,7 @@
           </div>
           <div class="notes">
             <button id="notes-toggle" class="notes-toggle" type="button" aria-expanded="false" aria-controls="session-notes">
-              <span id="notes-label">Session notes</span><span id="notes-chevron" aria-hidden="true">▾</span>
+              <span class="row"><span data-icon="note-pencil"></span><span id="notes-label">Session notes</span></span><span id="notes-chevron" class="chevron" data-icon="caret-down"></span>
             </button>
             <textarea id="session-notes" rows="4" aria-label="Session notes" placeholder="Private notes for this session. Left out of Research Jobs unless you include notes." hidden></textarea>
           </div>
@@ -74,7 +75,7 @@
             <div class="row between">
               <label for="prompt" class="section-title">Prompt</label>
               <div class="menu-wrap">
-                <button id="presets-button" class="link" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="presets-menu">Presets ▾</button>
+                <button id="presets-button" class="link" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="presets-menu">Presets<span data-icon="caret-down"></span></button>
                 <div id="presets-menu" class="menu presets-menu" role="menu" hidden></div>
               </div>
             </div>
@@ -102,7 +103,7 @@
 
           <section class="options">
             <button id="options-toggle" class="options-toggle" type="button" aria-expanded="false" aria-controls="options-body">
-              <span>Options<span id="options-summary" class="muted"></span></span><span id="options-chevron" class="muted" aria-hidden="true">▾</span>
+              <span>Options<span id="options-summary" class="muted"></span></span><span id="options-chevron" class="chevron" data-icon="caret-down"></span>
             </button>
             <div id="options-body" class="options-body" hidden>
               <label class="limit-row">
@@ -141,21 +142,28 @@
       <div id="toast" class="toast" hidden>
         <span id="toast-text" role="status"></span>
         <button id="toast-undo" type="button" hidden>Undo</button>
-        <button id="toast-close" class="close" type="button" aria-label="Dismiss">×</button>
+        <button id="toast-close" class="close" type="button" aria-label="Dismiss"><span data-icon="x"></span></button>
       </div>
       <div id="bar-collect" class="action-bar">
-        <button id="clip-page" class="primary grow" type="button">Clip page</button>
-        <button id="clip-selection" type="button">Selection</button>
-        <button id="tabs-button" type="button" aria-haspopup="dialog">Tabs ▾</button>
+        <button id="clip-page" class="primary grow" type="button"><span data-icon="frame-corners"></span>Clip page</button>
+        <button id="clip-selection" type="button"><span data-icon="cursor-text"></span>Selection</button>
+        <button id="tabs-button" type="button" aria-haspopup="dialog"><span data-icon="browsers"></span>Tabs<span data-icon="caret-down"></span></button>
       </div>
       <div id="bar-prepare" class="action-bar column" hidden>
         <p id="generate-hint" class="small" hidden></p>
         <button id="generate" class="primary" type="button">Generate Research Job</button>
       </div>
-      <div id="bar-result" class="action-bar" hidden>
-        <button id="copy-job" class="primary grow" type="button">Copy Research Job</button>
-        <button id="open-in-button" type="button" aria-haspopup="dialog">Open in ▾</button>
-        <button id="export-button" type="button" aria-haspopup="dialog">Export ▾</button>
+      <div id="bar-result" class="action-bar result-bar" hidden>
+        <div class="result-main">
+          <button id="copy-job" class="primary grow" type="button"><span data-icon="copy"></span>Copy Research Job</button>
+          <button id="export-button" type="button" aria-haspopup="dialog">Export<span data-icon="caret-down"></span></button>
+        </div>
+        <div class="open-in" role="group" aria-label="Copy the Research Job and open a chat service">
+          <button class="service" type="button" data-destination="chatgpt" title="Copy the Research Job and open ChatGPT"><span data-brand="chatgpt"></span>ChatGPT</button>
+          <button class="service" type="button" data-destination="claude" title="Copy the Research Job and open Claude"><span data-brand="claude"></span>Claude</button>
+          <button class="service" type="button" data-destination="gemini" title="Copy the Research Job and open Gemini"><span data-brand="gemini"></span>Gemini</button>
+          <button class="service" type="button" data-destination="perplexity" title="Copy the Research Job and open Perplexity"><span data-brand="perplexity"></span>Perplexity</button>
+        </div>
       </div>
     </footer>
 
@@ -164,7 +172,7 @@
       <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
         <div class="sheet-head">
           <h2 id="sheet-title"></h2>
-          <button id="sheet-close" class="close" type="button" aria-label="Close">×</button>
+          <button id="sheet-close" class="close" type="button" aria-label="Close"><span data-icon="x"></span></button>
         </div>
         <div id="sheet-body" class="sheet-body"></div>
       </div>

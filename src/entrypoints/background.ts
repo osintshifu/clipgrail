@@ -3,12 +3,13 @@ import { defineBackground } from 'wxt/utils/define-background';
 import type { CaptureOutcome, TabInfo } from '../lib/capture';
 import { captureLink, capturePage, captureSelection } from '../lib/capture';
 import { announceDataChange } from '../lib/changes';
-import { openDb, setWriteListener } from '../lib/db';
+import { openDb, saveThumbnail, setWriteListener } from '../lib/db';
 import type { ClipResponse } from '../lib/messages';
 import { isClipRequest } from '../lib/messages';
 import { openLibrary } from '../lib/library-tab';
 import { publishNotice } from '../lib/notice';
 import { OPEN_MODE_KEY, getActiveSessionId, getOpenMode, resolveActiveSessionId } from '../lib/settings';
+import { captureThumbnail } from '../lib/thumbnail';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -36,10 +37,15 @@ async function run(
   windowId: number | undefined,
   sessionId: string | undefined,
   capture: (db: IDBDatabase, sessionId: string) => Promise<CaptureOutcome>,
+  thumbnail?: Promise<string | null>,
 ): Promise<ClipResponse> {
   try {
     const db = await getDb();
-    return await report(await capture(db, sessionId ?? (await resolveActiveSessionId(db))), windowId);
+    const outcome = await capture(db, sessionId ?? (await resolveActiveSessionId(db)));
+    const image = outcome.saved ? await thumbnail : null;
+    // A missing thumbnail never fails the capture.
+    if (outcome.saved && image) await saveThumbnail(db, outcome.result.capture.id, image).catch(() => undefined);
+    return await report(outcome, windowId);
   } catch (error) {
     const message = `Capture failed: ${error instanceof Error ? error.message : String(error)}`;
     await publishNotice({ window_id: windowId ?? null, level: 'error', text: message, capture_id: null });
@@ -170,10 +176,13 @@ export default defineBackground(() => {
     }
     showResult(tab?.windowId);
     if (info.menuItemId === 'clip-page' && tab) {
-      void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId));
+      void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId), captureThumbnail(tab.windowId));
     } else if (info.menuItemId === 'clip-selection' && tab) {
-      void run(tab.windowId, undefined, (db, sessionId) =>
-        captureSelection(db, tab, sessionId, { frameId: info.frameId, menuSelectionText: info.selectionText }),
+      void run(
+        tab.windowId,
+        undefined,
+        (db, sessionId) => captureSelection(db, tab, sessionId, { frameId: info.frameId, menuSelectionText: info.selectionText }),
+        captureThumbnail(tab.windowId),
       );
     } else if (info.menuItemId === 'save-link' && info.linkUrl) {
       const link = { url: info.linkUrl, pageUrl: info.pageUrl, frameId: info.frameId };
@@ -184,16 +193,21 @@ export default defineBackground(() => {
   browser.commands.onCommand.addListener((command, tab) => {
     if (command !== 'clip-page' || !tab) return;
     showResult(tab.windowId);
-    void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId));
+    void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId), captureThumbnail(tab.windowId));
   });
 
   browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!isClipRequest(message)) return false;
-    void run(message.windowId, message.sessionId, async (db, sessionId) => {
-      const tab = await activeTab(message.windowId);
-      if (!tab) return capturePage(db, {}, sessionId);
-      return message.what === 'page' ? capturePage(db, tab, sessionId) : captureSelection(db, tab, sessionId);
-    }).then(sendResponse);
+    void run(
+      message.windowId,
+      message.sessionId,
+      async (db, sessionId) => {
+        const tab = await activeTab(message.windowId);
+        if (!tab) return capturePage(db, {}, sessionId);
+        return message.what === 'page' ? capturePage(db, tab, sessionId) : captureSelection(db, tab, sessionId);
+      },
+      captureThumbnail(message.windowId),
+    ).then(sendResponse);
     return true;
   });
 });

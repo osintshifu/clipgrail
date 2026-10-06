@@ -1,7 +1,7 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import type { DeletionText } from '../../lib/describe';
 import {
@@ -21,6 +21,8 @@ import {
   statusSentence,
 } from '../../lib/describe';
 import { $, fill, h } from '../../lib/dom';
+import { faviconTile, faviconUrl } from '../../lib/favicon';
+import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, versionsOf } from '../../lib/library';
 import type { LibraryFilter, LibraryRow, LibrarySort, Version } from '../../lib/library';
@@ -45,6 +47,9 @@ let archivedOpen = false;
 let detailsOpen = false;
 /** Snapshot texts already read. A saved text never changes, so they can be kept. */
 const texts = new Map<string, string>();
+/** Captures that have a page thumbnail, and the thumbnails read so far. */
+let thumbIds = new Set<string>();
+const thumbs = new Map<string, Promise<string | null>>();
 const wide = window.matchMedia('(min-width: 901px)');
 let layout: LibraryLayout = { sessions_hidden: false, reader_expanded: false };
 /** Sources selected to delete several at once; always a subset of the sources shown. */
@@ -105,6 +110,36 @@ function changeLayout(changes: Partial<LibraryLayout>, focus?: HTMLElement): voi
   saveLibraryLayout(layout).catch((error: unknown) => notice(`Layout not saved: ${errorText(error)}`));
 }
 
+// ---------- Thumbnails ----------
+
+/** The capture whose thumbnail shows a source: the given one if it has a thumbnail, else the newest that has one. */
+function thumbCapture(entry: { captures: { capture: { id: string } }[] }, preferred?: string): string | undefined {
+  if (preferred && thumbIds.has(preferred)) return preferred;
+  return [...entry.captures].reverse().find((c) => thumbIds.has(c.capture.id))?.capture.id;
+}
+
+/** An image filled in once its thumbnail is read. */
+function thumbImage(captureId: string, cls: string, alt: string): HTMLImageElement {
+  const img = h('img', { class: cls, attrs: { alt, decoding: 'async' } });
+  if (!thumbs.has(captureId)) thumbs.set(captureId, loadThumbnail(db, captureId).catch(() => null));
+  void thumbs.get(captureId)!.then((src) => {
+    if (src) img.src = src;
+    else img.remove();
+  });
+  return img;
+}
+
+function thumbCaptureImage(entry: { captures: { capture: { id: string } }[] }): HTMLImageElement | null {
+  const id = thumbCapture(entry);
+  return id ? thumbImage(id, 'thumb', '') : null;
+}
+
+/** The page as it looked at the viewed capture (or the newest one with a thumbnail), above its address. */
+function readerThumb(entry: { captures: { capture: { id: string } }[] }, viewedId: string): HTMLImageElement | null {
+  const id = thumbCapture(entry, viewedId);
+  return id ? thumbImage(id, 'reader-thumb', 'The page as it looked when it was clipped') : null;
+}
+
 // ---------- Sessions ----------
 
 function renderNav(): void {
@@ -115,13 +150,14 @@ function renderNav(): void {
   if (archived.some((s) => s.id === filter.view)) archivedOpen = true;
   const item = (key: string, name: string, n: number, session?: Session) => {
     const button = h('button', { class: 'nav-item', attrs: { type: 'button', 'aria-current': String(filter.view === key) }, on: { click: () => setView(key) } }, [
+      icon(key === ALL_SOURCES ? 'stack' : key === INBOX_SESSION_ID ? 'tray' : 'folder-simple'),
       h('span', { class: 'name', attrs: { title: name } }, [name]),
       session?.id === activeId ? h('span', { class: 'active-tag', attrs: { title: 'Active session: new clips go here' } }, ['Active']) : null,
       h('span', { class: 'count' }, [fmtNumber(n)]),
     ]);
     if (!session) return button;
     return h('div', { class: 'nav-row' }, [button,
-      h('button', { class: 'session-actions', attrs: { type: 'button', 'data-session': session.id, 'aria-label': `Actions for ${name}`, 'aria-haspopup': 'dialog' }, on: { click: (event) => openSessionActions(session, event.currentTarget as HTMLElement) } }, ['···']),
+      h('button', { class: 'session-actions', attrs: { type: 'button', 'data-session': session.id, 'aria-label': `Actions for ${name}`, 'aria-haspopup': 'dialog' }, on: { click: (event) => openSessionActions(session, event.currentTarget as HTMLElement) } }, [icon('dots-three')]),
     ]);
   };
   const toggle = h(
@@ -136,7 +172,7 @@ function renderNav(): void {
         },
       },
     },
-    [h('span', { class: 'name' }, [`${archivedOpen ? '▾' : '▸'} Archived`]), h('span', { class: 'count' }, [fmtNumber(archived.length)])],
+    [icon('archive'), h('span', { class: 'name' }, ['Archived']), h('span', { class: 'chevron' }, [icon('caret-right')]), h('span', { class: 'count' }, [fmtNumber(archived.length)])],
   );
   fill($('nav-list'), [
     item(ALL_SOURCES, 'All sources', rows.length),
@@ -206,6 +242,8 @@ function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
         },
       },
       [
+        thumbCaptureImage(entry),
+        faviconTile(entry.source.dedup_url),
         h('span', { class: 'src-body' }, [
           h('span', { class: `src-title${row.title ? '' : ' untitled'}` }, [name]),
           h('span', { class: 'src-meta' }, [
@@ -265,6 +303,7 @@ function renderSelection(): void {
     box.closest('li')?.classList.toggle('picked', on);
   }
   $('selection-bar').hidden = picked.size === 0;
+  $('rows').classList.toggle('selecting', picked.size > 0);
   $('selection-count').textContent = `${fmtNumber(picked.size)} of ${fmtNumber(shown.length)} selected`;
   const all = $<HTMLInputElement>('select-all');
   all.checked = picked.size > 0 && picked.size === shown.length;
@@ -528,14 +567,16 @@ function renderReaderContents(): void {
       h('span', {}, ['·']),
       h('button', { class: 'link', attrs: { type: 'button', title: `Show all sources of ${session.name}` }, on: { click: () => setView(session.id) } }, [session.name]),
       session.archived_at ? h('span', { class: 'chip pending' }, ['Archived']) : null,
-      h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, ['Move to…']),
-      h('button', { class: 'btn-sm delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmDeleteSource(row) } }, ['Delete…']),
+      h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, [icon('folder-simple'), 'Move to…']),
+      h('button', { class: 'btn-sm delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmDeleteSource(row) } }, [icon('trash'), 'Delete…']),
       expandButton,
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
+    readerThumb(entry, viewed.capture.capture.id),
     h('div', { class: 'url-row' }, [
+      h('img', { class: 'fav-sm', attrs: { src: faviconUrl(url), alt: '' } }),
       h('span', { class: 'url' }, [url]),
-      h('a', { class: 'btn-sm', attrs: { id: 'open-page', href: url, target: '_blank', rel: 'noopener noreferrer' } }, ['Open page ↗']),
+      h('a', { class: 'btn-sm', attrs: { id: 'open-page', href: url, target: '_blank', rel: 'noopener noreferrer' } }, [icon('arrow-square-out'), 'Open page']),
     ]),
     h('div', { class: 'status-line' }, [chip(row.status), h('span', {}, [statusSentence(entry)])]),
     activeSessionBanner(row),
@@ -556,6 +597,10 @@ function renderReaderContents(): void {
 
 const dialog = $<HTMLDialogElement>('library-dialog');
 let dialogOpener: HTMLElement | null = null;
+/** False when a click elsewhere closed the dialog: focus then stays where the user clicked. */
+let restoreDialogFocus = true;
+/** True while a confirmation replaces the session menu it was opened from. */
+let replacingMenu = false;
 
 function notice(message: string): void {
   $('library-notice').textContent = message;
@@ -563,12 +608,17 @@ function notice(message: string): void {
 }
 
 function openDialog(title: string, body: Child[], opener: HTMLElement | null, sessionMenu = false): void {
+  // Chrome cannot turn an open session menu into a modal dialog, so the menu closes first.
+  if (dialog.open) {
+    replacingMenu = true;
+    dialog.close();
+  }
   dialogOpener = opener;
   dialog.classList.toggle('session-dialog', sessionMenu);
   dialog.style.removeProperty('left');
   dialog.style.removeProperty('top');
   fill(dialog, [
-    h('div', { class: 'row between' }, [h('h2', {}, [title]), h('button', { class: 'close', attrs: { type: 'button', 'aria-label': 'Close' }, on: { click: () => dialog.close() } }, ['×'])]),
+    h('div', { class: 'row between' }, [h('h2', {}, [title]), h('button', { class: 'close', attrs: { type: 'button', 'aria-label': 'Close' }, on: { click: () => dialog.close() } }, [icon('x')])]),
     ...body,
     h('p', { class: 'dialog-error', attrs: { id: 'dialog-error', role: 'alert', hidden: '' } }),
   ]);
@@ -579,7 +629,16 @@ function openDialog(title: string, body: Child[], opener: HTMLElement | null, se
   }
   // Moving focus to a dialog must not replace a note draft changed in another view.
   document.querySelectorAll<HTMLElement>('.note-editor').forEach((e) => { e.inert = true; });
-  dialog.showModal();
+  // A session menu is not modal: a click anywhere else closes it and still does its job.
+  if (sessionMenu) opener?.setAttribute('aria-expanded', 'true');
+  if (sessionMenu) dialog.show();
+  else dialog.showModal();
+}
+
+/** Closes the dialog after a click outside it, leaving focus where the user clicked. */
+function dismissDialog(): void {
+  restoreDialogFocus = false;
+  dialog.close();
 }
 
 function dialogFailure(message: string): void {
@@ -588,6 +647,7 @@ function dialogFailure(message: string): void {
 }
 
 function openSessionActions(session: Session, opener: HTMLElement): void {
+  if (dialog.open && dialogOpener === opener) return dialog.close();
   if (session.id === INBOX_SESSION_ID) {
     openDialog(session.name, [
       h('button', { class: 'delete', attrs: { type: 'button', id: 'empty-inbox' }, on: { click: () => void confirmEmptyInbox(opener) } }, ['Empty Inbox…']),
@@ -779,7 +839,7 @@ async function reload(): Promise<void> {
   const focus = active?.dataset.id ? { id: active.dataset.id, inRows: !!active.closest('#rows') } : null;
   const restoreNote = keepNoteFocus();
   const scroll = [$('list-col').scrollTop, $('reader-col').scrollTop] as const;
-  data = await loadLibrary(db);
+  [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);
   rows = libraryRows(data);
   if (filter.view !== ALL_SOURCES && !sessionOf(filter.view)) filter.view = ALL_SOURCES;
   renderNav();
@@ -866,19 +926,46 @@ function bind(): void {
     if (session) openSessionActions(session, event.currentTarget as HTMLElement);
   });
   dialog.addEventListener('close', () => {
+    document.querySelectorAll('[aria-haspopup][aria-expanded="true"]').forEach((b) => b.removeAttribute('aria-expanded'));
+    if (replacingMenu) return void (replacingMenu = false);
     document.querySelectorAll<HTMLElement>('.note-editor').forEach((e) => { e.inert = false; });
-    (dialogOpener?.isConnected ? dialogOpener : document.getElementById('move-source') ?? $('search')).focus({ preventScroll: true });
+    if (restoreDialogFocus) (dialogOpener?.isConnected ? dialogOpener : document.getElementById('move-source') ?? $('search')).focus({ preventScroll: true });
+    restoreDialogFocus = true;
+  });
+  // A session menu closes on a press anywhere else (its own ··· button toggles it instead).
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target as Node;
+    if (dialog.open && !dialog.contains(target) && !dialogOpener?.contains(target)) dismissDialog();
+  }, true);
+  // A click on the backdrop of a modal dialog cancels it, like Cancel.
+  dialog.addEventListener('click', (event) => {
+    if (event.target !== dialog) return;
+    const box = dialog.getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+  });
+  document.addEventListener('keydown', (event) => {
+    // "/" jumps to the search field, as in many web apps.
+    const target = event.target as HTMLElement;
+    if (event.key === '/' && !dialog.open && !target.closest('input, textarea, select, [contenteditable]')) {
+      event.preventDefault();
+      $('search').focus();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    // Escape closes a modal dialog by itself; the session menu needs this.
+    if (event.key === 'Escape' && dialog.open && dialog.classList.contains('session-dialog')) dialog.close();
   });
 }
 
 async function init(): Promise<void> {
+  hydrateIcons();
   bind();
   try {
     db = await openDb();
     setWriteListener(announceDataChange);
     activeId = await getActiveSessionId();
     layout = await getLibraryLayout();
-    data = await loadLibrary(db);
+    [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);
     rows = libraryRows(data);
     readHash();
     writeHash();

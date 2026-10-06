@@ -14,6 +14,8 @@ export default defineConfig({
       'scripting',
       'sidePanel',
       'contextMenus',
+      // Favicons of saved pages, read from Chrome's own cache (no network request).
+      'favicon',
       // Settings, presets and the active session (chrome.storage.local); capture notices (chrome.storage.session).
       'storage',
       // Keeps research data in IndexedDB out of quota limits and storage eviction.
