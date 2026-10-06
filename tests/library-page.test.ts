@@ -172,7 +172,7 @@ describe('organizing in the library', () => {
     expand().click();
     expect(document.body.classList.contains('reader-expanded')).toBe(true);
     expect(expand().getAttribute('aria-label')).toBe('Show all columns');
-    await vi.waitFor(() => expect(fake.local.libraryLayout).toEqual({ sessions_hidden: true, reader_expanded: true }));
+    await vi.waitFor(() => expect(fake.local.libraryLayout).toMatchObject({ sessions_hidden: true, reader_expanded: true }));
 
     // With no source open the list comes back, so there is always something to pick from.
     location.hash = '#view=all';
@@ -180,6 +180,21 @@ describe('organizing in the library', () => {
     expect(document.getElementById('expand-reader')).toBeNull();
     $('show-sessions').click();
     expect(document.body.classList.contains('sessions-hidden')).toBe(false);
+  });
+
+  it('changes the widths of the sessions and sources columns from their borders and remembers them', async () => {
+    await openExample('Widths');
+    const key = (id: string, init: KeyboardEventInit) => $(id).dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+    key('resize-list', { key: 'ArrowRight' });
+    key('resize-list', { key: 'ArrowRight', shiftKey: true });
+    expect(document.body.style.getPropertyValue('--list-w')).toBe('492px');
+    expect($('resize-list').getAttribute('aria-valuenow')).toBe('492');
+    await vi.waitFor(() => expect(fake.local.libraryLayout).toMatchObject({ nav_width: 240, list_width: 492 }));
+    // Never narrower than the minimum, and a double-click restores the usual width.
+    for (let i = 0; i < 10; i++) key('resize-nav', { key: 'ArrowLeft', shiftKey: true });
+    expect(document.body.style.getPropertyValue('--nav-w')).toBe('180px');
+    $('resize-nav').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    expect(document.body.style.getPropertyValue('--nav-w')).toBe('240px');
   });
 
   it('deletes the open source and empties the Inbox after confirmation', async () => {

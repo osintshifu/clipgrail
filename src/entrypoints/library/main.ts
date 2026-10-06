@@ -30,8 +30,8 @@ import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
-import { getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout, getLastBackupAt, dropExcludedSources, removeJobSettings } from '../../lib/settings';
-import type { LibraryLayout } from '../../lib/settings';
+import { LIST_WIDTH, NAV_WIDTH, clampWidth, getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout, getLastBackupAt, dropExcludedSources, removeJobSettings } from '../../lib/settings';
+import type { LibraryLayout, WidthRange } from '../../lib/settings';
 
 import { finishNoteWrites, keepNoteFocus, noteEditor } from '../../lib/note-editor';
 
@@ -51,7 +51,7 @@ const texts = new Map<string, string>();
 let thumbIds = new Set<string>();
 const thumbs = new Map<string, Promise<string | null>>();
 const wide = window.matchMedia('(min-width: 901px)');
-let layout: LibraryLayout = { sessions_hidden: false, reader_expanded: false };
+let layout: LibraryLayout = { sessions_hidden: false, reader_expanded: false, nav_width: NAV_WIDTH.initial, list_width: LIST_WIDTH.initial };
 /** Sources selected to delete several at once; always a subset of the sources shown. */
 const picked = new Set<string>();
 let pickAnchor: string | null = null;
@@ -93,6 +93,14 @@ function setReading(reading: boolean): void {
 
 /** The reader is expanded only while a source is open, so the list is never hidden with nothing to read. */
 function applyLayout(): void {
+  document.body.style.setProperty('--nav-w', `${layout.nav_width}px`);
+  document.body.style.setProperty('--list-w', `${layout.list_width}px`);
+  for (const [id, value, range] of [['resize-nav', layout.nav_width, NAV_WIDTH], ['resize-list', layout.list_width, LIST_WIDTH]] as const) {
+    const handle = $(id);
+    handle.setAttribute('aria-valuenow', String(value));
+    handle.setAttribute('aria-valuemin', String(range.min));
+    handle.setAttribute('aria-valuemax', String(range.max));
+  }
   const expanded = layout.reader_expanded && !!selectedRow();
   document.body.classList.toggle('sessions-hidden', layout.sessions_hidden);
   document.body.classList.toggle('reader-expanded', expanded);
@@ -108,6 +116,44 @@ function changeLayout(changes: Partial<LibraryLayout>, focus?: HTMLElement): voi
   applyLayout();
   focus?.focus();
   saveLibraryLayout(layout).catch((error: unknown) => notice(`Layout not saved: ${errorText(error)}`));
+}
+
+/**
+ * A column border: dragging it or the arrow keys (Shift for bigger steps)
+ * change the column's width, a double-click restores it.
+ */
+function bindResize(handle: HTMLElement, key: 'nav_width' | 'list_width', range: WidthRange, columnStart: () => number): void {
+  handle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing');
+    const drag = new AbortController();
+    handle.addEventListener(
+      'pointermove',
+      (move) => {
+        layout = { ...layout, [key]: clampWidth(move.clientX - columnStart(), range) };
+        applyLayout();
+      },
+      { signal: drag.signal },
+    );
+    const end = () => {
+      drag.abort();
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      changeLayout({});
+    };
+    handle.addEventListener('pointerup', end, { signal: drag.signal });
+    handle.addEventListener('pointercancel', end, { signal: drag.signal });
+  });
+  handle.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 64 : 16;
+    const delta = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+    if (!delta) return;
+    event.preventDefault();
+    changeLayout({ [key]: clampWidth(layout[key] + delta, range) });
+  });
+  handle.addEventListener('dblclick', () => changeLayout({ [key]: range.initial }));
 }
 
 // ---------- Thumbnails ----------
@@ -887,6 +933,8 @@ function bind(): void {
   $('delete-selected').addEventListener('click', () => void confirmDeleteSelected());
   $('hide-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: true }, $('show-sessions')));
   $('show-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: false }, $('hide-sessions')));
+  bindResize($('resize-nav'), 'nav_width', NAV_WIDTH, () => 0);
+  bindResize($('resize-list'), 'list_width', LIST_WIDTH, () => (layout.sessions_hidden ? 0 : layout.nav_width));
   expandButton.addEventListener('click', () => changeLayout({ reader_expanded: !document.body.classList.contains('reader-expanded') }));
   $<HTMLSelectElement>('view-select').addEventListener('change', (event) => setView((event.target as HTMLSelectElement).value));
   $('back-button').addEventListener('click', () => {

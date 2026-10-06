@@ -93,6 +93,7 @@ Click a source to see its status and saved text (**Text**), every capture with i
 - When you clip a page or a selection, ClipGrail also saves a picture of the visible part of the page. The library shows it above the source's title and address. Links saved without opening and saved tab addresses have no picture.
 - **Open page** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
 - When a source has earlier text versions, its details in the side panel link to them with **Open in library**.
+- Drag the border between two columns to change their width, or focus the border and use the arrow keys; a double-click restores the usual width. The icon at the top of the sessions column hides it, and the arrows next to an open source widen the reader to the whole window.
 
 The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles, addresses and labels, not the saved text.
 

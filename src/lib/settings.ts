@@ -75,11 +75,31 @@ export async function setLastBackupAt(at: string): Promise<void> {
 export interface LibraryLayout {
   sessions_hidden: boolean;
   reader_expanded: boolean;
+  /** Widths of the sessions and sources columns in CSS pixels, set by dragging their borders. */
+  nav_width: number;
+  list_width: number;
+}
+
+export interface WidthRange {
+  min: number;
+  max: number;
+  initial: number;
+}
+export const NAV_WIDTH: WidthRange = { min: 180, max: 420, initial: 240 };
+export const LIST_WIDTH: WidthRange = { min: 300, max: 760, initial: 412 };
+
+export function clampWidth(value: unknown, range: WidthRange): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.min(range.max, Math.max(range.min, value))) : range.initial;
 }
 
 export async function getLibraryLayout(): Promise<LibraryLayout> {
   const stored = (await browser.storage.local.get(LIBRARY_LAYOUT_KEY))[LIBRARY_LAYOUT_KEY] as Partial<LibraryLayout> | undefined;
-  return { sessions_hidden: stored?.sessions_hidden === true, reader_expanded: stored?.reader_expanded === true };
+  return {
+    sessions_hidden: stored?.sessions_hidden === true,
+    reader_expanded: stored?.reader_expanded === true,
+    nav_width: clampWidth(stored?.nav_width, NAV_WIDTH),
+    list_width: clampWidth(stored?.list_width, LIST_WIDTH),
+  };
 }
 
 export async function saveLibraryLayout(layout: LibraryLayout): Promise<void> {

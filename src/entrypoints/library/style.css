@@ -1,7 +1,15 @@
 @import '../../styles/base.css';
 
 /* Three columns: sessions, sources, the open source. Each scrolls on its own. */
-body { display: grid; grid-template-columns: 240px 412px minmax(0, 1fr); height: 100vh; overflow: hidden; }
+body { position: relative; display: grid; grid-template-columns: var(--nav-w, 240px) var(--list-w, 412px) minmax(0, 1fr); height: 100vh; overflow: hidden; }
+/* A column border to drag: a thin line that lights up on hover, focus and while dragging. */
+.resize-handle { position: absolute; top: 0; bottom: 0; z-index: 4; width: 9px; margin-left: -5px; cursor: col-resize; touch-action: none; }
+.resize-handle::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; transition: background-color 0.15s var(--ease); }
+.resize-handle:hover::after, .resize-handle:focus-visible::after, .resize-handle.dragging::after { background: var(--accent); }
+.resize-handle:focus-visible { outline: none; }
+#resize-nav { left: var(--nav-w, 240px); }
+#resize-list { left: calc(var(--nav-w, 240px) + var(--list-w, 412px)); }
+body.resizing { cursor: col-resize; user-select: none; }
 .col { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .empty { padding: 56px 24px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; align-items: center; line-height: 1.55; }
 .empty::before { content: ''; width: 48px; height: 48px; border-radius: 14px; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); margin-bottom: 4px; }
@@ -99,7 +107,8 @@ select:focus { background-color: var(--surface); }
 
 /* The open source */
 .reader-col { background: var(--surface); }
-.reader { padding: 18px 32px 40px; display: flex; flex-direction: column; gap: 16px; max-width: 860px; }
+/* Centred in its column, so a wide window has no empty strip on one side. */
+.reader { padding: 18px 32px 40px; display: flex; flex-direction: column; gap: 16px; max-width: 1000px; margin-inline: auto; }
 .crumb { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .crumb .link { font-size: 12.5px; font-weight: 500; color: var(--fg-2); }
 .crumb .link:hover:not(:disabled) { color: var(--accent); }
@@ -139,7 +148,6 @@ select:focus { background-color: var(--surface); }
 .text-box {
   margin: 0; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 22px 28px;
   white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 14.5px; line-height: 1.7; color: var(--fg-2);
-  max-width: 76ch;
 }
 .text-cut { font-size: 12px; color: var(--st-partial); font-weight: 600; }
 .no-text { padding: 22px 12px; text-align: center; color: var(--muted); font-size: 12.5px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); }
@@ -168,11 +176,12 @@ details summary:hover { color: var(--fg); }
 #expand-reader .icon-collapse, body.reader-expanded #expand-reader .icon-expand { display: none; }
 body.reader-expanded #expand-reader .icon-collapse { display: grid; }
 @media (min-width: 901px) {
-  body.sessions-hidden { grid-template-columns: 412px minmax(0, 1fr); }
+  body.sessions-hidden { grid-template-columns: var(--list-w, 412px) minmax(0, 1fr); }
+  body.sessions-hidden #resize-nav, body.reader-expanded .resize-handle { display: none; }
+  body.sessions-hidden #resize-list { left: var(--list-w, 412px); }
   body.sessions-hidden .nav { display: none; }
   body.reader-expanded { grid-template-columns: minmax(0, 1fr); }
   body.reader-expanded .nav, body.reader-expanded .list-col { display: none; }
-  body.reader-expanded .reader { margin: 0 auto; }
 }
 
 /* Narrow windows: the session list becomes a menu and the list and the open source take turns. */
@@ -187,6 +196,7 @@ body.reader-expanded #expand-reader .icon-collapse { display: grid; }
   body:not(.reading) .reader-col { display: none; }
   .list-col { border-right: 0; }
   .reader { padding: 14px 16px 28px; }
+  .resize-handle { display: none; }
   .text-box { padding: 14px 16px; font-size: 14px; }
 }
 
