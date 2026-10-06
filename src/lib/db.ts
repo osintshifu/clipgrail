@@ -175,6 +175,11 @@ export function hasSession(db: IDBDatabase, id: string): Promise<boolean> {
   return inTransaction(db, ['sessions'], 'readonly', async (tx) => (await result(tx.objectStore('sessions').getKey(id))) !== undefined);
 }
 
+/** True when the session already has a source with this address. */
+export function hasSourceAddress(db: IDBDatabase, sessionId: string, dedupUrl: string): Promise<boolean> {
+  return inTransaction(db, ['sources'], 'readonly', async (tx) => (await result(tx.objectStore('sources').index('session_dedup_url').count([sessionId, dedupUrl]))) > 0);
+}
+
 export function listSessions(db: IDBDatabase): Promise<Session[]> {
   return inTransaction(db, ['sessions'], 'readonly', async (tx) => sortSessions((await result(tx.objectStore('sessions').getAll())) as Session[]));
 }

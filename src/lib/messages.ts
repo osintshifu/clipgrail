@@ -21,3 +21,20 @@ export function isClipRequest(value: unknown): value is ClipRequest {
     typeof v.sessionId === 'string'
   );
 }
+
+/** Starts or stops recording the pages opened in a window. */
+export interface RecordRequest {
+  type: 'record';
+  action: 'start' | 'stop';
+  windowId: number;
+}
+
+/** The captures a stopped recording saved (empty after a start). */
+export interface RecordResponse {
+  capture_ids: string[];
+}
+
+export function isRecordRequest(value: unknown): value is RecordRequest {
+  const v = value as Partial<RecordRequest> | null;
+  return !!v && v.type === 'record' && (v.action === 'start' || v.action === 'stop') && typeof v.windowId === 'number';
+}

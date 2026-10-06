@@ -24,6 +24,15 @@ button.icon { flex: none; width: 30px; height: 30px; padding: 0; border-color: t
 button.icon .ic { width: 18px; height: 18px; }
 button.icon:hover:not(:disabled), button.icon[aria-expanded='true'] { background: var(--hover); border-color: transparent; color: var(--fg); }
 
+/* Record (a dot in a ring, U+23FA) turns into a red, pulsing stop square (U+23F9) while recording; clicking it again stops. */
+/* A red dot in a ring before recording, so the button reads as Record at a glance. */
+.record-button .rec-start { display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; }
+.record-button .rec-start::after { content: ''; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; }
+.record-button .rec-stop { display: none; width: 12px; height: 12px; border-radius: 2.5px; background: #e5484d; animation: rec-pulse 1.4s ease-in-out infinite; }
+.record-button[aria-pressed='true'] .rec-start { display: none; }
+.record-button[aria-pressed='true'] .rec-stop { display: block; }
+@keyframes rec-pulse { 50% { opacity: 0.35; } }
+
 /* Menus */
 .menu-wrap { position: relative; }
 .menu {

@@ -4,12 +4,14 @@ import type { CaptureOutcome, TabInfo } from '../lib/capture';
 import { captureLink, capturePage, captureSelection } from '../lib/capture';
 import { announceDataChange } from '../lib/changes';
 import { openDb, saveThumbnail, setWriteListener } from '../lib/db';
-import type { ClipResponse } from '../lib/messages';
-import { isClipRequest } from '../lib/messages';
+import type { ClipResponse, RecordResponse } from '../lib/messages';
+import { isClipRequest, isRecordRequest } from '../lib/messages';
 import { openLibrary } from '../lib/library-tab';
 import { publishNotice } from '../lib/notice';
 import { OPEN_MODE_KEY, getActiveSessionId, getOpenMode, resolveActiveSessionId } from '../lib/settings';
 import { captureThumbnail } from '../lib/thumbnail';
+import type { Recording, TrailEntry } from '../lib/recording';
+import { RECORDING_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -127,6 +129,118 @@ async function applyOpenMode(): Promise<void> {
   ]);
 }
 
+// ---------- Recording ----------
+
+/** What each tab of the recorded window showed last; kept with the recording in session storage. */
+const TRAIL_KEY = 'recordingTrail';
+let recordingWork: Promise<unknown> = Promise.resolve();
+
+/** Runs recording work one step at a time, so its state is never written by two steps at once. */
+function serial<T>(work: () => Promise<T>): Promise<T> {
+  const next = recordingWork.then(work, work);
+  recordingWork = next.catch(() => undefined);
+  return next;
+}
+
+async function currentRecording(): Promise<Recording | null> {
+  const value: unknown = (await browser.storage.session.get(RECORDING_KEY))[RECORDING_KEY];
+  return isRecording(value) ? value : null;
+}
+
+async function trail(): Promise<Record<string, TrailEntry>> {
+  const value: unknown = (await browser.storage.session.get(TRAIL_KEY))[TRAIL_KEY];
+  return value && typeof value === 'object' ? (value as Record<string, TrailEntry>) : {};
+}
+
+function showRecordingBadge(on: boolean): void {
+  void browser.action.setBadgeText({ text: on ? 'REC' : '' });
+  if (on) void browser.action.setBadgeBackgroundColor({ color: '#d93025' });
+}
+
+async function startRecording(windowId: number): Promise<RecordResponse> {
+  // The pages already open are where the first links of the recording are found.
+  const tabs = await browser.tabs.query({ windowId });
+  const pages = Object.fromEntries(tabs.filter((t) => t.id !== undefined && t.url).map((t) => [String(t.id), { url: t.url!, found_on: null }]));
+  const recording: Recording = { window_id: windowId, started_at: new Date().toISOString(), capture_ids: [] };
+  await browser.storage.session.set({ [RECORDING_KEY]: recording, [TRAIL_KEY]: pages });
+  listenToNavigation();
+  showRecordingBadge(true);
+  return { capture_ids: [] };
+}
+
+async function stopRecording(): Promise<RecordResponse> {
+  const recording = await currentRecording();
+  await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]);
+  showRecordingBadge(false);
+  return { capture_ids: recording?.capture_ids ?? [] };
+}
+
+/** Notes where a main-frame navigation in the recorded window came from. */
+function navigated(tabId: number, url: string, transition: string, qualifiers: string[]): void {
+  void serial(async () => {
+    const recording = await currentRecording();
+    if (!recording) return;
+    const tab = await browser.tabs.get(tabId).catch(() => null);
+    if (!tab || tab.windowId !== recording.window_id || tab.incognito) return;
+    const pages = await trail();
+    const previous = pages[String(tabId)];
+    let opener: string | null = null;
+    if (!previous && tab.openerTabId !== undefined) {
+      opener = pages[String(tab.openerTabId)]?.url ?? (await browser.tabs.get(tab.openerTabId).catch(() => null))?.url ?? null;
+    }
+    pages[String(tabId)] = { url, found_on: foundOnFor({ transition, qualifiers }, previous, opener) };
+    await browser.storage.session.set({ [TRAIL_KEY]: pages });
+  });
+}
+
+/** Saves a tab's page once it has loaded; a short delay lets its title settle. */
+const pendingTabs = new Map<number, ReturnType<typeof setTimeout>>();
+function recordSoon(tabId: number): void {
+  clearTimeout(pendingTabs.get(tabId));
+  pendingTabs.set(
+    tabId,
+    setTimeout(() => {
+      pendingTabs.delete(tabId);
+      void serial(() => recordTab(tabId)).catch(() => undefined);
+    }, 700),
+  );
+}
+
+async function recordTab(tabId: number): Promise<void> {
+  const recording = await currentRecording();
+  if (!recording) return;
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (!tab?.url || tab.windowId !== recording.window_id || tab.incognito || tab.status !== 'complete') return;
+  const entry = (await trail())[String(tabId)];
+  const db = await getDb();
+  const saved = await recordVisit(db, await resolveActiveSessionId(db), {
+    url: tab.url,
+    title: tab.title ?? '',
+    found_on: entry?.url === tab.url ? entry.found_on : null,
+    at: new Date().toISOString(),
+  });
+  if (!saved) return;
+  // Stopped meanwhile: the page is saved, but no longer part of this recording's Undo.
+  const now = await currentRecording();
+  if (now?.started_at !== recording.started_at) return;
+  await browser.storage.session.set({ [RECORDING_KEY]: { ...now, capture_ids: [...now.capture_ids, saved.capture.id] } });
+}
+
+let listening = false;
+/** webNavigation is optional: its events exist once Chrome has granted it, at startup or when a recording starts. */
+function listenToNavigation(): void {
+  const navigation = browser.webNavigation as typeof browser.webNavigation | undefined;
+  if (listening || !navigation) return;
+  listening = true;
+  navigation.onCommitted.addListener((d) => d.frameId === 0 && navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers));
+  navigation.onHistoryStateUpdated.addListener((d) => {
+    if (d.frameId !== 0) return;
+    navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers);
+    recordSoon(d.tabId);
+  });
+  navigation.onCompleted.addListener((d) => d.frameId === 0 && recordSoon(d.tabId));
+}
+
 export default defineBackground(() => {
   // Captures from the context menu and the shortcut refresh every open panel and the library.
   setWriteListener(announceDataChange);
@@ -143,6 +257,15 @@ export default defineBackground(() => {
   browser.sidePanel.onOpened?.addListener(({ windowId }) => trackPanel(windowId, true));
   browser.sidePanel.onClosed?.addListener(({ windowId }) => trackPanel(windowId, false));
   browser.windows.onRemoved.addListener((windowId) => openPanels.has(windowId) && trackPanel(windowId, false));
+
+  listenToNavigation();
+  // A recording ends with its window, or when Chrome's access to tabs or navigation is turned off.
+  browser.windows.onRemoved.addListener((windowId) => {
+    void serial(async () => ((await currentRecording())?.window_id === windowId ? stopRecording() : undefined));
+  });
+  browser.permissions.onRemoved.addListener(({ permissions }) => {
+    if (permissions?.some((p) => p === 'tabs' || p === 'webNavigation')) void serial(stopRecording);
+  });
 
   browser.runtime.onInstalled.addListener(() => {
     void browser.contextMenus.removeAll().then(() => {
@@ -197,6 +320,10 @@ export default defineBackground(() => {
   });
 
   browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (isRecordRequest(message)) {
+      void serial(() => (message.action === 'start' ? startRecording(message.windowId) : stopRecording())).then(sendResponse, () => sendResponse({ capture_ids: [] }));
+      return true;
+    }
     if (!isClipRequest(message)) return false;
     void run(
       message.windowId,

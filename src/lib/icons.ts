@@ -79,9 +79,10 @@ export function brandIcon(name: BrandName): HTMLSpanElement {
   return wrap;
 }
 
+// Cropped to the frame corners, with a heavier grail, so the mark stays legible at 24 px.
 const MARK =
-  '<svg viewBox="0 0 200 200"><path class="frame" d="M26 50V26h24M150 26h24v24M174 150v24h-24M50 174H26v-24" fill="none" stroke="currentColor" stroke-width="14" stroke-linecap="square"/>' +
-  '<g class="grail"><path d="M64 54V66A36 36 0 0 0 136 66V54" fill="none" stroke="currentColor" stroke-width="16"/>' +
+  '<svg viewBox="18 18 164 164"><path class="frame" d="M26 50V26h24M150 26h24v24M174 150v24h-24M50 174H26v-24" fill="none" stroke="currentColor" stroke-width="12" stroke-linecap="square"/>' +
+  '<g class="grail"><path d="M64 54V66A36 36 0 0 0 136 66V54" fill="none" stroke="currentColor" stroke-width="18"/>' +
   '<path d="M92 104h16v34h22a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H70a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h22z" fill="currentColor"/></g></svg>';
 
 /**

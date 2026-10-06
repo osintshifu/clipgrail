@@ -35,7 +35,9 @@ import {
 import type { SessionView, SourceEntry } from '../../lib/db';
 import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations';
 import { DESTINATIONS, deliverJob } from '../../lib/destinations';
-import type { ClipRequest, ClipResponse } from '../../lib/messages';
+import type { ClipRequest, ClipResponse, RecordRequest, RecordResponse } from '../../lib/messages';
+import type { Recording } from '../../lib/recording';
+import { RECORDING_KEY, isRecording } from '../../lib/recording';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { Notice } from '../../lib/notice';
@@ -153,6 +155,8 @@ let modifier = 'Ctrl';
 let lastNoticeId = '';
 let previousPrompt: string | null = null;
 let notesOpen = false;
+/** The recording of any window, from session storage. */
+let recording: Recording | null = null;
 let optionsOpen = false;
 let tabCounts = { selected: 1, all: 0 };
 /** Session loads: a newer load supersedes an older one, and a refresh waits for the latest. */
@@ -221,10 +225,11 @@ async function undoCaptureWithToast(captureId: string): Promise<void> {
   await refreshData();
 }
 
-async function undoTabsWithToast(captureIds: string[]): Promise<void> {
+/** Undo for captures saved together: saved tabs or a recording. */
+async function undoBatchWithToast(captureIds: string[], removed: string, gone: string): Promise<void> {
   try {
     const results = await undoCaptures(db, captureIds);
-    showToast(results.some((r) => r.removed) ? 'Saved tabs removed. Earlier captures are kept.' : 'Those tabs were already removed.');
+    showToast(results.some((r) => r.removed) ? removed : gone);
   } catch (error) {
     showToast(`Undo failed: ${errorText(error)}`, { level: 'error' });
   }
@@ -1056,7 +1061,9 @@ async function saveTabs(which: 'selected' | 'all'): Promise<void> {
     }
     const results = await commitCaptures(db, drafts);
     const captureIds = results.map((r) => r.capture.id);
-    showToast(savedTabsMessage(results, skipped), { undo: () => undoTabsWithToast(captureIds) });
+    showToast(savedTabsMessage(results, skipped), {
+      undo: () => undoBatchWithToast(captureIds, 'Saved tabs removed. Earlier captures are kept.', 'Those tabs were already removed.'),
+    });
     await refreshData();
   } catch (error) {
     showToast(`Tabs not saved: ${errorText(error)}`, { level: 'error' });
@@ -1455,9 +1462,10 @@ async function confirmRestore(): Promise<void> {
 async function turnOffTabAccess(): Promise<void> {
   toggleMenu(false);
   try {
-    const removed = await browser.permissions.remove({ permissions: ['tabs'] });
-    // Chrome keeps the earlier consent, so the next Save tabs gets the permission back without a prompt.
-    if (removed) showToast('Tab access turned off. Save tabs turns it on again.');
+    // Also ends a recording, which needs both.
+    const removed = await browser.permissions.remove({ permissions: ['tabs', 'webNavigation'] });
+    // Chrome keeps the earlier consent, so the next Save tabs or Record gets the permission back without a prompt.
+    if (removed) showToast('Tab access turned off. Save tabs and Record turn it on again.');
     else showToast('Tab access could not be turned off.', { level: 'error' });
   } catch (error) {
     showToast(`Tab access could not be turned off: ${errorText(error)}`, { level: 'error' });
@@ -1478,11 +1486,57 @@ function helpSheet(): void {
       ...item('Links', 'Right-click a link › Save link to ClipGrail (not opened). The address is saved as Address only; the page is not visited.'),
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
+        'Record',
+        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped.',
+      ),
+      ...item(
         "Can't read this tab?",
         "Chrome lets ClipGrail read a tab only after you act on it: click the toolbar icon, press the shortcut or use the right-click menu on that tab. Browser pages and the Chrome Web Store can't be clipped.",
       ),
     ]),
   ]);
+}
+
+// ---------- Recording ----------
+
+function renderRecording(): void {
+  const here = recording !== null && recording.window_id === windowId;
+  const button = $<HTMLButtonElement>('record-button');
+  button.setAttribute('aria-pressed', String(here));
+  button.setAttribute('aria-label', here ? 'Stop recording' : 'Record');
+  button.title = here
+    ? `Recording: ${plural(recording!.capture_ids.length, 'page')} saved. Click to stop.`
+    : recording
+      ? 'Recording in another window; record this window instead'
+      : 'Record the address of every page you open in this window';
+}
+
+async function startRecording(): Promise<void> {
+  let granted: boolean;
+  try {
+    // Asked in the click itself: Chrome shows its permission prompt only for a user action.
+    granted = await browser.permissions.request({ permissions: ['tabs', 'webNavigation'] });
+  } catch (error) {
+    showToast(`Recording not started: ${errorText(error)}`, { level: 'error' });
+    return;
+  }
+  if (!granted) {
+    showToast("Recording not started: ClipGrail needs Chrome's permission to see the pages you open.", { level: 'error' });
+    return;
+  }
+  if (windowId === undefined) return;
+  const request: RecordRequest = { type: 'record', action: 'start', windowId };
+  await browser.runtime.sendMessage(request);
+  showToast(`Recording. Pages you open in this window are saved to ${view?.session.name ?? 'the active session'} as addresses.`);
+}
+
+async function stopRecording(): Promise<void> {
+  if (windowId === undefined) return;
+  const request: RecordRequest = { type: 'record', action: 'stop', windowId };
+  const ids = ((await browser.runtime.sendMessage(request)) as RecordResponse | undefined)?.capture_ids ?? [];
+  showToast(ids.length ? `Recording stopped. ${plural(ids.length, 'page')} saved.` : 'Recording stopped. No new pages.', {
+    undo: ids.length ? () => undoBatchWithToast(ids, 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
+  });
 }
 
 // ---------- Views and action bar ----------
@@ -1607,6 +1661,7 @@ function bind(): void {
     if (file) void checkRestoreFile(file).catch((error: unknown) => showRestoreSheet(`Backup rejected: ${errorText(error)}\nCurrent data is unchanged.`, false));
   });
   $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
+  $('record-button').addEventListener('click', () => void (recording?.window_id === windowId ? stopRecording() : startRecording()));
   $('open-in-panel').addEventListener('click', () => void chooseOpenMode('panel'));
   $('open-in-popup').addEventListener('click', () => void chooseOpenMode('popup'));
   $('help-button').addEventListener('click', helpSheet);
@@ -1622,6 +1677,11 @@ function bind(): void {
 
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'session' && changes[NOTICE_KEY]) handleNotice(changes[NOTICE_KEY].newValue as Notice | undefined);
+    if (area === 'session' && changes[RECORDING_KEY]) {
+      const value: unknown = changes[RECORDING_KEY].newValue;
+      recording = isRecording(value) ? value : null;
+      renderRecording();
+    }
     if (area === 'local' && changes[OPEN_MODE_KEY]) renderOpenMode(changes[OPEN_MODE_KEY].newValue === 'popup' ? 'popup' : 'panel');
     if (area === 'local' && changes.activeSessionId) {
       const id = changes.activeSessionId.newValue;
@@ -1655,6 +1715,9 @@ async function init(): Promise<void> {
     presets = await getPresets();
     activeId = await getActiveSessionId();
     renderOpenMode(await getOpenMode());
+    const storedRecording: unknown = (await browser.storage.session.get(RECORDING_KEY))[RECORDING_KEY];
+    recording = isRecording(storedRecording) ? storedRecording : null;
+    renderRecording();
     const commands = await browser.commands.getAll();
     shortcut = commands.find((c) => c.name === 'clip-page')?.shortcut ?? '';
     renderPresetsMenu();

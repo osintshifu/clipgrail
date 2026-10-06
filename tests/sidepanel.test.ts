@@ -5,6 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { commitCapture, createSession, listSessions, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
+import { recordVisit } from '../src/lib/recording';
 import { pageDraft } from './helpers';
 
 type StorageListener = (changes: Record<string, { newValue?: unknown }>, area: string) => void;
@@ -13,6 +14,9 @@ const fake = vi.hoisted(() => ({
   storageListeners: [] as StorageListener[],
   copied: [] as string[],
   tabsPermission: false,
+  /** Messages the panel sent to the background, and what the background answers. */
+  messages: [] as unknown[],
+  response: undefined as unknown,
   tabs: [] as Array<{ index: number; highlighted: boolean; url?: string; title?: string }>,
 }));
 const tabEvent = vi.hoisted(() => ({ addListener: () => undefined }));
@@ -36,7 +40,12 @@ vi.mock('wxt/browser', () => ({
     },
     windows: { getCurrent: async () => ({ id: 1 }) },
     commands: { getAll: async () => [] },
-    runtime: { sendMessage: async () => undefined },
+    runtime: {
+      sendMessage: async (message: unknown) => {
+        fake.messages.push(message);
+        return fake.response;
+      },
+    },
     tabs: {
       create: async () => ({}),
       query: async (query: { highlighted?: boolean }) => fake.tabs.filter((t) => !query.highlighted || t.highlighted),
@@ -72,6 +81,10 @@ function type(id: string, value: string) {
 function storeElsewhere(key: string, value: unknown) {
   fake.local[key] = structuredClone(value);
   for (const listener of fake.storageListeners) listener({ [key]: { newValue: value } }, 'local');
+}
+/** A change the background made in session storage. */
+function backgroundStores(key: string, value: unknown) {
+  for (const listener of fake.storageListeners) listener({ [key]: { newValue: value } }, 'session');
 }
 
 describe('side panel', () => {
@@ -301,5 +314,33 @@ describe('side panel', () => {
     expect(checked()).toEqual(['Side panel:false', 'Popup:true']);
     storeElsewhere('toolbarOpens', 'panel');
     expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
+  });
+
+  it('records only with Chrome permission, shows what it saved and undoes the recorded pages after it stops', async () => {
+    fake.tabsPermission = false;
+    $('record-button').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording not started'));
+    expect(fake.messages).toHaveLength(0);
+
+    fake.tabsPermission = true;
+    $('record-button').click();
+    await vi.waitFor(() => expect(fake.messages).toEqual([{ type: 'record', action: 'start', windowId: 1 }]));
+    // The background saves the pages opened in this window and reports them in session storage.
+    const db = await openDb();
+    const visit = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/closures', title: 'Night closures', found_on: null, at: '2026-10-07T09:00:00.000Z' });
+    backgroundStores('recording', { window_id: 1, started_at: '2026-10-07T08:59:00.000Z', capture_ids: [visit!.capture.id] });
+    // The button turns into Stop and tells what was saved; clicking it again stops.
+    expect($('record-button').getAttribute('aria-pressed')).toBe('true');
+    expect($('record-button').title).toBe('Recording: 1 page saved. Click to stop.');
+
+    fake.response = { capture_ids: [visit!.capture.id] };
+    $('record-button').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording stopped. 1 page saved.'));
+    expect(fake.messages.at(-1)).toEqual({ type: 'record', action: 'stop', windowId: 1 });
+    backgroundStores('recording', undefined);
+    expect($('record-button').getAttribute('aria-pressed')).toBe('false');
+    $('toast-undo').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recorded pages removed. Earlier captures are kept.'));
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
   });
 });
