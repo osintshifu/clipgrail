@@ -46,14 +46,17 @@ Clicking the toolbar icon opens the side panel, and clicking it again closes it.
 | Clip a selection | Select text, then **Selection** or right-click > **Clip selection to ClipGrail** | The selected text |
 | Save a link | Right-click a link > **Save link to ClipGrail (not opened)** | The link address and, when it is unambiguous, the link text; the linked page is not opened or downloaded |
 | Save tabs | **Tabs ▾** > **This tab** (or **N selected tabs**) or **All tabs in this window** | The address and title of each tab; the pages are not read |
+| Record pages | The circle with a red dot at the top of the side panel; click the red square to stop | The address and title of every page you open in that window and the page whose link or form led to it; the pages are not read |
 
 Chrome lets ClipGrail read a tab only after you act on that tab: click the toolbar icon, press the shortcut or use the right-click menu. A button inside the panel is not enough for a tab you have just switched to. If the panel says it can't read the tab, press Alt+Shift+K or click the toolbar icon on that tab. You can change the shortcut at `chrome://extensions/shortcuts`.
 
 Saving tabs needs Chrome's permission to read tab addresses. Chrome asks for it the first time you save tabs and calls it "Read your browsing history". ClipGrail reads the addresses and titles of the tabs in the current window only when you save tabs. **··· > Turn off tab access** withdraws the permission; Chrome remembers your earlier consent, so the next time you save tabs it is turned on again without asking. To save several tabs, select them in the tab strip with Ctrl+click (Cmd+click on a Mac) or Shift+click.
 
+**Record** saves the address and title of every page you open in that window, together with the page whose link or form led to it. The pages are not read: they are saved as **Address only**, and you clip the ones you need. Addresses the session already has are skipped; a page opened from a typed address, a bookmark or Back has no source page. While recording, the circle turns into a pulsing red square and the toolbar icon shows REC; click the square to stop. The message after stopping offers **Undo** for the whole recording. The first time, Chrome asks for permission to read tab addresses and to see how each page was reached ("Read your browsing history"). Recording stops when you close the window or turn off tab access.
+
 Each source gets a label within its session: S1, S2, S3. Clipping the same address again adds a new capture to the same source and keeps the earlier text. Known tracking parameters such as `utm_*`, `gclid` and `fbclid` are ignored when ClipGrail matches addresses; the address as you visited it stays with the capture. The part of an address after `#` counts too, so `page#a` and `page#b` are separate sources. A label is never given to another source, also after Undo.
 
-After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after saving tabs, the captures of that save.
+After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after saving tabs or recording, the captures of that save or recording.
 
 ### Snapshot status
 
@@ -176,9 +179,10 @@ ClipGrail has no account, server or telemetry and loads no external fonts or scr
 | `favicon` | Showing each source's site icon from Chrome's own icon cache; nothing is downloaded |
 | `storage` | Settings, presets, the active session and capture messages |
 | `unlimitedStorage` | Keeping research data from being removed when disk space runs low |
-| `tabs` (optional) | Reading the addresses and titles of the tabs in the current window when you save tabs; Chrome asks for it the first time |
+| `tabs` (optional) | Reading the addresses and titles of tabs when you save tabs or record; Chrome asks for it the first time |
+| `webNavigation` (optional) | While recording, telling a link or form from a typed address, so where a page was found is never guessed; Chrome asks for it the first time you record |
 
-ClipGrail reads the content of a tab only after you act on that tab. With the optional `tabs` permission it can also see the addresses and titles of open tabs, and reads them only when you save tabs. It does not access your browsing history list.
+ClipGrail reads the content of a tab only after you act on that tab. With the optional `tabs` permission it can also see the addresses and titles of open tabs, and reads them only when you save tabs or while you record. It does not access your browsing history list.
 
 ## Limitations
 
