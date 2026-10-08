@@ -24,6 +24,8 @@ export default defineConfig({
     // Asked for the first time the user saves tabs (tabs) or records (tabs and webNavigation): the addresses and
     // titles of the tabs, and how each page was reached, so a recorded page's "found on" is never guessed.
     optional_permissions: ['tabs', 'webNavigation'],
+    // Research data is kept in the regular profile, so ClipGrail stays out of Incognito windows instead of keeping what is done there.
+    incognito: 'not_allowed',
     action: { default_title: 'Open ClipGrail' },
     commands: {
       'clip-page': {

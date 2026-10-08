@@ -115,6 +115,85 @@ export function normalizeUrl(input: string): string | null {
   return url.href;
 }
 
+/**
+ * Parameters that carry a credential: whoever has the address can sign in,
+ * reset a password, join a meeting or download a private file. Names are
+ * compared in lower case without "-" and "_", so accessToken and access-token
+ * match access_token.
+ */
+const CREDENTIAL_PARAMS = new Set([
+  // OAuth 2.0 tokens (RFC 6749; the implicit grant returns access_token in the fragment) and the OpenID Connect ID token.
+  'accesstoken',
+  'idtoken',
+  'refreshtoken',
+  // OAuth 1.0a verifier (RFC 5849).
+  'oauthverifier',
+  // Signed links to private files: AWS S3 Signature Version 4 and Google Cloud Storage V4 signing.
+  'xamzsignature',
+  'xgoogsignature',
+  // Password-reset and invitation links (Devise, used by GitLab and Mastodon) and generic token parameters.
+  'resetpasswordtoken',
+  'invitationtoken',
+  'token',
+  'authtoken',
+  'privatetoken',
+  // API keys and client secrets.
+  'apikey',
+  'clientsecret',
+  // Passwords, including the Zoom meeting passcode.
+  'password',
+  'pwd',
+  // Session identifiers that PHP and Java servlet sites put in the address.
+  'phpsessid',
+  'jsessionid',
+]);
+
+/** Pairs that carry a credential only together. */
+const CREDENTIAL_PAIRS: Array<[string, string]> = [
+  // Azure Storage shared access signature: signature and service version.
+  ['sig', 'sv'],
+  // Signed links: AWS Signature Version 2, CloudFront, Google Cloud Storage V2 and Alibaba Cloud OSS.
+  ['signature', 'awsaccesskeyid'],
+  ['signature', 'keypairid'],
+  ['signature', 'googleaccessid'],
+  ['signature', 'ossaccesskeyid'],
+  // WordPress password-reset link (wp-login.php?action=rp&key=...&login=...).
+  ['key', 'login'],
+];
+
+function parameterNames(part: string): string[] {
+  return part
+    .split(/[?&]/)
+    .filter((pair) => pair.includes('='))
+    .map((pair) => {
+      const raw = pair.split('=', 1)[0] ?? '';
+      let name: string;
+      try {
+        name = decodeURIComponent(raw.replace(/\+/g, ' '));
+      } catch {
+        name = raw;
+      }
+      return name.toLowerCase().replace(/[-_]/g, '');
+    });
+}
+
+/**
+ * Returns true for an address with a sign-in or access credential in its query
+ * or in a fragment written as parameters (`#access_token=...`, `#/reset?token=...`).
+ * Only the listed parameter names are recognised: a credential under another
+ * name, or written into the path itself, is not.
+ */
+export function carriesCredential(input: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return false;
+  }
+  const names = new Set([...parameterNames(url.search.slice(1)), ...parameterNames(url.hash.slice(1))]);
+  return [...names].some((name) => CREDENTIAL_PARAMS.has(name)) || CREDENTIAL_PAIRS.some(([a, b]) => names.has(a) && names.has(b));
+}
+
 /** Longest embedded-frame address kept with a selection; a longer one (such as a data: URL) is recorded as not read. */
 export const MAX_FRAME_URL_LENGTH = 8192;
 

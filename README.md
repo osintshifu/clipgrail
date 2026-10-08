@@ -65,7 +65,7 @@ ClipGrail is not currently available in the Chrome Web Store.
 
 Click **Record** in the side panel, browse normally in that Chrome window, then click **Stop**. New pages are added to the active research session with their URL, title, and, where Chrome can determine it, the page they were opened from. The extension shows **REC** while recording.
 
-**Recording saves page addresses, not page content.** To preserve readable text, clip the pages you need. Existing source addresses are not duplicated.
+**Recording saves page addresses, not page content.** To preserve readable text, clip the pages you need. Existing source addresses are not duplicated, and addresses with a recognised sign-in or access token, such as a password-reset link, are not recorded.
 
 ### Clip and organize
 
@@ -96,7 +96,7 @@ Copy the job, export it as **Markdown** or **JSON**, or open ChatGPT, Claude, Ge
 
 ### Limits
 
-Chrome `http`/`https` pages only; no PDF, image, or video extraction and no OCR. Captured text is limited to 1,000,000 characters per snapshot or selection. Page recordings do not create full-page archives or video recordings.
+Chrome `http`/`https` pages only, not in Incognito windows; no PDF, image, or video extraction and no OCR. Captured text is limited to 1,000,000 characters per snapshot or selection. Page recordings do not create full-page archives or video recordings.
 
 ### Development
 

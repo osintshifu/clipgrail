@@ -26,6 +26,29 @@ describe('recording', () => {
     expect(foundOnFor({ transition: 'link', qualifiers: [] }, { url: 'chrome://newtab/', found_on: null }, null)).toBeNull();
   });
 
+  it('skips addresses that carry a sign-in or access credential and never names them as where a page was found', async () => {
+    const db = await freshDb();
+    const at = '2026-10-07T09:00:00.000Z';
+    const secret = [
+      'https://accounts.example.com/reset?token=8f2c1e',
+      'https://app.example.com/callback#access_token=ya29.a0&token_type=Bearer',
+      'https://gitlab.example.com/users/password/edit?reset_password_token=Zx8kQ',
+      'https://blog.example.org/wp-login.php?action=rp&key=AbCd&login=jdoe',
+      'https://bucket.s3.amazonaws.com/report.pdf?X-Amz-Credential=AKIA&X-Amz-Signature=9f0e',
+      'https://storage.googleapis.com/files/report.pdf?GoogleAccessId=svc&Expires=1&Signature=c2ln',
+      'https://api.example.com/export?accessToken=ya29',
+      'https://zoom.us/j/123456789?pwd=abc',
+    ];
+    for (const url of secret) {
+      expect(await recordVisit(db, INBOX_SESSION_ID, { url, title: '', found_on: null, at }), url).toBeNull();
+      expect(foundOnFor({ transition: 'link', qualifiers: [] }, { url, found_on: null }, null), url).toBeNull();
+    }
+    // A code, a state or a key alone is an ordinary parameter.
+    for (const url of ['https://registry.example.org/search?code=PL-14&key=company', 'https://registry.example.gov/lookup?code=541511&state=CA']) {
+      expect(await recordVisit(db, INBOX_SESSION_ID, { url, title: '', found_on: null, at }), url).not.toBeNull();
+    }
+  });
+
   it('saves a visited page as an address with where it was found, shows and exports that, once per session', async () => {
     const db = await freshDb();
     const visit = { url: 'https://port.example.org/closures', title: 'Night closures', found_on: RESULTS, at: '2026-10-07T09:00:00.000Z' };

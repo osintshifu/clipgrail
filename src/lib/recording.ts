@@ -1,6 +1,6 @@
 import type { CommitResult, SavedCapture } from './db';
 import { commitCapture, hasSourceAddress } from './db';
-import { isProvenanceUrl, normalizeUrl } from './url';
+import { carriesCredential, isProvenanceUrl, normalizeUrl } from './url';
 
 /**
  * A recording saves the address of every page opened in one window, without
@@ -38,14 +38,15 @@ export interface TrailEntry {
  * The page a link or form on it led to this one: the tab's previous page, or
  * for a new tab the page that opened it. A typed address, a bookmark, a
  * reload or Back and Forward have none. A redirect by the page itself keeps
- * the origin of the navigation it continues.
+ * the origin of the navigation it continues. An address with a sign-in or
+ * access credential is never kept as where a page was found.
  */
 export function foundOnFor(navigation: Navigation, previous: TrailEntry | undefined, opener: string | null): string | null {
   const { transition, qualifiers } = navigation;
   let found: string | null = null;
   if (qualifiers.includes('client_redirect')) found = previous?.found_on ?? null;
   else if ((transition === 'link' || transition === 'form_submit') && !qualifiers.includes('forward_back')) found = previous?.url ?? opener;
-  return found && isProvenanceUrl(found) ? found : null;
+  return found && isProvenanceUrl(found) && !carriesCredential(found) ? found : null;
 }
 
 export interface Visit {
@@ -57,12 +58,12 @@ export interface Visit {
 
 /**
  * Saves a visited page as an address only (a PENDING snapshot, the page is
- * not read). Pages that are not web pages and addresses the session already
- * has are skipped.
+ * not read). Pages that are not web pages, addresses with a sign-in or access
+ * credential and addresses the session already has are skipped.
  */
 export async function recordVisit(db: IDBDatabase, sessionId: string, visit: Visit): Promise<CommitResult | null> {
   const dedupUrl = normalizeUrl(visit.url);
-  if (!dedupUrl || (await hasSourceAddress(db, sessionId, dedupUrl))) return null;
+  if (!dedupUrl || carriesCredential(visit.url) || (await hasSourceAddress(db, sessionId, dedupUrl))) return null;
   return commitCapture(db, {
     session_id: sessionId,
     kind: 'tab',

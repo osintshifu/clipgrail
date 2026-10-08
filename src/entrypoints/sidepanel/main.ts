@@ -1504,7 +1504,7 @@ function helpSheet(): void {
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped.',
+        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Recording runs in one window at a time: starting it in another window moves it there.',
       ),
       ...item(
         "Can't read this tab?",
@@ -1548,7 +1548,13 @@ async function startRecording(): Promise<void> {
     showToast(`Recording not started: ${response.error}`, { level: 'error' });
     return;
   }
-  showToast(`Recording. Pages you open in this window are saved to ${view?.session.name ?? 'the active session'} as addresses.`);
+  const target = view?.session.name ?? 'the active session';
+  const moved = response.moved;
+  showToast(
+    moved
+      ? `Recording moved to this window from another one${moved.saved ? `, where it saved ${plural(moved.saved, 'page')}` : ''}. Pages you open here are saved to ${target} as addresses.`
+      : `Recording. Pages you open in this window are saved to ${target} as addresses.`,
+  );
 }
 
 /** Sends a start or stop to the background; a failure to reach it comes back as an error. */
@@ -1569,9 +1575,13 @@ async function stopRecording(): Promise<void> {
     showToast(`Recording not stopped: ${response.error}`, { level: 'error' });
     return;
   }
-  const saved = response.captures;
-  const lost = response.failed ? `; ${response.failed} could not be saved` : '';
-  showToast(saved.length || lost ? `Recording stopped. ${plural(saved.length, 'page')} saved${lost}.` : 'Recording stopped. No new pages.', {
+  showRecordingEnded('Recording stopped.', '', response.captures, response.failed, 'Recording stopped. No new pages.');
+}
+
+/** The message after this window's recording ends, with Undo for the pages it saved. */
+function showRecordingEnded(start: string, where: string, saved: SavedCapture[], failed: number, nothing: string): void {
+  const lost = failed ? `; ${failed} could not be saved` : '';
+  showToast(saved.length || lost ? `${start} ${plural(saved.length, 'page')} saved${where}${lost}.` : nothing, {
     level: lost ? 'error' : 'info',
     undo: saved.length ? () => undoBatchWithToast(saved, 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
   });
@@ -1717,8 +1727,13 @@ function bind(): void {
     if (area === 'session' && changes[NOTICE_KEY]) handleNotice(changes[NOTICE_KEY].newValue as Notice | undefined);
     if (area === 'session' && changes[RECORDING_KEY]) {
       const value: unknown = changes[RECORDING_KEY].newValue;
+      const before = recording;
       recording = isRecording(value) ? value : null;
       renderRecording();
+      // Another window started recording, which ended the recording here.
+      if (before && before.window_id === windowId && recording && recording.window_id !== windowId) {
+        showRecordingEnded('Recording moved to another window.', ' here', before.captures, before.failed, 'Recording moved to another window. No new pages here.');
+      }
     }
     if (area === 'local' && changes[OPEN_MODE_KEY]) renderOpenMode(changes[OPEN_MODE_KEY].newValue === 'popup' ? 'popup' : 'panel');
     if (area === 'local' && changes.activeSessionId) {

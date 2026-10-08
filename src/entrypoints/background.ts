@@ -5,7 +5,7 @@ import { captureLink, capturePage, captureSelection } from '../lib/capture';
 import { announceDataChange } from '../lib/changes';
 import { openDb, saveThumbnail, setWriteListener } from '../lib/db';
 import type { ClipResponse, RecordResponse } from '../lib/messages';
-import { isClipRequest, isRecordRequest } from '../lib/messages';
+import { isClipRequest, isFromOwnPage, isRecordRequest } from '../lib/messages';
 import { openLibrary } from '../lib/library-tab';
 import { publishNotice } from '../lib/notice';
 import { OPEN_MODE_KEY, getActiveSessionId, getOpenMode, resolveActiveSessionId } from '../lib/settings';
@@ -158,6 +158,8 @@ function showRecordingBadge(on: boolean): void {
 }
 
 async function startRecording(windowId: number): Promise<RecordResponse> {
+  // Recording runs in one window at a time: a start in another window moves it here, and both panels say so.
+  const previous = await currentRecording();
   // The pages already open are where the first links of the recording are found.
   const tabs = await browser.tabs.query({ windowId });
   const pages = Object.fromEntries(tabs.filter((t) => t.id !== undefined && t.url).map((t) => [String(t.id), { url: t.url!, found_on: null }]));
@@ -167,7 +169,7 @@ async function startRecording(windowId: number): Promise<RecordResponse> {
   showRecordingBadge(true);
   // A recording that had to stop may have left its reason on the icon.
   void browser.action.setTitle({ title: browser.runtime.getManifest().action?.default_title ?? 'ClipGrail' });
-  return { captures: [], failed: 0 };
+  return previous && previous.window_id !== windowId ? { captures: [], failed: 0, moved: { saved: previous.captures.length } } : { captures: [], failed: 0 };
 }
 
 async function stopRecording(): Promise<RecordResponse> {
@@ -365,7 +367,8 @@ export default defineBackground(() => {
     void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId), captureThumbnail(tab.windowId));
   });
 
-  browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    if (!isFromOwnPage(sender, browser.runtime.id, browser.runtime.getURL('/'))) return false;
     if (isRecordRequest(message)) {
       void serial(() => (message.action === 'start' ? startRecording(message.windowId) : stopRecording())).then(sendResponse, (error: unknown) =>
         sendResponse({ captures: [], failed: 0, error: error instanceof Error ? error.message : String(error) }),

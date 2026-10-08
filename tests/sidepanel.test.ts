@@ -360,4 +360,26 @@ describe('side panel', () => {
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recorded pages removed. Earlier captures are kept.'));
     expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
   });
+
+  it('says when a recording moves between windows, and keeps Undo in the window it left', async () => {
+    fake.tabsPermission = true;
+    backgroundStores('recording', { window_id: 2, started_at: '2026-10-07T10:00:00.000Z', captures: [], failed: 0 });
+    expect($('record-button').title).toBe('Recording in another window; record this window instead');
+    fake.response = { captures: [], failed: 0, moved: { saved: 12 } };
+    $('record-button').click();
+    await vi.waitFor(() =>
+      expect($('toast-text').textContent).toMatch(/^Recording moved to this window from another one, where it saved 12 pages\. Pages you open here are saved to .+ as addresses\.$/),
+    );
+
+    // This window records a page, then a start in window 2 takes the recording there.
+    const db = await openDb();
+    const visit = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/tides', title: 'Tides', found_on: null, at: '2026-10-07T10:05:00.000Z' });
+    const saved = [{ capture_id: visit!.capture.id, session_id: visit!.capture.session_id }];
+    backgroundStores('recording', { window_id: 1, started_at: '2026-10-07T10:01:00.000Z', captures: saved, failed: 0 });
+    backgroundStores('recording', { window_id: 2, started_at: '2026-10-07T10:06:00.000Z', captures: [], failed: 0 });
+    expect($('toast-text').textContent).toBe('Recording moved to another window. 1 page saved here.');
+    $('toast-undo').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recorded pages removed. Earlier captures are kept.'));
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
+  });
 });

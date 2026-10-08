@@ -1,5 +1,19 @@
 import type { SavedCapture } from './db';
 
+/**
+ * True for a message from one of ClipGrail's own pages (side panel, popup,
+ * library). A script ClipGrail injects into a web page reports that page's
+ * address, so a compromised page cannot send requests in its name.
+ */
+export function isFromOwnPage(sender: { id?: string; url?: string }, extensionId: string, extensionUrl: string): boolean {
+  if (sender.id !== extensionId || sender.url === undefined) return false;
+  try {
+    return new URL(sender.url).origin === new URL(extensionUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 /** Messages from the side panel to the background service worker. */
 export interface ClipRequest {
   type: 'clip';
@@ -35,6 +49,8 @@ export interface RecordRequest {
 export interface RecordResponse {
   captures: SavedCapture[];
   failed: number;
+  /** After a start that took the recording over from another window: how many pages it had saved there. */
+  moved?: { saved: number };
   error?: string;
 }
 
