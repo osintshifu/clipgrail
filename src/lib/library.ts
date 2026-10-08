@@ -2,7 +2,7 @@ import type { CaptureEntry, LibraryData, SourceEntry } from './db';
 import type { Fragment, Session, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SearchQuery, Snippet, TextHit } from './search';
-import { fold, inDays, onSite, parseSearch, snippetOf } from './search';
+import { fold, inDays, onSite, parseSearch, searchable, snippetOf } from './search';
 import type { SourceStatus } from './selection';
 import { capturedTitle, chooseSnapshot } from './selection';
 
@@ -62,7 +62,7 @@ export function libraryRows(data: LibraryData): LibraryRow[] {
         status: chooseSnapshot(entry).status,
         last_captured_at: last,
         added_at: entry.source.created_at,
-        haystack: fold(`${title ?? ''}\n${entry.source.dedup_url}`),
+        haystack: fold(searchable(`${title ?? ''}\n${entry.source.dedup_url}`)),
         host: hostname(entry.source.dedup_url),
       },
     ];
@@ -83,12 +83,20 @@ const LABEL_WORD = /^s[1-9]\d*$/;
 /** Saved texts a search has read, by snapshot ID: the terms each contains and a passage around the first. */
 export type TextHits = Map<string, TextHit>;
 
-/** Selections are kept while the library is open, so each is folded once. */
-const foldedFragments = new WeakMap<Fragment, string>();
-function foldedFragment(fragment: Fragment): string {
-  let folded = foldedFragments.get(fragment);
-  if (folded === undefined) foldedFragments.set(fragment, (folded = fold(fragment.text)));
-  return folded;
+/** Selections are kept while the library is open, so each is prepared for search once. */
+const fragmentTexts = new WeakMap<Fragment, { text: string; folded: string }>();
+function fragmentText(fragment: Fragment): { text: string; folded: string } {
+  let prepared = fragmentTexts.get(fragment);
+  if (prepared === undefined) {
+    const text = searchable(fragment.text);
+    fragmentTexts.set(fragment, (prepared = { text, folded: fold(text) }));
+  }
+  return prepared;
+}
+
+function noteField(note: string, captureId: string | null): Field {
+  const text = searchable(note);
+  return { where: 'Note', text, folded: fold(text), capture_id: captureId };
 }
 
 interface Field {
@@ -102,12 +110,10 @@ interface Field {
 /** Notes and selections of a source, newest capture first: the parts a search finds that the list does not show. */
 function fieldsOf(entry: LibraryEntry): Field[] {
   const fields: Field[] = [];
-  if (entry.source.note) fields.push({ where: 'Note', text: entry.source.note, folded: fold(entry.source.note), capture_id: null });
+  if (entry.source.note) fields.push(noteField(entry.source.note, null));
   const captures = [...entry.captures].reverse();
-  for (const { capture } of captures) if (capture.note) fields.push({ where: 'Note', text: capture.note, folded: fold(capture.note), capture_id: capture.id });
-  for (const { capture } of captures) {
-    if (capture.fragment) fields.push({ where: 'Selection', text: capture.fragment.text, folded: foldedFragment(capture.fragment), capture_id: capture.id });
-  }
+  for (const { capture } of captures) if (capture.note) fields.push(noteField(capture.note, capture.id));
+  for (const { capture } of captures) if (capture.fragment) fields.push({ where: 'Selection', ...fragmentText(capture.fragment), capture_id: capture.id });
   return fields;
 }
 
@@ -161,12 +167,16 @@ export interface SearchSnippet {
   capture_id: string | null;
 }
 
-/** Notes come first, then selections, then the current saved text and earlier texts, newest first. */
+/**
+ * The first place that holds a word the list does not show (not in the title,
+ * address or label): notes, then selections, then the current saved text and
+ * earlier texts, newest first. The passage starts at that word and marks all.
+ */
 export function searchSnippet(row: LibraryRow, query: SearchQuery, hits: TextHits | undefined): SearchSnippet | null {
-  const terms = query.terms;
-  if (terms.every((term) => shownTerm(row, term))) return null;
+  const hidden = query.terms.filter((term) => !shownTerm(row, term));
+  if (!hidden.length) return null;
   for (const field of fieldsOf(row.entry)) {
-    const snippet = snippetOf(field.text, field.folded, terms);
+    const snippet = snippetOf(field.text, field.folded, query.terms, hidden);
     if (snippet) return { where: field.where, snippet, capture_id: field.capture_id };
   }
   if (!hits) return null;
@@ -174,10 +184,12 @@ export function searchSnippet(row: LibraryRow, query: SearchQuery, hits: TextHit
   for (const version of [...versions.filter((v) => v.current), ...versions.filter((v) => !v.current)]) {
     const snapshot = version.capture.snapshot;
     const hit = snapshot?.status === 'ok' ? hits.get(snapshot.id) : undefined;
-    if (hit) {
+    const term = hit && hidden.find((t) => hit.terms.has(t));
+    if (hit && term) {
+      const snippet = hit.snippets.get(term)!;
       return version.current
-        ? { where: 'Saved text', snippet: hit.snippet, capture_id: null }
-        : { where: `Earlier text · capture ${version.number}`, snippet: hit.snippet, capture_id: version.capture.capture.id };
+        ? { where: 'Saved text', snippet, capture_id: null }
+        : { where: `Earlier text · capture ${version.number}`, snippet, capture_id: version.capture.capture.id };
     }
   }
   return null;

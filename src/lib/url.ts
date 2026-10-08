@@ -194,6 +194,26 @@ export function carriesCredential(input: string): boolean {
   return [...names].some((name) => CREDENTIAL_PARAMS.has(name)) || CREDENTIAL_PAIRS.some(([a, b]) => names.has(a) && names.has(b));
 }
 
+/**
+ * The host a site is written as, in the form Chrome reports it (lower case,
+ * international names in Punycode), or null when the value is not a site.
+ * A scheme, port, path and trailing dot are dropped, so a pasted address works.
+ */
+export function siteHost(value: string): string | null {
+  const bare = value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  if (!bare || /\s/.test(bare)) return null;
+  try {
+    return new URL(`http://${bare}`).hostname.replace(/\.$/, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the host is the site itself or one of its subdomains. */
+export function isOnSite(host: string, site: string): boolean {
+  return host === site || host.endsWith(`.${site}`);
+}
+
 /** Longest embedded-frame address kept with a selection; a longer one (such as a data: URL) is recorded as not read. */
 export const MAX_FRAME_URL_LENGTH = 8192;
 

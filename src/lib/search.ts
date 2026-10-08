@@ -14,6 +14,8 @@ export interface SearchQuery {
   before: string | null;
 }
 
+import { isOnSite, siteHost } from './url';
+
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 function isDay(value: string): boolean {
@@ -23,22 +25,10 @@ function isDay(value: string): boolean {
   return date.toISOString().startsWith(value);
 }
 
-/** The host a site: value names: without scheme, port, path or a trailing dot. */
-function siteHost(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
-      .split(/[/?#]/, 1)[0]
-      ?.replace(/:\d*$/, '')
-      .replace(/\.$/, '') ?? ''
-  );
-}
-
 /** A qualifier with a value it cannot use (after:yesterday) stays an ordinary word, so the search finds nothing rather than more. */
 export function parseSearch(input: string): SearchQuery {
   const query: SearchQuery = { terms: [], sites: [], after: null, before: null };
-  for (const [, phrase, word] of input.matchAll(/"([^"]*)"?|(\S+)/g)) {
+  for (const [, phrase, word] of searchable(input).matchAll(/"([^"]*)"?|(\S+)/g)) {
     if (phrase !== undefined) {
       const term = fold(phrase.replace(/\s+/g, ' ').trim());
       if (term) query.terms.push(term);
@@ -48,8 +38,9 @@ export function parseSearch(input: string): SearchQuery {
     if (qualifier) {
       const key = qualifier[1]!.toLowerCase();
       const value = qualifier[2]!;
-      if (key === 'site' && siteHost(value)) {
-        query.sites.push(siteHost(value));
+      const site = key === 'site' ? siteHost(value) : null;
+      if (site) {
+        query.sites.push(site);
         continue;
       }
       if ((key === 'after' || key === 'before') && isDay(value)) {
@@ -63,7 +54,7 @@ export function parseSearch(input: string): SearchQuery {
 }
 
 export function onSite(host: string, sites: string[]): boolean {
-  return sites.length === 0 || sites.some((site) => host === site || host.endsWith(`.${site}`));
+  return sites.length === 0 || sites.some((site) => isOnSite(host, site));
 }
 
 /** The local day (YYYY-MM-DD) of an ISO time. */
@@ -78,8 +69,17 @@ export function inDays(iso: string, query: Pick<SearchQuery, 'after' | 'before'>
   return (query.after === null || day >= query.after) && (query.before === null || day <= query.before);
 }
 
-/** Letters with no decomposition into a base letter and a mark. */
-const BASE_LETTERS: Record<string, string> = { ł: 'l', ø: 'o', đ: 'd', ħ: 'h', ı: 'i' };
+/**
+ * Text in the composed Unicode form, as typed: a page may store "ź" as "z"
+ * and a separate accent. Search matches and passages use this form; it looks
+ * the same on screen.
+ */
+export function searchable(text: string): string {
+  return text.normalize('NFC');
+}
+
+/** Letters with no decomposition into a base letter and a mark, and the Greek final sigma. */
+const BASE_LETTERS: Record<string, string> = { ł: 'l', ø: 'o', đ: 'd', ħ: 'h', ı: 'i', ς: 'σ' };
 const foldedChars = new Map<string, string>();
 
 function foldChar(ch: string): string {
@@ -98,10 +98,8 @@ function foldChar(ch: string): string {
  * text is at the same place in the original.
  */
 export function fold(text: string): string {
-  const lower = text.toLowerCase();
-  // A few letters lower-case into two characters (İ); those keep their case.
-  if (lower.length !== text.length) return text.replace(/[\s\S]/g, (ch) => (ch.toLowerCase().length === 1 ? foldChar(ch.toLowerCase()) : ch));
-  return lower.replace(/[^\x20-\x7e]/g, foldChar);
+  // İ is the one letter that lower-cases into two characters; as I it keeps its place.
+  return text.replace(/\u0130/g, 'I').toLowerCase().replace(/[^\x20-\x7e]/g, foldChar);
 }
 
 /** Start and end of the matches of the terms in a folded text (at most `limit` per term), in order, overlapping matches joined. */
@@ -133,10 +131,13 @@ export interface Snippet {
 const BEFORE = 60;
 const AFTER = 180;
 
-/** The passage around the first term found in the text, or null when none is in it. */
-export function snippetOf(text: string, folded: string, terms: string[]): Snippet | null {
+/**
+ * The passage around the first of the anchor terms found in the text, with
+ * every term marked, or null when no anchor term is in it.
+ */
+export function snippetOf(text: string, folded: string, terms: string[], anchors = terms): Snippet | null {
   let first = -1;
-  for (const term of terms) {
+  for (const term of anchors) {
     const i = folded.indexOf(term);
     if (i >= 0 && (first < 0 || i < first)) first = i;
   }
@@ -158,15 +159,16 @@ export function snippetOf(text: string, folded: string, terms: string[]): Snippe
   };
 }
 
-/** What a search found in one saved text: the terms it contains and the passage around the first. */
+/** What a search found in one saved text: the terms it contains and, for each, the passage around it. */
 export interface TextHit {
   terms: Set<string>;
-  snippet: Snippet;
+  snippets: Map<string, Snippet>;
 }
 
 export function textHit(text: string, terms: string[]): TextHit | null {
-  const folded = fold(text);
-  const found = new Set(terms.filter((term) => folded.includes(term)));
-  if (!found.size) return null;
-  return { terms: found, snippet: snippetOf(text, folded, [...found])! };
+  const composed = searchable(text);
+  const folded = fold(composed);
+  const found = terms.filter((term) => folded.includes(term));
+  if (!found.length) return null;
+  return { terms: new Set(found), snippets: new Map(found.map((term) => [term, snippetOf(composed, folded, found, [term])!])) };
 }

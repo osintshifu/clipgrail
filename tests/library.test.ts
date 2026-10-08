@@ -49,6 +49,8 @@ describe('library', () => {
     await commitCapture(db, await pageDraft('https://port.example.org/berth', 'Night closures at berth 4. Źródło: the port authority.', '2026-10-03T10:00:00.000Z'));
     const union = await commitCapture(db, await selectionDraft('https://news.example.net/union', 'The union called a strike.', '2026-10-05T10:00:00.000Z'));
     await updateSourceNote(db, union.source.id, 'Check the strike dates.');
+    // A page with an international address, and text stored with separate accents.
+    await commitCapture(db, await pageDraft('https://xn--w-uga1v8h.pl/raport', 'Raport: źródła. İstanbul. ΑΣΤΡΟ.'.normalize('NFD'), '2026-10-06T10:00:00.000Z'));
     const rows = libraryRows(await loadLibrary(db));
     // The library reads the saved texts for the search words, then filters with what it found.
     const search = async (input: string) => {
@@ -75,8 +77,13 @@ describe('library', () => {
     expect(await search('berth night')).toEqual(['port.example.org Saved text: Night,berth']);
     expect(await search('site:example.org')).toEqual(['port.example.org -']);
     expect(await search('site:https://news.example.net/union union')).toEqual(['news.example.net -']);
-    expect(await search('after:2026-10-04')).toEqual(['news.example.net -']);
+    expect(await search('after:2026-10-04 before:2026-10-05')).toEqual(['news.example.net -']);
     expect(await search('before:2026-10-02')).toEqual(['port.example.org -']);
+    // The passage and the capture to open follow the word the list does not show: "port" is in the address and the current text, "cranes" only in capture 1.
+    expect(await search('port cranes')).toEqual(['port.example.org Earlier text · capture 1: cranes']);
+    expect(await search('zrodla istanbul')).toEqual(['xn--w-uga1v8h.pl Saved text: źródła,İstanbul']);
+    expect(await search('ΑΣ')).toEqual(['xn--w-uga1v8h.pl Saved text: ΑΣ']);
+    expect(await search('site:żółw.pl')).toEqual(['xn--w-uga1v8h.pl -']);
     // A qualifier without a usable value is an ordinary word, so it narrows rather than widens.
     expect(await search('after:yesterday')).toEqual([]);
   });

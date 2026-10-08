@@ -270,5 +270,10 @@ describe('organizing in the library', () => {
     row.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Harbour cranes were repaired.'));
     expect($('reader').querySelector('.banner.earlier')).not.toBeNull();
+    // Back on the current text, a click on the open source's row shows the capture with the words again.
+    $('show-current').click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Night closures continue.'));
+    document.querySelector<HTMLButtonElement>('#rows .src')!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Harbour cranes were repaired.'));
   });
 });

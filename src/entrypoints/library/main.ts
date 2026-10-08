@@ -60,6 +60,7 @@ let readingFor: string | null = null;
 let searchRun = 0;
 /** Set when a source is opened from a search: the reader scrolls to the first match once the text is shown. */
 let scrollToMatch = false;
+let noteSearchTimer: ReturnType<typeof setTimeout> | undefined;
 /** Matches marked in one text of the reader, per search word. */
 const MAX_HIGHLIGHTS = 1000;
 /** Captures that have a page thumbnail, and the thumbnails read so far. */
@@ -410,8 +411,14 @@ function searchTexts(query: SearchQuery): void {
   const done = (error?: unknown) => {
     if (run !== searchRun) return;
     readingFor = null;
-    if (error !== undefined) notice(`Saved texts could not be searched: ${errorText(error)}`);
+    if (error !== undefined) {
+      // Not read again for these words, so a text the browser cannot read does not restart the search forever.
+      for (const id of ids) state.read.add(id);
+      notice(`Saved texts could not be searched: ${errorText(error)}`);
+    }
+    const restore = keepListFocus();
     renderList();
+    restore();
   };
   visitSnapshotTexts(db, ids, (id, text) => {
     if (run !== searchRun) return false;
@@ -420,6 +427,15 @@ function searchTexts(query: SearchQuery): void {
     if (hit) state.hits.set(id, hit);
     return true;
   }).then(() => done(), done);
+}
+
+/** Puts focus back on the same row, or its checkbox, after the list is drawn again. */
+function keepListFocus(): () => void {
+  const active = document.activeElement instanceof HTMLElement && document.activeElement.closest('#rows') ? document.activeElement : null;
+  const selector = active?.dataset.id ? `.src[data-id="${CSS.escape(active.dataset.id)}"]` : active?.dataset.pick ? `.pick-box[data-pick="${CSS.escape(active.dataset.pick)}"]` : null;
+  return () => {
+    if (selector) document.querySelector<HTMLElement>(`#rows ${selector}`)?.focus({ preventScroll: true });
+  };
 }
 
 function renderList(): void {
@@ -457,26 +473,26 @@ function clearFilters(): void {
   $<HTMLInputElement>('search').value = '';
   $<HTMLSelectElement>('status-filter').value = 'any';
   renderList();
+  highlightMatches();
   $('search').focus();
 }
 
 function openSource(id: string, userAction: boolean): void {
+  // A narrow window shows the reader first, so the reader can scroll to a match.
+  const narrow = userAction && !wide.matches;
+  if (narrow) setReading(true);
   const query = parseSearch(filter.query);
-  if (selectedId !== id) {
-    // Opened from a search: the capture where it found the words, when that is not the current text.
-    const row = rows.find((r) => r.entry.source.id === id);
-    viewedCaptureId = row && query.terms.length ? (searchSnippet(row, query, textSearch.hits)?.capture_id ?? null) : null;
-    $('reader-col').scrollTop = 0;
-  }
+  // Opened from a search: the capture where it found the words (null: the current text), also for the source already open.
+  const row = rows.find((r) => r.entry.source.id === id);
+  const found = row && query.terms.length ? searchSnippet(row, query, textSearch.hits) : null;
+  if (selectedId !== id || (userAction && found)) viewedCaptureId = found?.capture_id ?? null;
+  if (selectedId !== id) $('reader-col').scrollTop = 0;
   scrollToMatch = userAction && query.terms.length > 0;
   selectedId = id;
   markSelected();
   writeHash();
   renderReader();
-  if (userAction && !wide.matches) {
-    setReading(true);
-    $('back-button').focus();
-  }
+  if (narrow) $('back-button').focus();
 }
 
 // ---------- The open source ----------
@@ -495,6 +511,11 @@ function editNote(kind: 'source' | 'capture', id: string, value: string, label: 
       } else {
         const capture = data.sources.flatMap((s) => s.captures).find((c) => c.capture.id === id)?.capture;
         if (capture) capture.note = text;
+      }
+      // Notes are searched: the list follows the edit after a pause in typing; the reader is not redrawn.
+      if (parseSearch(filter.query).terms.length) {
+        clearTimeout(noteSearchTimer);
+        noteSearchTimer = setTimeout(renderList, 300);
       }
     },
   });
@@ -1007,6 +1028,7 @@ function bind(): void {
       clearPicked();
       filter.query = (event.target as HTMLInputElement).value;
       renderList();
+      highlightMatches();
       renderNarrowTop(selectedRow());
     }, 120);
   });
