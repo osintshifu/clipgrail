@@ -1,6 +1,6 @@
 import type { CommitResult, SavedCapture } from './db';
 import { commitCapture, hasSourceAddress } from './db';
-import { carriesCredential, isProvenanceUrl, normalizeUrl } from './url';
+import { carriesCredential, isOnSite, isProvenanceUrl, normalizeUrl } from './url';
 
 /**
  * A recording saves the address of every page opened in one window, without
@@ -56,14 +56,26 @@ export interface Visit {
   at: string;
 }
 
+function onExcludedSite(url: string, excludedSites: string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return excludedSites.some((site) => isOnSite(host, site));
+}
+
 /**
  * Saves a visited page as an address only (a PENDING snapshot, the page is
- * not read). Pages that are not web pages, addresses with a sign-in or access
- * credential and addresses the session already has are skipped.
+ * not read). Pages that are not web pages, pages on the sites the user
+ * excluded, addresses with a sign-in or access credential and addresses the
+ * session already has are skipped. A page on an excluded site is never kept
+ * as where another was found.
  */
-export async function recordVisit(db: IDBDatabase, sessionId: string, visit: Visit): Promise<CommitResult | null> {
+export async function recordVisit(db: IDBDatabase, sessionId: string, visit: Visit, excludedSites: string[] = []): Promise<CommitResult | null> {
   const dedupUrl = normalizeUrl(visit.url);
-  if (!dedupUrl || carriesCredential(visit.url) || (await hasSourceAddress(db, sessionId, dedupUrl))) return null;
+  if (!dedupUrl || onExcludedSite(visit.url, excludedSites) || carriesCredential(visit.url) || (await hasSourceAddress(db, sessionId, dedupUrl))) return null;
   return commitCapture(db, {
     session_id: sessionId,
     kind: 'tab',
@@ -71,7 +83,7 @@ export async function recordVisit(db: IDBDatabase, sessionId: string, visit: Vis
     captured_at: visit.at,
     original_url: visit.url,
     tab_title: visit.title,
-    found_on: visit.found_on,
+    found_on: visit.found_on && !onExcludedSite(visit.found_on, excludedSites) ? visit.found_on : null,
     anchor_text: null,
     fragment: null,
     snapshot: { status: 'pending' },

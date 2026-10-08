@@ -361,6 +361,24 @@ describe('side panel', () => {
     expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
   });
 
+  it('keeps the sites not recorded from pasted addresses and refuses a line that is not a site', async () => {
+    const save = () => document.querySelector<HTMLButtonElement>('#sheet-body .sheet-actions .primary')!.click();
+    $('excluded-sites-button').click();
+    await vi.waitFor(() => expect($('sheet-title').textContent).toBe('Sites not recorded'));
+    $<HTMLTextAreaElement>('excluded-sites').value = 'https://Mail.Google.com/mail/u/0\nnot a site';
+    save();
+    await vi.waitFor(() => expect($('sheet-body').querySelector('.alert-text')?.textContent).toBe('Not a site: not a site. Write a site such as example.org, one per line.'));
+    expect(fake.local.recordingExcludedSites).toBeUndefined();
+
+    $<HTMLTextAreaElement>('excluded-sites').value = 'https://Mail.Google.com/mail/u/0\n\nonline.mybank.example\nmail.google.com';
+    save();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('2 sites are not recorded.'));
+    expect(fake.local.recordingExcludedSites).toEqual(['mail.google.com', 'online.mybank.example']);
+    $('excluded-sites-button').click();
+    await vi.waitFor(() => expect($<HTMLTextAreaElement>('excluded-sites').value).toBe('mail.google.com\nonline.mybank.example'));
+    document.querySelector<HTMLButtonElement>('#sheet-body .sheet-actions button:not(.primary)')!.click();
+  });
+
   it('says when a recording moves between windows, and keeps Undo in the window it left', async () => {
     fake.tabsPermission = true;
     backgroundStores('recording', { window_id: 2, started_at: '2026-10-07T10:00:00.000Z', captures: [], failed: 0 });

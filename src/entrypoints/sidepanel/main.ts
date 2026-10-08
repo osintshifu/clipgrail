@@ -56,11 +56,14 @@ import {
   getActiveSessionId,
   getJobSettings,
   getAllJobSettings,
+  getExcludedSites,
   getLastBackupAt,
   getOpenMode,
   getPresets,
   removeJobSettings,
   saveJobSettings,
+  saveExcludedSites,
+  parseSiteList,
   replaceAllJobSettings,
   resolveActiveSessionId,
   savePresets,
@@ -1504,7 +1507,7 @@ function helpSheet(): void {
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Recording runs in one window at a time: starting it in another window moves it there.',
+        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
       ),
       ...item(
         "Can't read this tab?",
@@ -1515,6 +1518,47 @@ function helpSheet(): void {
 }
 
 // ---------- Recording ----------
+
+async function excludedSitesSheet(): Promise<void> {
+  let sites: string[];
+  try {
+    sites = await getExcludedSites();
+  } catch (error) {
+    showToast(`Sites not read: ${errorText(error)}`, { level: 'error' });
+    return;
+  }
+  const area = h('textarea', { attrs: { id: 'excluded-sites', rows: '6', placeholder: 'mail.google.com\nonline.mybank.example', spellcheck: 'false', autocomplete: 'off' } });
+  area.value = sites.join('\n');
+  const save = async () => {
+    const parsed = parseSiteList(area.value);
+    if ('invalid' in parsed) {
+      sheetError(`Not a site: ${parsed.invalid}. Write a site such as example.org, one per line.`);
+      return;
+    }
+    try {
+      await saveExcludedSites(parsed.sites);
+      closeSheet();
+      const n = parsed.sites.length;
+      showToast(n ? `${plural(n, 'site')} ${n === 1 ? 'is' : 'are'} not recorded.` : 'All sites are recorded.');
+    } catch (error) {
+      sheetError(`Sites not saved: ${errorText(error)}`);
+    }
+  };
+  openSheet(
+    'excluded-sites',
+    'Sites not recorded',
+    [
+      h('p', {}, ['Recording skips pages on these sites and their subdomains, and never saves them as the page where another was found. One site per line.']),
+      h('label', { class: 'preset-field' }, [h('span', {}, ['Sites']), area]),
+      h('p', { class: 'small' }, ['Kept in this browser. Not part of backups.']),
+      h('div', { class: 'sheet-actions' }, [
+        h('button', { class: 'primary', attrs: { type: 'button' }, on: { click: () => void save() } }, ['Save']),
+        h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Cancel']),
+      ]),
+    ],
+    area,
+  );
+}
 
 function renderRecording(): void {
   const here = recording !== null && recording.window_id === windowId;
@@ -1698,6 +1742,7 @@ function bind(): void {
     event.preventDefault();
   });
   $('backup-button').addEventListener('click', () => void backup());
+  $('excluded-sites-button').addEventListener('click', () => void excludedSitesSheet());
   $('restore-button').addEventListener('click', () => {
     toggleMenu(false);
     const input = $<HTMLInputElement>('restore-file');

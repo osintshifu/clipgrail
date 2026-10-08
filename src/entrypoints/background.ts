@@ -8,7 +8,7 @@ import type { ClipResponse, RecordResponse } from '../lib/messages';
 import { isClipRequest, isFromOwnPage, isRecordRequest } from '../lib/messages';
 import { openLibrary } from '../lib/library-tab';
 import { publishNotice } from '../lib/notice';
-import { OPEN_MODE_KEY, getActiveSessionId, getOpenMode, resolveActiveSessionId } from '../lib/settings';
+import { OPEN_MODE_KEY, getActiveSessionId, getExcludedSites, getOpenMode, resolveActiveSessionId } from '../lib/settings';
 import { captureThumbnail } from '../lib/thumbnail';
 import type { Recording, TrailEntry } from '../lib/recording';
 import { RECORDING_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
@@ -250,12 +250,13 @@ async function recordTab(tabId: number): Promise<void> {
   try {
     const entry = (await trail())[String(tabId)];
     const db = await getDb();
-    saved = await recordVisit(db, await resolveActiveSessionId(db), {
-      url: tab.url,
-      title: tab.title ?? '',
-      found_on: entry?.url === tab.url ? entry.found_on : null,
-      at: new Date().toISOString(),
-    });
+    saved = await recordVisit(
+      db,
+      await resolveActiveSessionId(db),
+      { url: tab.url, title: tab.title ?? '', found_on: entry?.url === tab.url ? entry.found_on : null, at: new Date().toISOString() },
+      // Read at every page, so a change to the list applies to a recording already running.
+      await getExcludedSites(),
+    );
   } catch {
     await recordFailure(recording.started_at);
     return;

@@ -3,6 +3,7 @@ import { hasSession } from './db';
 import { INBOX_SESSION_ID } from './model';
 import type { JobSettings } from './research-job';
 import { DEFAULT_JOB_SETTINGS } from './research-job';
+import { siteHost } from './url';
 
 /** Settings and UI state kept in chrome.storage.local (research data lives in IndexedDB). */
 
@@ -60,6 +61,29 @@ export async function resolveActiveSessionId(db: IDBDatabase): Promise<string> {
   // Replace only the missing session, not one another page stored meanwhile.
   if ((await getActiveSessionId()) === id) await setActiveSessionId(INBOX_SESSION_ID);
   return INBOX_SESSION_ID;
+}
+
+/** Sites whose pages a recording skips (see recordVisit). Kept in this browser, not in backups. */
+const EXCLUDED_SITES_KEY = 'recordingExcludedSites';
+
+export async function getExcludedSites(): Promise<string[]> {
+  const value: unknown = (await browser.storage.local.get(EXCLUDED_SITES_KEY))[EXCLUDED_SITES_KEY];
+  return Array.isArray(value) ? value.filter((site): site is string => typeof site === 'string') : [];
+}
+
+export async function saveExcludedSites(sites: string[]): Promise<void> {
+  await browser.storage.local.set({ [EXCLUDED_SITES_KEY]: sites });
+}
+
+/** The sites written one per line, without duplicates, or the first line that is not a site. */
+export function parseSiteList(text: string): { sites: string[] } | { invalid: string } {
+  const sites = new Set<string>();
+  for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const site = siteHost(line);
+    if (!site) return { invalid: line };
+    sites.add(site);
+  }
+  return { sites: [...sites] };
 }
 
 export async function getLastBackupAt(): Promise<string | null> {
