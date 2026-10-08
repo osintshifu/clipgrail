@@ -1,7 +1,7 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import type { DeletionText } from '../../lib/describe';
 import {
@@ -24,8 +24,10 @@ import { $, fill, h } from '../../lib/dom';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
-import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, versionsOf } from '../../lib/library';
-import type { LibraryFilter, LibraryRow, LibrarySort, Version } from '../../lib/library';
+import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../../lib/library';
+import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
+import { fold, parseSearch, termRanges, textHit } from '../../lib/search';
+import type { SearchQuery } from '../../lib/search';
 import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
@@ -47,6 +49,19 @@ let archivedOpen = false;
 let detailsOpen = false;
 /** Snapshot texts already read. A saved text never changes, so they can be kept. */
 const texts = new Map<string, string>();
+/**
+ * Saved texts read for the current search words: what each contains, by
+ * snapshot ID. A saved text never changes, so after new captures only their
+ * texts are read; new words start over.
+ */
+let textSearch: { key: string; hits: TextHits; read: Set<string> } = { key: '', hits: new Map(), read: new Set() };
+/** The words saved texts are being read for, while a search reads them. */
+let readingFor: string | null = null;
+let searchRun = 0;
+/** Set when a source is opened from a search: the reader scrolls to the first match once the text is shown. */
+let scrollToMatch = false;
+/** Matches marked in one text of the reader, per search word. */
+const MAX_HIGHLIGHTS = 1000;
 /** Captures that have a page thumbnail, and the thumbnails read so far. */
 let thumbIds = new Set<string>();
 const thumbs = new Map<string, Promise<string | null>>();
@@ -254,8 +269,22 @@ function setView(view: string): void {
 
 // ---------- Sources ----------
 
-function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
+/** Where the search found a source, under its title: a passage with the words marked. */
+function snippetLine(found: SearchSnippet): HTMLElement {
+  const { text, marks, cut_before, cut_after } = found.snippet;
+  const parts: Child[] = [h('span', { class: 'where' }, [found.where]), cut_before ? '…' : null];
+  let at = 0;
+  for (const [start, end] of marks) {
+    parts.push(text.slice(at, start), h('mark', {}, [text.slice(start, end)]));
+    at = end;
+  }
+  parts.push(text.slice(at), cut_after ? '…' : null);
+  return h('span', { class: 'src-snippet' }, parts);
+}
+
+function listItem(row: LibraryRow, mixed: boolean, query: SearchQuery): HTMLLIElement {
   const { entry } = row;
+  const found = query.terms.length ? searchSnippet(row, query, textSearch.hits) : null;
   const meta = [sourceMeta(entry), `last ${fmtTime(row.last_captured_at)}`].filter(Boolean).join(' · ');
   const name = row.title ?? entry.source.dedup_url;
   const id = entry.source.id;
@@ -276,7 +305,7 @@ function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
           tabindex: '-1',
           'data-id': id,
           'aria-current': String(id === selectedId),
-          'aria-label': `${row.label}${mixed ? ` in ${row.session.name}` : ''}: ${name}, ${STATUS_LABELS[row.status]}`,
+          'aria-label': `${row.label}${mixed ? ` in ${row.session.name}` : ''}: ${name}, ${STATUS_LABELS[row.status]}${found ? `, found in ${found.where}` : ''}`,
         },
         on: {
           click: (event) => {
@@ -298,6 +327,7 @@ function listItem(row: LibraryRow, mixed: boolean): HTMLLIElement {
             h('span', { class: 'src-host' }, [hostOf(entry.source.dedup_url)]),
             h('span', {}, [meta]),
           ]),
+          found ? snippetLine(found) : null,
         ]),
       ],
     ),
@@ -362,24 +392,57 @@ function clearPicked(): void {
   pickAnchor = null;
 }
 
+/** Reads the saved texts the search words have not been looked for in yet, then shows the list again. */
+function searchTexts(query: SearchQuery): void {
+  const key = JSON.stringify(query.terms);
+  if (key !== textSearch.key) textSearch = { key, hits: new Map(), read: new Set() };
+  if (!query.terms.length) {
+    readingFor = null;
+    searchRun++;
+    return;
+  }
+  if (readingFor === key) return;
+  const state = textSearch;
+  const ids = rows.flatMap((row) => textIdsOf(row.entry)).filter((id) => !state.read.has(id));
+  if (!ids.length) return;
+  const run = ++searchRun;
+  readingFor = key;
+  const done = (error?: unknown) => {
+    if (run !== searchRun) return;
+    readingFor = null;
+    if (error !== undefined) notice(`Saved texts could not be searched: ${errorText(error)}`);
+    renderList();
+  };
+  visitSnapshotTexts(db, ids, (id, text) => {
+    if (run !== searchRun) return false;
+    state.read.add(id);
+    const hit = textHit(text, query.terms);
+    if (hit) state.hits.set(id, hit);
+    return true;
+  }).then(() => done(), done);
+}
+
 function renderList(): void {
-  shown = filterRows(rows, filter);
+  const query = parseSearch(filter.query);
+  searchTexts(query);
+  shown = filterRows(rows, filter, textSearch.hits);
   const inView = filter.view === ALL_SOURCES ? rows.length : rows.filter((r) => r.session.id === filter.view).length;
   const narrowed = filter.query.trim() !== '' || filter.status !== 'any';
   $('list-title').textContent = viewName();
-  $('result-count').textContent = narrowed ? `${fmtNumber(shown.length)} of ${count(inView, 'source')}` : count(inView, 'source');
+  $('result-count').textContent =
+    readingFor !== null ? 'Searching saved text…' : narrowed ? `${fmtNumber(shown.length)} of ${count(inView, 'source')}` : count(inView, 'source');
   $('clear-filters').hidden = !narrowed;
   $('status-filter').classList.toggle('filter-on', filter.status !== 'any');
   $('search').classList.toggle('filter-on', filter.query.trim() !== '');
   const mixed = filter.view === ALL_SOURCES;
-  $('rows').replaceChildren(...shown.map((row) => listItem(row, mixed)));
+  $('rows').replaceChildren(...shown.map((row) => listItem(row, mixed, query)));
   const empty = $('list-empty');
   empty.hidden = shown.length > 0;
   if (!shown.length) {
     fill(empty, [
       inView === 0
         ? h('p', {}, [filter.view === ALL_SOURCES ? 'No sources yet. Clip pages from the side panel and they appear here.' : 'This session has no sources yet.'])
-        : h('p', {}, ['No sources match the search and status filter.']),
+        : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No sources match the search and status filter.']),
       inView > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
     ]);
   }
@@ -398,10 +461,14 @@ function clearFilters(): void {
 }
 
 function openSource(id: string, userAction: boolean): void {
+  const query = parseSearch(filter.query);
   if (selectedId !== id) {
-    viewedCaptureId = null;
+    // Opened from a search: the capture where it found the words, when that is not the current text.
+    const row = rows.find((r) => r.entry.source.id === id);
+    viewedCaptureId = row && query.terms.length ? (searchSnippet(row, query, textSearch.hits)?.capture_id ?? null) : null;
     $('reader-col').scrollTop = 0;
   }
+  scrollToMatch = userAction && query.terms.length > 0;
   selectedId = id;
   markSelected();
   writeHash();
@@ -468,6 +535,35 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
   } catch (error) {
     if (box.isConnected) box.textContent = `The saved text could not be read: ${errorText(error)}`;
   }
+  box.removeAttribute('aria-busy');
+  if (box.isConnected) highlightMatches();
+}
+
+/** Marks the search words in the texts shown in the reader; after a source is opened from a search, scrolls to the first. */
+function highlightMatches(): void {
+  const terms = parseSearch(filter.query).terms;
+  const ranges: Range[] = [];
+  for (const box of terms.length ? document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy])') : []) {
+    const node = box.firstChild;
+    if (!(node instanceof Text)) continue;
+    for (const [start, end] of termRanges(fold(node.data), terms, MAX_HIGHLIGHTS)) {
+      const range = new Range();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      ranges.push(range);
+    }
+  }
+  if (typeof CSS !== 'undefined' && 'highlights' in CSS) {
+    if (ranges.length) CSS.highlights.set('search', new Highlight(...ranges));
+    else CSS.highlights.delete('search');
+  }
+  const first = ranges[0];
+  if (scrollToMatch && first) {
+    const col = $('reader-col');
+    col.scrollTop += first.getBoundingClientRect().top - col.getBoundingClientRect().top - col.clientHeight / 3;
+  }
+  // Once the text is shown, a later re-render of the same source keeps the reader where the user scrolled.
+  if (first || !document.querySelector('#reader .text-box[aria-busy]')) scrollToMatch = false;
 }
 
 function viewedSection(viewed: Version, current: Version | undefined, total: number): HTMLElement {
@@ -486,9 +582,12 @@ function viewedSection(viewed: Version, current: Version | undefined, total: num
         ]),
       );
     }
-    const box = h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': `Saved text of capture ${viewed.number}` } }, [texts.get(snapshot.id) ?? 'Loading text…']);
+    const loaded = texts.has(snapshot.id);
+    const box = h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': `Saved text of capture ${viewed.number}`, ...(loaded ? {} : { 'aria-busy': 'true' }) } }, [
+      texts.get(snapshot.id) ?? 'Loading text…',
+    ]);
     blocks.push(box);
-    if (!texts.has(snapshot.id)) void loadText(snapshot.id, box);
+    if (!loaded) void loadText(snapshot.id, box);
     if (snapshot.truncated) {
       blocks.push(
         h('div', { class: 'text-cut' }, [
@@ -551,6 +650,7 @@ function renderReader(): void {
   const restore = keepNoteFocus();
   renderReaderContents();
   restore();
+  highlightMatches();
 }
 
 function renderReaderContents(): void {

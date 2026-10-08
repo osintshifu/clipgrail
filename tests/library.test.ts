@@ -1,10 +1,11 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { commitCapture, createSession, loadLibrary } from '../src/lib/db';
-import { filterRows, libraryRows, versionsOf } from '../src/lib/library';
-import type { LibraryFilter } from '../src/lib/library';
+import { commitCapture, createSession, loadLibrary, updateSourceNote, visitSnapshotTexts } from '../src/lib/db';
+import { filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../src/lib/library';
+import type { LibraryFilter, TextHits } from '../src/lib/library';
 import { INBOX_SESSION_ID } from '../src/lib/model';
-import { failedDraft, freshDb, linkDraft, pageDraft } from './helpers';
+import { parseSearch, textHit } from '../src/lib/search';
+import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 const all: LibraryFilter = { view: 'all', query: '', status: 'any', sort: 'last-desc' };
 
@@ -40,6 +41,44 @@ describe('library', () => {
     expect(filterRows(rows, { ...all, view: INBOX_SESSION_ID, sort: 'added-asc' }).map((r) => r.label)).toEqual(['S1', 'S2']);
     expect(filterRows(rows, { ...all, view: INBOX_SESSION_ID, sort: 'last-desc' }).map((r) => r.label)).toEqual(['S1', 'S2']);
     expect(filterRows(rows, { ...all, view: INBOX_SESSION_ID, sort: 'added-desc' }).map((r) => r.label)).toEqual(['S2', 'S1']);
+  });
+
+  it('searches notes, selections and saved texts of every version without regard to case or diacritics, finds phrases, and narrows by site and day', async () => {
+    const db = await freshDb();
+    await commitCapture(db, await pageDraft('https://port.example.org/berth', 'Old text about the cranes.', '2026-10-01T10:00:00.000Z'));
+    await commitCapture(db, await pageDraft('https://port.example.org/berth', 'Night closures at berth 4. Źródło: the port authority.', '2026-10-03T10:00:00.000Z'));
+    const union = await commitCapture(db, await selectionDraft('https://news.example.net/union', 'The union called a strike.', '2026-10-05T10:00:00.000Z'));
+    await updateSourceNote(db, union.source.id, 'Check the strike dates.');
+    const rows = libraryRows(await loadLibrary(db));
+    // The library reads the saved texts for the search words, then filters with what it found.
+    const search = async (input: string) => {
+      const query = parseSearch(input);
+      const hits: TextHits = new Map();
+      await visitSnapshotTexts(db, rows.flatMap((r) => textIdsOf(r.entry)), (id, text) => {
+        const hit = textHit(text, query.terms);
+        if (hit) hits.set(id, hit);
+        return true;
+      });
+      return filterRows(rows, { ...all, query: input }, hits).map((row) => {
+        const found = searchSnippet(row, query, hits);
+        const marked = found?.snippet.marks.map(([a, b]) => found.snippet.text.slice(a, b)).join(',');
+        return `${row.host} ${found ? `${found.where}: ${marked}` : '-'}`;
+      });
+    };
+    expect(await search('zrodlo')).toEqual(['port.example.org Saved text: Źródło']);
+    expect(await search('CRANES')).toEqual(['port.example.org Earlier text · capture 1: cranes']);
+    expect(await search('strike')).toEqual(['news.example.net Note: strike']);
+    expect(await search('"called a strike"')).toEqual(['news.example.net Selection: called a strike']);
+    expect(await search('"strike called"')).toEqual([]);
+    // Every word must be in the same source; the title and address count without a passage.
+    expect(await search('berth strike')).toEqual([]);
+    expect(await search('berth night')).toEqual(['port.example.org Saved text: Night,berth']);
+    expect(await search('site:example.org')).toEqual(['port.example.org -']);
+    expect(await search('site:https://news.example.net/union union')).toEqual(['news.example.net -']);
+    expect(await search('after:2026-10-04')).toEqual(['news.example.net -']);
+    expect(await search('before:2026-10-02')).toEqual(['port.example.org -']);
+    // A qualifier without a usable value is an ordinary word, so it narrows rather than widens.
+    expect(await search('after:yesterday')).toEqual([]);
   });
 
   it('lists versions newest first and marks the one Research Jobs use, also when a later capture has no text', async () => {

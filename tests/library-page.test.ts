@@ -252,4 +252,23 @@ describe('organizing in the library', () => {
     document.querySelector<HTMLButtonElement>('#nav-list > .nav-item')!.click();
     expect($('selection-bar').hidden).toBe(true);
   });
+
+  it('finds a source by its saved text, shows where, and opens the earlier version the words are in', async () => {
+    // jsdom has no layout; the reader scrolls to the first match by its position.
+    Range.prototype.getBoundingClientRect = () => new DOMRect();
+    const { db, session } = await openExample('Search');
+    await commitCapture(db, await pageDraft('https://example.test/search-versions', 'Harbour cranes were repaired.', '2026-10-02T10:00:00.000Z', session.id));
+    await commitCapture(db, await pageDraft('https://example.test/search-versions', 'Night closures continue.', '2026-10-03T10:00:00.000Z', session.id));
+    fake.refresh();
+    const search = $<HTMLInputElement>('search');
+    search.value = 'CRANES';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect($('result-count').textContent).toMatch(/^1 of /));
+    const row = document.querySelector<HTMLButtonElement>('#rows .src')!;
+    expect(row.querySelector('.src-snippet')?.textContent).toBe('Earlier text · capture 1Harbour cranes were repaired.');
+    expect(row.querySelector('.src-snippet mark')?.textContent).toBe('cranes');
+    row.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Harbour cranes were repaired.'));
+    expect($('reader').querySelector('.banner.earlier')).not.toBeNull();
+  });
 });

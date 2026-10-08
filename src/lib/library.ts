@@ -1,6 +1,8 @@
 import type { CaptureEntry, LibraryData, SourceEntry } from './db';
-import type { Session, SnapshotMeta } from './model';
+import type { Fragment, Session, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
+import type { SearchQuery, Snippet, TextHit } from './search';
+import { fold, inDays, onSite, parseSearch, snippetOf } from './search';
 import type { SourceStatus } from './selection';
 import { capturedTitle, chooseSnapshot } from './selection';
 
@@ -18,8 +20,10 @@ export interface LibraryRow {
   last_captured_at: string;
   /** When the source was first saved. */
   added_at: string;
-  /** Lowercase title and address, searched together with the label. */
+  /** Title and address folded for search (see fold): what the list shows of a source. */
   haystack: string;
+  /** Host of the address, for site:. */
+  host: string;
 }
 
 export type LibrarySort = 'last-desc' | 'last-asc' | 'added-desc' | 'added-asc';
@@ -58,18 +62,81 @@ export function libraryRows(data: LibraryData): LibraryRow[] {
         status: chooseSnapshot(entry).status,
         last_captured_at: last,
         added_at: entry.source.created_at,
-        haystack: `${title ?? ''}\n${entry.source.dedup_url}`.toLowerCase(),
+        haystack: fold(`${title ?? ''}\n${entry.source.dedup_url}`),
+        host: hostname(entry.source.dedup_url),
       },
     ];
   });
 }
 
-/** Rows of the chosen view that contain every word of the query and have the chosen status, in the chosen order. */
+function hostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
 /** A search word such as "s3" also finds the source with that label. */
 const LABEL_WORD = /^s[1-9]\d*$/;
 
-export function filterRows(rows: LibraryRow[], filter: LibraryFilter): LibraryRow[] {
-  const words = filter.query.toLowerCase().split(/\s+/).filter(Boolean);
+/** Saved texts a search has read, by snapshot ID: the terms each contains and a passage around the first. */
+export type TextHits = Map<string, TextHit>;
+
+/** Selections are kept while the library is open, so each is folded once. */
+const foldedFragments = new WeakMap<Fragment, string>();
+function foldedFragment(fragment: Fragment): string {
+  let folded = foldedFragments.get(fragment);
+  if (folded === undefined) foldedFragments.set(fragment, (folded = fold(fragment.text)));
+  return folded;
+}
+
+interface Field {
+  where: string;
+  text: string;
+  folded: string;
+  /** The capture the field belongs to; null for the source note. */
+  capture_id: string | null;
+}
+
+/** Notes and selections of a source, newest capture first: the parts a search finds that the list does not show. */
+function fieldsOf(entry: LibraryEntry): Field[] {
+  const fields: Field[] = [];
+  if (entry.source.note) fields.push({ where: 'Note', text: entry.source.note, folded: fold(entry.source.note), capture_id: null });
+  const captures = [...entry.captures].reverse();
+  for (const { capture } of captures) if (capture.note) fields.push({ where: 'Note', text: capture.note, folded: fold(capture.note), capture_id: capture.id });
+  for (const { capture } of captures) {
+    if (capture.fragment) fields.push({ where: 'Selection', text: capture.fragment.text, folded: foldedFragment(capture.fragment), capture_id: capture.id });
+  }
+  return fields;
+}
+
+/** IDs of the successful snapshots of a source: the saved texts a search reads. */
+export function textIdsOf(entry: LibraryEntry): string[] {
+  return entry.captures.flatMap((c) => (c.snapshot?.status === 'ok' ? [c.snapshot.id] : []));
+}
+
+function shownTerm(row: LibraryRow, term: string): boolean {
+  return row.haystack.includes(term) || (LABEL_WORD.test(term) && row.label.toLowerCase() === term);
+}
+
+function matches(row: LibraryRow, query: SearchQuery, hits: TextHits | undefined): boolean {
+  if (!onSite(row.host, query.sites)) return false;
+  if ((query.after !== null || query.before !== null) && !row.entry.captures.some((c) => inDays(c.capture.captured_at, query))) return false;
+  const hidden = query.terms.filter((term) => !shownTerm(row, term));
+  if (!hidden.length) return true;
+  const fields = fieldsOf(row.entry);
+  const textHits = hits ? textIdsOf(row.entry).flatMap((id) => hits.get(id) ?? []) : [];
+  return hidden.every((term) => fields.some((f) => f.folded.includes(term)) || textHits.some((hit) => hit.terms.has(term)));
+}
+
+/**
+ * Rows of the chosen view that contain every word and phrase of the search,
+ * pass its site:, after: and before:, and have the chosen status, in the
+ * chosen order. Saved texts count once a search has read them (hits).
+ */
+export function filterRows(rows: LibraryRow[], filter: LibraryFilter, hits?: TextHits): LibraryRow[] {
+  const query = parseSearch(filter.query);
   const key = filter.sort.startsWith('last') ? 'last_captured_at' : 'added_at';
   const direction = filter.sort.endsWith('desc') ? -1 : 1;
   return rows
@@ -77,7 +144,7 @@ export function filterRows(rows: LibraryRow[], filter: LibraryFilter): LibraryRo
       (row) =>
         (filter.view === ALL_SOURCES || row.session.id === filter.view) &&
         (filter.status === 'any' || row.status === filter.status) &&
-        words.every((word) => row.haystack.includes(word) || (LABEL_WORD.test(word) && row.label.toLowerCase() === word)),
+        matches(row, query, hits),
     )
     .sort(
       (a, b) =>
@@ -85,6 +152,35 @@ export function filterRows(rows: LibraryRow[], filter: LibraryFilter): LibraryRo
         a.session.created_at.localeCompare(b.session.created_at) ||
         a.entry.source.number - b.entry.source.number,
     );
+}
+
+/** Where a search found a source, beyond what the list shows: the passage to show under it, and the capture to open. */
+export interface SearchSnippet {
+  where: string;
+  snippet: Snippet;
+  capture_id: string | null;
+}
+
+/** Notes come first, then selections, then the current saved text and earlier texts, newest first. */
+export function searchSnippet(row: LibraryRow, query: SearchQuery, hits: TextHits | undefined): SearchSnippet | null {
+  const terms = query.terms;
+  if (terms.every((term) => shownTerm(row, term))) return null;
+  for (const field of fieldsOf(row.entry)) {
+    const snippet = snippetOf(field.text, field.folded, terms);
+    if (snippet) return { where: field.where, snippet, capture_id: field.capture_id };
+  }
+  if (!hits) return null;
+  const versions = versionsOf(row.entry);
+  for (const version of [...versions.filter((v) => v.current), ...versions.filter((v) => !v.current)]) {
+    const snapshot = version.capture.snapshot;
+    const hit = snapshot?.status === 'ok' ? hits.get(snapshot.id) : undefined;
+    if (hit) {
+      return version.current
+        ? { where: 'Saved text', snippet: hit.snippet, capture_id: null }
+        : { where: `Earlier text · capture ${version.number}`, snippet: hit.snippet, capture_id: version.capture.capture.id };
+    }
+  }
+  return null;
 }
 
 export interface Version {

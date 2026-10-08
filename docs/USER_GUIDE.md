@@ -58,14 +58,16 @@ Click a source to see its status and saved text (**Text**), every capture with i
 **Library** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
 
 - **All sources** lists the sources of every session, including the Inbox and archived sessions. Each source shows its label together with its session name, because every session has its own S1.
-- Search finds sources by title, address or label, for example S3. You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
+- Search finds sources that contain every word you type, in their title, address, label (for example S3), notes, selections or saved text, including earlier versions. Case and diacritics do not matter, so `zrodlo` finds "Źródło". Put words in quotes to find a phrase. `site:example.org` keeps sources from that site and its subdomains; `after:2026-10-01` and `before:2026-10-31` keep sources with a capture on or after, or on or before, that day. While saved texts are read, the count shows **Searching saved text…**.
+- When the words are found in a note, a selection or saved text, the source shows the passage with the words marked and where it is: **Note**, **Selection**, **Saved text** or **Earlier text** with the capture number. Opening the source shows the capture where they were found; the words are marked in the text shown and the reader scrolls to the first.
+- You can show only one status, for example **Address only** to see what still has no text, and sort by last capture or by date added.
 - Click a source to read it. **Captures** lists every capture of the source, newest first. Choosing an earlier capture shows the text saved at that time. **Current text** marks the version a Research Job uses; an earlier version is shown for reading only.
 - When you clip a page or a selection, ClipGrail also saves a picture of the visible part of the page. The library shows it above the source's title and address. Links saved without opening and saved tab addresses have no picture.
 - **Open page** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
 - When a source has earlier text versions, its details in the side panel link to them with **Open in library**.
 - Drag the border between two columns to change their width, or focus the border and use the arrow keys; a double-click restores the usual width. The icon at the top of the sessions column hides it, and the arrows next to an open source widen the reader to the whole window.
 
-The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins. Search covers titles, addresses and labels, not the saved text.
+The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins.
 
 ## Preparing a Research Job
 

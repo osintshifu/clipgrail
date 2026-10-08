@@ -785,6 +785,27 @@ export function loadLibrary(db: IDBDatabase): Promise<LibraryData> {
   });
 }
 
+/** Saved texts read per transaction by visitSnapshotTexts, so a capture never waits long behind a search. */
+const TEXT_BATCH = 100;
+
+/**
+ * Reads the saved texts of the given snapshots one at a time and hands each to
+ * `visit`, which returns false to stop. Only one text is held at a time.
+ */
+export async function visitSnapshotTexts(db: IDBDatabase, snapshotIds: string[], visit: (snapshotId: string, text: string) => boolean): Promise<void> {
+  for (let i = 0; i < snapshotIds.length; i += TEXT_BATCH) {
+    const go = await inTransaction(db, [TEXT_STORE], 'readonly', async (tx) => {
+      const store = tx.objectStore(TEXT_STORE);
+      for (const id of snapshotIds.slice(i, i + TEXT_BATCH)) {
+        const record = (await result(store.get(id))) as SnapshotText | undefined;
+        if (record && !visit(id, record.text)) return false;
+      }
+      return true;
+    });
+    if (!go) return;
+  }
+}
+
 /** The saved text of one successful snapshot, or undefined if the snapshot has none. */
 export function loadSnapshotText(db: IDBDatabase, snapshotId: string): Promise<string | undefined> {
   return inTransaction(db, [TEXT_STORE], 'readonly', async (tx) => {

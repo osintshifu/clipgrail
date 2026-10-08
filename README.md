@@ -40,7 +40,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes. |
-| **Research library** | Organize sources into sessions; browse, filter, search by title/URL/label, and add notes. |
+| **Research library** | Organize sources into sessions; browse, filter, search saved text, notes and selections, and add notes. |
 | **Research Jobs** | Combine a prompt with selected sources referenced as `[S1]`, `[S2]`, and so on. |
 | **Export and backup** | Copy jobs, export Markdown or JSON, and back up or restore local research data. |
 
@@ -76,7 +76,7 @@ Click **Record** in the side panel, browse normally in that Chrome window, then 
 | **Save link** | URL without opening or downloading the destination. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 
-ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers source titles, URLs, and labels, not the body of saved text.
+ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results.
 
 ### Research Jobs
 
