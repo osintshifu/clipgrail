@@ -1,6 +1,6 @@
 import './style.css';
 import { browser } from 'wxt/browser';
-import { backupFileName, createBackup, restoreBackup, summarize, validateBackup } from '../../lib/backup';
+import { MAX_BACKUP_BYTES, backupFileName, restoreBackup, validateBackup, writeBackup } from '../../lib/backup';
 import type { Backup } from '../../lib/backup';
 import { announceDataChange, onDataChange } from '../../lib/changes';
 import { $, h } from '../../lib/dom';
@@ -19,7 +19,7 @@ import {
   loadNote,
   moveSource,
   openDb,
-  readAllData,
+  visitAllData,
   renameSession,
   replaceAllData,
   saveJob,
@@ -27,12 +27,12 @@ import {
   setWriteListener,
   summarizeData,
   undoCapture,
-  undoCaptures,
+  undoSavedCaptures,
   updateCaptureNote,
   updateSessionText,
   updateSourceNote,
 } from '../../lib/db';
-import type { SessionView, SourceEntry } from '../../lib/db';
+import type { SavedCapture, SessionView, SourceEntry } from '../../lib/db';
 import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations';
 import { DESTINATIONS, deliverJob } from '../../lib/destinations';
 import type { ClipRequest, ClipResponse, RecordRequest, RecordResponse } from '../../lib/messages';
@@ -80,6 +80,7 @@ import {
   captureLine,
   detailRows,
   fmtBytes,
+  fmtMegabytes,
   fmtNumber,
   fmtTime,
   hostOf,
@@ -225,11 +226,13 @@ async function undoCaptureWithToast(captureId: string): Promise<void> {
   await refreshData();
 }
 
-/** Undo for captures saved together: saved tabs or a recording. */
-async function undoBatchWithToast(captureIds: string[], removed: string, gone: string): Promise<void> {
+/** Undo for captures saved together: saved tabs or a recording. Pages with a note, or moved since, stay. */
+async function undoBatchWithToast(saved: SavedCapture[], removed: string, gone: string): Promise<void> {
   try {
-    const results = await undoCaptures(db, captureIds);
-    showToast(results.some((r) => r.removed) ? removed : gone);
+    const result = await undoSavedCaptures(db, saved);
+    const kept = result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '';
+    if (result.removed) showToast(kept ? `${removed} ${kept}` : removed);
+    else showToast(kept ? `Nothing removed: ${kept}` : gone);
   } catch (error) {
     showToast(`Undo failed: ${errorText(error)}`, { level: 'error' });
   }
@@ -1060,9 +1063,9 @@ async function saveTabs(which: 'selected' | 'all'): Promise<void> {
       return;
     }
     const results = await commitCaptures(db, drafts);
-    const captureIds = results.map((r) => r.capture.id);
+    const saved = results.map((r) => ({ capture_id: r.capture.id, session_id: r.capture.session_id }));
     showToast(savedTabsMessage(results, skipped), {
-      undo: () => undoBatchWithToast(captureIds, 'Saved tabs removed. Earlier captures are kept.', 'Those tabs were already removed.'),
+      undo: () => undoBatchWithToast(saved, 'Saved tabs removed. Earlier captures are kept.', 'Those tabs were already removed.'),
     });
     await refreshData();
   } catch (error) {
@@ -1318,7 +1321,7 @@ async function generateJob(): Promise<void> {
   }
 }
 
-function saveFile(name: string, mime: string, content: string): Promise<void> {
+function saveFile(name: string, mime: string, content: string | Blob): Promise<void> {
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
   const a = h('a', { attrs: { href: url, download: name } });
   document.body.append(a);
@@ -1382,15 +1385,24 @@ async function backup(): Promise<void> {
   toggleMenu(false);
   try {
     const createdAt = new Date().toISOString();
-    const data = await readAllData(db);
-    const sessionIds = new Set((data.sessions as Session[]).map((s) => s.id));
-    const jobSettings = Object.fromEntries(Object.entries(await getAllJobSettings()).filter(([id]) => sessionIds.has(id)));
-    const settings = { active_session_id: activeId, presets, job_settings: jobSettings };
-    const content = JSON.stringify(createBackup(data, settings, createdAt), null, 1);
+    const allJobSettings = await getAllJobSettings();
+    const written = await writeBackup(
+      (visit) => visitAllData(db, visit),
+      (sessionIds) => ({
+        active_session_id: activeId,
+        presets,
+        job_settings: Object.fromEntries(Object.entries(allJobSettings).filter(([id]) => sessionIds.has(id))),
+      }),
+      createdAt,
+    );
+    if (written.bytes > MAX_BACKUP_BYTES) {
+      showToast(`Backup not made: your data (about ${fmtMegabytes(written.bytes)}) is larger than a backup can hold (${fmtMegabytes(MAX_BACKUP_BYTES)}). Nothing was saved.`, { level: 'error' });
+      return;
+    }
     const name = backupFileName(createdAt);
-    await saveFile(name, 'application/json;charset=utf-8', content);
+    await saveFile(name, 'application/json;charset=utf-8', new Blob(written.parts));
     await setLastBackupAt(createdAt).catch(() => undefined);
-    const s = summarize(data, createdAt);
+    const s = written.summary;
     showToast(`Backup export started: ${name} (${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}).`);
   } catch (error) {
     showToast(`Backup failed: ${errorText(error)}`, { level: 'error' });
@@ -1416,6 +1428,11 @@ function showRestoreSheet(text: string, canConfirm: boolean): void {
 }
 
 async function checkRestoreFile(file: File): Promise<void> {
+  if (file.size > MAX_BACKUP_BYTES) {
+    pendingRestore = null;
+    showRestoreSheet(`This file is larger than a ClipGrail backup can be (${fmtMegabytes(MAX_BACKUP_BYTES)}). It was not read; your data is unchanged.`, false);
+    return;
+  }
   const check = await validateBackup(await file.text());
   if (!check.ok) {
     pendingRestore = null;
@@ -1423,7 +1440,7 @@ async function checkRestoreFile(file: File): Promise<void> {
     return;
   }
   pendingRestore = check.backup;
-  const current = summarize(await readAllData(db), '');
+  const current = await summarizeData(db);
   const s = check.summary;
   showRestoreSheet(
     `Backup from ${fmtTime(s.created_at)} is valid: ${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}, ${plural(s.jobs, 'job')}; all texts match their SHA-256.\n` +
@@ -1505,7 +1522,7 @@ function renderRecording(): void {
   button.setAttribute('aria-pressed', String(here));
   button.setAttribute('aria-label', here ? 'Stop recording' : 'Record');
   button.title = here
-    ? `Recording: ${plural(recording!.capture_ids.length, 'page')} saved. Click to stop.`
+    ? `Recording: ${plural(recording!.captures.length, 'page')} saved${recording!.failed ? `, ${recording!.failed} could not be saved` : ''}. Click to stop.`
     : recording
       ? 'Recording in another window; record this window instead'
       : 'Record the address of every page you open in this window';
@@ -1526,16 +1543,37 @@ async function startRecording(): Promise<void> {
   }
   if (windowId === undefined) return;
   const request: RecordRequest = { type: 'record', action: 'start', windowId };
-  await browser.runtime.sendMessage(request);
+  const response = await recordMessage(request);
+  if (response.error !== undefined) {
+    showToast(`Recording not started: ${response.error}`, { level: 'error' });
+    return;
+  }
   showToast(`Recording. Pages you open in this window are saved to ${view?.session.name ?? 'the active session'} as addresses.`);
+}
+
+/** Sends a start or stop to the background; a failure to reach it comes back as an error. */
+async function recordMessage(request: RecordRequest): Promise<RecordResponse> {
+  try {
+    const response = (await browser.runtime.sendMessage(request)) as RecordResponse | undefined;
+    return response ?? { captures: [], failed: 0, error: 'ClipGrail did not answer.' };
+  } catch (error) {
+    return { captures: [], failed: 0, error: errorText(error) };
+  }
 }
 
 async function stopRecording(): Promise<void> {
   if (windowId === undefined) return;
   const request: RecordRequest = { type: 'record', action: 'stop', windowId };
-  const ids = ((await browser.runtime.sendMessage(request)) as RecordResponse | undefined)?.capture_ids ?? [];
-  showToast(ids.length ? `Recording stopped. ${plural(ids.length, 'page')} saved.` : 'Recording stopped. No new pages.', {
-    undo: ids.length ? () => undoBatchWithToast(ids, 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
+  const response = await recordMessage(request);
+  if (response.error !== undefined) {
+    showToast(`Recording not stopped: ${response.error}`, { level: 'error' });
+    return;
+  }
+  const saved = response.captures;
+  const lost = response.failed ? `; ${response.failed} could not be saved` : '';
+  showToast(saved.length || lost ? `Recording stopped. ${plural(saved.length, 'page')} saved${lost}.` : 'Recording stopped. No new pages.', {
+    level: lost ? 'error' : 'info',
+    undo: saved.length ? () => undoBatchWithToast(saved, 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
   });
 }
 

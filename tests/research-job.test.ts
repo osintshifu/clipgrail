@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { commitCapture, createSession, loadSessionView, saveJob, latestJob, updateCaptureNote, updateSessionText, updateSourceNote } from '../src/lib/db';
 import type { JobSettings } from '../src/lib/research-job';
 import { DEFAULT_JOB_SETTINGS, buildResearchJob, fenced, isJobOutdated, researchJobToJson } from '../src/lib/research-job';
+import { INBOX_SESSION_ID } from '../src/lib/model';
+import { FRAME_UNESTABLISHED_NOTE } from '../src/lib/selection';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 async function sessionWithMaterial() {
@@ -88,7 +90,7 @@ describe('buildResearchJob', () => {
     expect(notes).toContain('Researcher note on this source (written by the user, not page content):\n```text\nOfficial outlet; compare with the PDF.\n```');
 
     const links = build({ include_link_context: true });
-    expect(links).toContain('found on <https://news.example.com/recount>, link text "Turnout data"');
+    expect(links).toContain('- Found on <https://news.example.com/recount>, link text "Turnout data"');
   });
 
   it('applies the per-source limit visibly and counts partial sources', async () => {
@@ -151,13 +153,27 @@ describe('generated jobs', () => {
     expect(isJobOutdated(job, buildResearchJob({ view, settings: settings({ include_notes: true }), id: 'z', createdAt: 'later' }))).toBe(true);
   });
 
-  it('export the same content as Markdown and as versioned JSON', async () => {
+  it('export the same content as Markdown and as versioned JSON, without the session name, its ID or the sources left out', async () => {
     const { db, sessionId } = await sessionWithMaterial();
-    const job = buildResearchJob({ view: await loadSessionView(db, sessionId), settings: settings(), id: 'job-1', createdAt: '2026-10-05T12:00:00.000Z' });
-    const parsed = JSON.parse(researchJobToJson(job));
+    const view = await loadSessionView(db, sessionId);
+    const left = view.sources[2]!.source.id;
+    const job = buildResearchJob({ view, settings: settings({ excluded_source_ids: [left] }), id: 'job-1', createdAt: '2026-10-05T12:00:00.000Z' });
+    const json = researchJobToJson(job);
+    const parsed = JSON.parse(json);
     expect(parsed.format).toBe('clipgrail-research-job');
     expect(parsed.format_version).toBe(1);
     expect(parsed.job.text).toBe(job.text);
-    expect(parsed.job.sources.map((s: { label: string }) => s.label)).toEqual(['S1', 'S2', 'S3']);
+    expect(parsed.job.sources.map((s: { label: string }) => s.label)).toEqual(['S1', 'S2']);
+    for (const internal of ['Election claims', sessionId, left]) expect(json).not.toContain(internal);
+  });
+
+  it('says with a selection from an embedded frame that its source URL is not established, whatever the private options', async () => {
+    const db = await freshDb();
+    const draft = await selectionDraft('https://news.example.com/story', 'Widget text', '2026-10-07T10:00:00.000Z');
+    await commitCapture(db, { ...draft, frame: { url: 'about:srcdoc' } });
+    await commitCapture(db, { ...(await selectionDraft('https://embed.example.org/post/1', 'Post text', '2026-10-07T10:01:00.000Z')), frame: { url: 'https://embed.example.org/post/1' } });
+    const job = buildResearchJob({ view: await loadSessionView(db, INBOX_SESSION_ID), settings: settings({ context_mode: 'selections' }), id: 'j', createdAt: 'now' });
+    expect(job.text.split(FRAME_UNESTABLISHED_NOTE)).toHaveLength(2);
+    expect(job.sources.map((s) => s.selections[0]!.frame_source_unestablished)).toEqual([true, false]);
   });
 });

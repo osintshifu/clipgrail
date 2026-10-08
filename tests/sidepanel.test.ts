@@ -3,6 +3,8 @@ import 'fake-indexeddb/auto';
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { MAX_BACKUP_BYTES } from '../src/lib/backup';
+import { fmtMegabytes } from '../src/lib/describe';
 import { commitCapture, createSession, listSessions, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { recordVisit } from '../src/lib/recording';
@@ -285,6 +287,15 @@ describe('side panel', () => {
     await vi.waitFor(() => expect($('toast-text').textContent).toBe(`${label} deleted.`));
     expect((await loadSessionView(db, second.id)).sources).toHaveLength(before.length - 1);
 
+    // A file larger than any backup is not read at all.
+    const huge = new File(['{}'], 'clipgrail-backup.json', { type: 'application/json' });
+    Object.defineProperty(huge, 'size', { value: MAX_BACKUP_BYTES + 1 });
+    huge.text = () => Promise.reject(new Error('read'));
+    Object.defineProperty($('restore-file'), 'files', { value: [huge], configurable: true });
+    $('restore-file').dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect($('sheet-body').textContent).toContain(`This file is larger than a ClipGrail backup can be (${fmtMegabytes(MAX_BACKUP_BYTES)}). It was not read; your data is unchanged.`));
+    $('restore-cancel').click();
+
     // The menu shows what is stored and when the last backup was made.
     fake.local.lastBackupAt = '2026-10-06T10:00:00.000Z';
     $('menu-button').click();
@@ -316,26 +327,32 @@ describe('side panel', () => {
     expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
   });
 
-  it('records only with Chrome permission, shows what it saved and undoes the recorded pages after it stops', async () => {
+  it('records only with Chrome permission, shows what it saved and could not save, and undoes the recorded pages after it stops', async () => {
     fake.tabsPermission = false;
     $('record-button').click();
     await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording not started'));
     expect(fake.messages).toHaveLength(0);
 
     fake.tabsPermission = true;
+    fake.response = { captures: [], failed: 0, error: 'Session storage is full.' };
     $('record-button').click();
-    await vi.waitFor(() => expect(fake.messages).toEqual([{ type: 'record', action: 'start', windowId: 1 }]));
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording not started: Session storage is full.'));
+    fake.response = { captures: [], failed: 0 };
+    $('record-button').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording. Pages you open'));
+    expect(fake.messages).toEqual([1, 2].map(() => ({ type: 'record', action: 'start', windowId: 1 })));
     // The background saves the pages opened in this window and reports them in session storage.
     const db = await openDb();
     const visit = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/closures', title: 'Night closures', found_on: null, at: '2026-10-07T09:00:00.000Z' });
-    backgroundStores('recording', { window_id: 1, started_at: '2026-10-07T08:59:00.000Z', capture_ids: [visit!.capture.id] });
-    // The button turns into Stop and tells what was saved; clicking it again stops.
+    const saved = [{ capture_id: visit!.capture.id, session_id: visit!.capture.session_id }];
+    backgroundStores('recording', { window_id: 1, started_at: '2026-10-07T08:59:00.000Z', captures: saved, failed: 1 });
+    // The button turns into Stop and tells what was saved and what could not be; clicking it again stops.
     expect($('record-button').getAttribute('aria-pressed')).toBe('true');
-    expect($('record-button').title).toBe('Recording: 1 page saved. Click to stop.');
+    expect($('record-button').title).toBe('Recording: 1 page saved, 1 could not be saved. Click to stop.');
 
-    fake.response = { capture_ids: [visit!.capture.id] };
+    fake.response = { captures: saved, failed: 1 };
     $('record-button').click();
-    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording stopped. 1 page saved.'));
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording stopped. 1 page saved; 1 could not be saved.'));
     expect(fake.messages.at(-1)).toEqual({ type: 'record', action: 'stop', windowId: 1 });
     backgroundStores('recording', undefined);
     expect($('record-button').getAttribute('aria-pressed')).toBe('false');

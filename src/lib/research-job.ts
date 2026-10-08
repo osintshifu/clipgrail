@@ -2,7 +2,7 @@ import type { SessionView, SourceEntry } from './db';
 import type { ExtractionMethod, FallbackReason, Fragment } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
-import { capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, laterFailureOf, okSnapshotOf } from './selection';
+import { FRAME_UNESTABLISHED_NOTE, capturedTitle, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
 import { countCharacters, plural, truncateToCharacters } from './text';
 
 export const RESEARCH_JOB_FORMAT = 'clipgrail-research-job';
@@ -67,6 +67,8 @@ export interface JobSelection extends JobText {
   captured_at: string | null;
   truncated_at_capture: boolean;
   method: Fragment['method'];
+  /** Selected in an embedded frame whose source URL could not be established; said with the selection whatever the private options. */
+  frame_source_unestablished: boolean;
 }
 
 export interface JobSource {
@@ -177,6 +179,7 @@ function buildJobSource(entry: SourceEntry, settings: JobSettings): JobSource {
         captured_at: settings.include_capture_times ? capture.captured_at : null,
         truncated_at_capture: capture.fragment.truncated,
         method: capture.fragment.method,
+        frame_source_unestablished: frameSourceUnestablished(capture.frame),
       });
     }
   }
@@ -237,7 +240,8 @@ function buildJobSource(entry: SourceEntry, settings: JobSettings): JobSource {
       : null,
     link_context: settings.include_link_context
       ? captures
-          .filter((c) => c.kind === 'link')
+          // Saved links, and recorded pages with the page they were opened from.
+          .filter((c) => c.kind === 'link' || c.found_on !== null)
           .map((c) => ({ capture_id: c.id, found_on: c.found_on, anchor_text: c.anchor_text }))
       : null,
     capture_times: settings.include_capture_times
@@ -289,10 +293,10 @@ function renderSource(source: JobSource): string[] {
   for (const url of source.original_urls ?? []) lines.push(`- Original URL: <${url}>`);
   for (const link of source.link_context ?? []) {
     const parts = [
-      link.found_on ? `found on <${link.found_on}>` : 'found on an unknown page',
+      link.found_on ? `Found on <${link.found_on}>` : 'Found on an unknown page',
       link.anchor_text ? `link text "${escapeInline(link.anchor_text)}"` : null,
     ].filter(Boolean);
-    lines.push(`- Link ${parts.join(', ')}`);
+    lines.push(`- ${parts.join(', ')}`);
   }
 
   if (source.snapshot) {
@@ -310,6 +314,7 @@ function renderSource(source: JobSource): string[] {
     lines.push(
       '',
       `Selection ${i + 1} of ${source.selections.length} (${selection.character_count} characters${when}${flags.length ? `, PARTIAL: ${flags.join('; ')}` : ''}):`,
+      ...(selection.frame_source_unestablished ? [FRAME_UNESTABLISHED_NOTE] : []),
       ...fenced(selection.text),
     );
   });
@@ -381,7 +386,24 @@ export function isJobOutdated(job: ResearchJob, current: ResearchJob): boolean {
   );
 }
 
-/** JSON export: the same job as the Markdown export (`job.text`), plus structured fields. */
+/**
+ * JSON export: the same job as the Markdown export (`job.text`), plus its
+ * structured fields. The session's name and ID and the sources left out of
+ * the job stay in ClipGrail: they describe how the research is organized,
+ * not the material sent.
+ */
 export function researchJobToJson(job: ResearchJob): string {
-  return `${JSON.stringify({ format: RESEARCH_JOB_FORMAT, format_version: RESEARCH_JOB_FORMAT_VERSION, job }, null, 2)}\n`;
+  const { excluded_source_ids: _excluded, ...settings } = job.settings;
+  const exported = {
+    id: job.id,
+    format_version: job.format_version,
+    created_at: job.created_at,
+    prompt: job.prompt,
+    settings,
+    session_notes: job.session_notes,
+    sources: job.sources,
+    stats: job.stats,
+    text: job.text,
+  };
+  return `${JSON.stringify({ format: RESEARCH_JOB_FORMAT, format_version: RESEARCH_JOB_FORMAT_VERSION, job: exported }, null, 2)}\n`;
 }

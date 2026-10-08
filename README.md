@@ -10,7 +10,7 @@ ClipGrail is in early development and is not published in the Chrome Web Store. 
 
 ## Quick start
 
-You need Node.js 24 (24.15 or later) or Node.js 22 (22.22 or later), and Chrome 116 or later.
+You need Node.js 24 (24.15 or later) or Node.js 22 (22.22 or later), and Chrome 142 or later.
 
 ```bash
 npm install
@@ -48,15 +48,17 @@ Clicking the toolbar icon opens the side panel, and clicking it again closes it.
 | Save tabs | **Tabs ▾** > **This tab** (or **N selected tabs**) or **All tabs in this window** | The address and title of each tab; the pages are not read |
 | Record pages | The circle with a red dot at the top of the side panel; click the red square to stop | The address and title of every page you open in that window and the page whose link or form led to it; the pages are not read |
 
+A selection made inside an embedded frame, such as an embedded post or video player, is saved under the frame's own web address, with the page it was embedded in as where it was found. When the frame has no web address of its own, the selection is saved with the page and marked as coming from an embedded frame whose source URL could not be established; the mark goes with it into every Research Job.
+
 Chrome lets ClipGrail read a tab only after you act on that tab: click the toolbar icon, press the shortcut or use the right-click menu. A button inside the panel is not enough for a tab you have just switched to. If the panel says it can't read the tab, press Alt+Shift+K or click the toolbar icon on that tab. You can change the shortcut at `chrome://extensions/shortcuts`.
 
 Saving tabs needs Chrome's permission to read tab addresses. Chrome asks for it the first time you save tabs and calls it "Read your browsing history". ClipGrail reads the addresses and titles of the tabs in the current window only when you save tabs. **··· > Turn off tab access** withdraws the permission; Chrome remembers your earlier consent, so the next time you save tabs it is turned on again without asking. To save several tabs, select them in the tab strip with Ctrl+click (Cmd+click on a Mac) or Shift+click.
 
-**Record** saves the address and title of every page you open in that window, together with the page whose link or form led to it. The pages are not read: they are saved as **Address only**, and you clip the ones you need. Addresses the session already has are skipped; a page opened from a typed address, a bookmark or Back has no source page. While recording, the circle turns into a pulsing red square and the toolbar icon shows REC; click the square to stop. The message after stopping offers **Undo** for the whole recording. The first time, Chrome asks for permission to read tab addresses and to see how each page was reached ("Read your browsing history"). Recording stops when you close the window or turn off tab access.
+**Record** saves the address and title of every page you open in that window, together with the page whose link or form led to it. The pages are not read: they are saved as **Address only**, and you clip the ones you need. Addresses the session already has are skipped; a page opened from a typed address, a bookmark or Back has no source page. While recording, the circle turns into a pulsing red square and the toolbar icon shows REC; click the square to stop. The message after stopping offers **Undo** for the whole recording. If the browser refuses to store a page, the button's tooltip and the message after stopping say how many pages could not be saved; if ClipGrail cannot keep track of the recording, it stops it and says so. The first time, Chrome asks for permission to read tab addresses and to see how each page was reached ("Read your browsing history"). Recording stops when you close the window or turn off tab access.
 
 Each source gets a label within its session: S1, S2, S3. Clipping the same address again adds a new capture to the same source and keeps the earlier text. Known tracking parameters such as `utm_*`, `gclid` and `fbclid` are ignored when ClipGrail matches addresses; the address as you visited it stays with the capture. The part of an address after `#` counts too, so `page#a` and `page#b` are separate sources. A label is never given to another source, also after Undo.
 
-After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after saving tabs or recording, the captures of that save or recording.
+After every capture the panel shows a short message with **Undo**. Undo removes only that capture, or after saving tabs or recording, the captures of that save or recording; pages you have added a note to or moved to another session since then stay.
 
 ### Snapshot status
 
@@ -118,7 +120,7 @@ Private data is left out unless you tick it. The source address, with tracking p
 | Option | Adds to the job |
 |---|---|
 | Notes | Session, source and capture notes |
-| Where links were found | The page where you saved a link and the link text |
+| Where sources were found | The page a saved link, a recorded page or an embedded frame was found on, and the link text |
 | Capture timestamps | When each capture and snapshot was taken |
 | Original URLs | Addresses exactly as visited, which may contain tracking or personal parameters |
 
@@ -143,7 +145,7 @@ Every button uses the generated job exactly as shown in the preview.
 | Copy Research Job | Copies the job to the clipboard |
 | ChatGPT, Claude, Gemini, Perplexity | Copies the job and opens the service's start page; paste it into the chat |
 | Export ▾ > Markdown | Saves `clipgrail-session.md` |
-| Export ▾ > JSON | Saves `clipgrail-session.json`: the same job text plus the sources, settings and counts as structured fields, format `clipgrail-research-job`, version 1 |
+| Export ▾ > JSON | Saves `clipgrail-session.json`: the same job text plus the sources, settings and counts as structured fields, format `clipgrail-research-job`, version 1. The session's name and the sources you left out are not included |
 
 ClipGrail never sends a message for you; you paste and send it yourself. If copying fails, ClipGrail does not open the site and tells you so. You can then select the text in the preview or export the job.
 
@@ -151,7 +153,7 @@ ClipGrail never sends a message for you; you paste and send it yourself. If copy
 
 - **Delete…** in the source details, in the side panel or the library, deletes a source with all its captures, saved text and notes. Research Jobs that include the source are deleted too, because they contain a copy of its text. Its label is not given to another source.
 - In the library, select several sources with their checkboxes, Ctrl+click (Cmd+click on a Mac) or Shift+click; **Delete…** in the selection bar deletes them together.
-- **Delete session…** in the session list deletes a session with everything in it, including its Research Jobs. If it was the active session, new clips go to the Inbox.
+- **Delete session…** in the session list deletes a session with everything in it, including its Research Jobs and any other Research Job that includes one of its sources. If it was the active session, new clips go to the Inbox.
 - **Empty Inbox…** deletes everything in the Inbox; the Inbox itself stays.
 
 Deleting cannot be undone. ClipGrail asks first and shows when you last made a backup. Files you exported, text you pasted into a chat and backups you saved are not affected.
@@ -163,7 +165,7 @@ Deleting cannot be undone. ClipGrail asks first and shows when you last made a b
 ClipGrail keeps its data only in the current Chrome profile, and uninstalling the extension deletes it. Back up regularly if the research matters.
 
 - **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets, Research Job settings and the active session. Page pictures are not included in backups, so restored sources have no pictures.
-- **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm.
+- **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm. Sessions that still exist keep counting labels from where they are, so a label used after the backup was made is not given to another source.
 
 Merging a backup with existing data is not supported.
 
@@ -191,12 +193,13 @@ ClipGrail reads the content of a tab only after you act on that tab. With the op
 - PDF files, images and video are not supported; there is no text recognition (OCR).
 - Text extraction stops after 30 seconds and the capture is saved as failed.
 - Page text and selections are cut at 1,000,000 characters and marked Partial text.
+- A backup file holds up to 200 MB. With more data, **Back up all data** says so and saves nothing, and a larger file is not read.
 - None of the chat services accepts a job passed from ClipGrail, so you paste it.
 - Data lives in one Chrome profile and is not synchronized between devices.
 
 ## Third-party material
 
-ClipGrail includes the Geist and Geist Mono fonts (SIL Open Font License 1.1) and icons from Phosphor Icons and LobeHub Icons (MIT). The licence texts are in `public/licenses` and ship with the extension. ChatGPT, Claude, Gemini and Perplexity and their logos are trademarks of their owners; ClipGrail is not affiliated with them.
+ClipGrail includes Mozilla Readability (Apache License 2.0), the Geist and Geist Mono fonts (SIL Open Font License 1.1) and icons from Phosphor Icons and LobeHub Icons (MIT). The licence texts are in `public/licenses` and ship with the extension. ChatGPT, Claude, Gemini and Perplexity and their logos are trademarks of their owners; ClipGrail is not affiliated with them.
 
 ## Development
 

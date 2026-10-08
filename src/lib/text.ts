@@ -6,6 +6,21 @@ export function plural(n: number, singular: string, pluralForm = `${singular}s`)
   return `${n} ${n === 1 ? singular : pluralForm}`;
 }
 
+/** Length of the UTF-8 encoding of `text`, without encoding it. */
+export function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      i++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 /** Counts Unicode code points (a surrogate pair counts once). */
 export function countCharacters(text: string): number {
   let count = 0;

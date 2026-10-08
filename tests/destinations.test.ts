@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DeliveryEnvironment } from '../src/lib/destinations';
 import { DESTINATIONS, deliverJob } from '../src/lib/destinations';
 import type { ResearchJob } from '../src/lib/research-job';
+import { DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
 
-const job = { text: '# TASK\n\nCheck.\n', id: 'job-1' } as ResearchJob;
+const job = { text: '# TASK\n\nCheck.\n', id: 'job-1', settings: { ...DEFAULT_JOB_SETTINGS } } as ResearchJob;
 
 function env(overrides: Partial<DeliveryEnvironment> = {}): DeliveryEnvironment & { calls: string[] } {
   const calls: string[] = [];

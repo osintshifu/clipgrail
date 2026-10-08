@@ -1,10 +1,10 @@
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, CaptureKind, Fragment, Session, Snapshot, SnapshotMeta, Source } from './model';
+import type { Capture, CaptureFrame, CaptureKind, FailedSnapshot, Fragment, OkSnapshotMeta, Session, Snapshot, SnapshotMeta, Source } from './model';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 4;
+export const DB_SCHEMA_VERSION = 5;
 /** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
@@ -87,10 +87,12 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         jobs.createIndex('session_created', ['session_id', 'created_at']);
         request.transaction?.objectStore('sessions').add(newInboxSession(new Date().toISOString()));
       }
-      if (event.oldVersion >= 1 && event.oldVersion < 2 && request.transaction) {
+      // Fields added by later schemas, filled in with one pass over each store: two cursors updating the same records would overwrite each other.
+      const defaults: Record<'sessions' | 'sources' | 'captures', Record<string, unknown>> = { sessions: {}, sources: {}, captures: {} };
+      if (event.oldVersion >= 1 && event.oldVersion < 2) {
         // v2: sessions can be archived and sources have a note.
-        backfill(request.transaction.objectStore('sessions'), { archived_at: null });
-        backfill(request.transaction.objectStore('sources'), { note: '' });
+        defaults.sessions.archived_at = null;
+        defaults.sources.note = '';
       }
       if (event.oldVersion < 3) {
         // v3: snapshot texts move to their own store.
@@ -100,6 +102,14 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
       if (event.oldVersion < 4) {
         // v4: page thumbnails, keyed by capture.
         db.createObjectStore(THUMB_STORE, { keyPath: 'capture_id' });
+      }
+      if (event.oldVersion >= 1 && event.oldVersion < 5) {
+        // v5: sources remember the IDs of sources that joined them; selections note an embedded frame. Earlier captures have no frame recorded.
+        defaults.sources.merged_ids = [];
+        defaults.captures.frame = null;
+      }
+      for (const [store, fields] of Object.entries(defaults)) {
+        if (Object.keys(fields).length && request.transaction) backfill(request.transaction.objectStore(store), fields);
       }
     };
     request.onsuccess = () => {
@@ -290,6 +300,8 @@ export interface CaptureDraft {
   found_on: string | null;
   anchor_text: string | null;
   fragment: Fragment | null;
+  /** Selections made in an embedded frame (see CaptureFrame); absent otherwise. */
+  frame?: CaptureFrame | null;
   /** Required for page, link and tab captures, absent for selections. */
   snapshot: SnapshotDraft | null;
 }
@@ -341,6 +353,7 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
       dedup_url: draft.dedup_url,
       created_at: draft.captured_at,
       note: '',
+      merged_ids: [],
     };
     sessions.put({ ...session, next_source_number: session.next_source_number + 1 });
     sources.add(source);
@@ -359,6 +372,7 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     found_on: draft.found_on,
     anchor_text: draft.anchor_text,
     fragment: draft.fragment,
+    frame: draft.frame ?? null,
     snapshot_id: snapshotId,
     note: '',
   };
@@ -387,28 +401,59 @@ export interface UndoResult {
   sourceRemoved: boolean;
 }
 
+/** Removes a capture with its snapshot, text and thumbnail, and its source when no other capture is left; true when the source went too. */
+async function removeCapture(tx: IDBTransaction, capture: Capture): Promise<boolean> {
+  const captures = tx.objectStore('captures');
+  if (capture.snapshot_id) {
+    tx.objectStore('snapshots').delete(capture.snapshot_id);
+    tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
+  }
+  tx.objectStore(THUMB_STORE).delete(capture.id);
+  captures.delete(capture.id);
+  const remaining = await result(captures.index('source').count(capture.source_id));
+  if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
+  return remaining === 0;
+}
+
 /** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
 export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<UndoResult[]> {
   return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
-    const captures = tx.objectStore('captures');
     const results: UndoResult[] = [];
     for (const captureId of captureIds) {
-      const capture = (await result(captures.get(captureId))) as Capture | undefined;
-      if (!capture) {
-        results.push({ removed: false, sourceRemoved: false });
-        continue;
-      }
-      if (capture.snapshot_id) {
-        tx.objectStore('snapshots').delete(capture.snapshot_id);
-        tx.objectStore(TEXT_STORE).delete(capture.snapshot_id);
-      }
-      tx.objectStore(THUMB_STORE).delete(capture.id);
-      captures.delete(capture.id);
-      const remaining = await result(captures.index('source').count(capture.source_id));
-      if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
-      results.push({ removed: true, sourceRemoved: remaining === 0 });
+      const capture = (await result(tx.objectStore('captures').get(captureId))) as Capture | undefined;
+      results.push(capture ? { removed: true, sourceRemoved: await removeCapture(tx, capture) } : { removed: false, sourceRemoved: false });
     }
     return results;
+  });
+}
+
+/** A capture saved by Save tabs or a recording, with the session it was saved to. */
+export interface SavedCapture {
+  capture_id: string;
+  session_id: string;
+}
+
+/**
+ * Undo of saved tabs or a recording, which can come long after the first
+ * page was saved. Captures the user has worked on since stay: a capture with
+ * a note, or one whose source has a note or was moved to another session.
+ */
+export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promise<{ removed: number; kept: number }> {
+  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
+    let removed = 0;
+    let kept = 0;
+    for (const { capture_id, session_id } of saved) {
+      const capture = (await result(tx.objectStore('captures').get(capture_id))) as Capture | undefined;
+      if (!capture) continue;
+      const source = (await result(tx.objectStore('sources').get(capture.source_id))) as Source | undefined;
+      if (capture.note.trim() || source?.note.trim() || capture.session_id !== session_id) {
+        kept += 1;
+        continue;
+      }
+      await removeCapture(tx, capture);
+      removed += 1;
+    }
+    return { removed, kept };
   });
 }
 
@@ -448,7 +493,9 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
       | undefined;
     let moved: Source;
     if (existing) {
-      moved = { ...existing, note: joinNotes(existing.note, source.note) };
+      const mergedIds = new Set([...existing.merged_ids, source.id, ...source.merged_ids]);
+      mergedIds.delete(existing.id);
+      moved = { ...existing, note: joinNotes(existing.note, source.note), merged_ids: [...mergedIds] };
       sources.delete(source.id);
     } else {
       moved = { ...source, session_id: target.id, number: target.next_source_number };
@@ -477,11 +524,47 @@ export interface DeletionCounts {
   jobs: number;
 }
 
-/** Research Jobs of a session; with a source ID, only those that include that source (they hold a copy of its text). */
-async function sessionJobs(tx: IDBTransaction, sessionId: string, sourceId?: string): Promise<ResearchJob[]> {
+/** Research Jobs of a session. */
+async function sessionJobs(tx: IDBTransaction, sessionId: string): Promise<ResearchJob[]> {
   const range = IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']);
-  const jobs = (await result(tx.objectStore('jobs').index('session_created').getAll(range))) as ResearchJob[];
-  return sourceId === undefined ? jobs : jobs.filter((job) => job.sources.some((s) => s.source_id === sourceId));
+  return (await result(tx.objectStore('jobs').index('session_created').getAll(range))) as ResearchJob[];
+}
+
+/**
+ * Research Jobs of any session that include one of these sources: by its ID,
+ * by the ID of a source that joined it (jobs keep the IDs they were generated
+ * with), or by a copy of the text of one of these captures. A source moved to
+ * another session keeps its place in the jobs of its former session. Reads
+ * one job at a time.
+ */
+function jobsIncluding(tx: IDBTransaction, sources: Source[], captures: Capture[]): Promise<ResearchJob[]> {
+  const sourceIds = new Set(sources.flatMap((source) => [source.id, ...source.merged_ids]));
+  const captureIds = new Set(captures.map((c) => c.id));
+  const snapshotIds = new Set(captures.flatMap((c) => (c.snapshot_id ? [c.snapshot_id] : [])));
+  const includes = (job: ResearchJob) =>
+    job.sources.some(
+      (s) =>
+        sourceIds.has(s.source_id) ||
+        (s.snapshot !== null && snapshotIds.has(s.snapshot.snapshot_id)) ||
+        s.selections.some((selection) => captureIds.has(selection.capture_id)),
+    );
+  return new Promise((resolve, reject) => {
+    const found: ResearchJob[] = [];
+    const request = tx.objectStore('jobs').openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return resolve(found);
+      if (includes(cursor.value as ResearchJob)) found.push(cursor.value as ResearchJob);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed.'));
+  });
+}
+
+/** All captures of these sources. */
+async function capturesOf(tx: IDBTransaction, sourceIds: string[]): Promise<Capture[]> {
+  const index = tx.objectStore('captures').index('source');
+  return (await Promise.all(sourceIds.map((id) => result(index.getAll(id)) as Promise<Capture[]>))).flat();
 }
 
 /** Deletes captures with their snapshots and texts. */
@@ -498,54 +581,50 @@ function deleteCaptures(tx: IDBTransaction, captures: Capture[]): void {
 
 /**
  * Deletes a source with all its captures, snapshots, texts and its note, and
- * the Research Jobs of its session that include it. The session's next
+ * the Research Jobs that include it, in any session. The session's next
  * S-number is unchanged, so the source's label is never given to another source.
  */
 export function deleteSource(db: IDBDatabase, sourceId: string): Promise<DeletionCounts> {
   return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
     const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
     if (!source) throw new Error('This source no longer exists.');
-    const removed = await removeSource(tx, source);
-    return { sources: 1, captures: removed.captures, jobs: removed.jobIds.length };
+    return removeSources(tx, [source]);
   });
 }
 
 /** Deletes several sources in one transaction, as deleteSource does; sources already gone are skipped. */
 export function deleteSources(db: IDBDatabase, sourceIds: string[]): Promise<DeletionCounts> {
   return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
-    const jobIds = new Set<string>();
-    let sources = 0;
-    let captures = 0;
-    for (const id of sourceIds) {
-      const source = (await result(tx.objectStore('sources').get(id))) as Source | undefined;
-      if (!source) continue;
-      const removed = await removeSource(tx, source);
-      sources += 1;
-      captures += removed.captures;
-      for (const jobId of removed.jobIds) jobIds.add(jobId);
-    }
-    return { sources, captures, jobs: jobIds.size };
+    const found = await Promise.all([...new Set(sourceIds)].map((id) => result(tx.objectStore('sources').get(id)) as Promise<Source | undefined>));
+    return removeSources(tx, found.filter((source): source is Source => !!source));
   });
 }
 
-async function removeSource(tx: IDBTransaction, source: Source): Promise<{ captures: number; jobIds: string[] }> {
-  const captures = (await result(tx.objectStore('captures').index('source').getAll(source.id))) as Capture[];
-  const jobs = await sessionJobs(tx, source.session_id, source.id);
+async function removeSources(tx: IDBTransaction, sources: Source[]): Promise<DeletionCounts> {
+  const ids = sources.map((source) => source.id);
+  const captures = await capturesOf(tx, ids);
+  const jobs = await jobsIncluding(tx, sources, captures);
   deleteCaptures(tx, captures);
   for (const job of jobs) tx.objectStore('jobs').delete(job.id);
-  tx.objectStore('sources').delete(source.id);
-  return { captures: captures.length, jobIds: jobs.map((job) => job.id) };
+  for (const id of ids) tx.objectStore('sources').delete(id);
+  return { sources: ids.length, captures: captures.length, jobs: jobs.length };
+}
+
+/** A session's sources and captures, and the Research Jobs that deleting them removes: its own and any other that includes one of its sources. */
+async function sessionContents(tx: IDBTransaction, sessionId: string): Promise<{ sourceIds: string[]; captures: Capture[]; jobIds: Set<string> }> {
+  const sources = (await result(tx.objectStore('sources').index('session').getAll(sessionId))) as Source[];
+  const captures = (await result(tx.objectStore('captures').index('session').getAll(sessionId))) as Capture[];
+  const jobs = [...(await sessionJobs(tx, sessionId)), ...(await jobsIncluding(tx, sources, captures))];
+  return { sourceIds: sources.map((source) => source.id), captures, jobIds: new Set(jobs.map((job) => job.id)) };
 }
 
 /** Deletes every source, capture, snapshot, text and Research Job of a session; the session record stays. */
 async function clearSession(tx: IDBTransaction, sessionId: string): Promise<DeletionCounts> {
-  const sourceIds = (await result(tx.objectStore('sources').index('session').getAllKeys(sessionId))) as string[];
-  const captures = (await result(tx.objectStore('captures').index('session').getAll(sessionId))) as Capture[];
-  const jobs = await sessionJobs(tx, sessionId);
+  const { sourceIds, captures, jobIds } = await sessionContents(tx, sessionId);
   deleteCaptures(tx, captures);
   for (const id of sourceIds) tx.objectStore('sources').delete(id);
-  for (const job of jobs) tx.objectStore('jobs').delete(job.id);
-  return { sources: sourceIds.length, captures: captures.length, jobs: jobs.length };
+  for (const id of jobIds) tx.objectStore('jobs').delete(id);
+  return { sources: sourceIds.length, captures: captures.length, jobs: jobIds.size };
 }
 
 /** Deletes a session with everything in it, including its Research Jobs. The Inbox can only be emptied. */
@@ -566,33 +645,21 @@ export function emptyInbox(db: IDBDatabase): Promise<DeletionCounts> {
 
 /** What deleting a source (with `sourceId`) or a whole session would remove, for the confirmation. */
 export function countForDeletion(db: IDBDatabase, sessionId: string, sourceId?: string): Promise<DeletionCounts> {
+  if (sourceId !== undefined) return countSourcesForDeletion(db, [sourceId]);
   return inTransaction(db, ['sources', 'captures', 'jobs'], 'readonly', async (tx) => {
-    const jobs = (await sessionJobs(tx, sessionId, sourceId)).length;
-    if (sourceId !== undefined) {
-      return { sources: 1, captures: await result(tx.objectStore('captures').index('source').count(sourceId)), jobs };
-    }
-    const [sources, captures] = await Promise.all([
-      result(tx.objectStore('sources').index('session').count(sessionId)),
-      result(tx.objectStore('captures').index('session').count(sessionId)),
-    ]);
-    return { sources, captures, jobs };
+    const { sourceIds, captures, jobIds } = await sessionContents(tx, sessionId);
+    return { sources: sourceIds.length, captures: captures.length, jobs: jobIds.size };
   });
 }
 
 /** What deleting these sources would remove; a Research Job that includes several of them counts once. */
 export function countSourcesForDeletion(db: IDBDatabase, sourceIds: string[]): Promise<DeletionCounts> {
   return inTransaction(db, ['sources', 'captures', 'jobs'], 'readonly', async (tx) => {
-    const jobIds = new Set<string>();
-    let sources = 0;
-    let captures = 0;
-    for (const id of sourceIds) {
-      const source = (await result(tx.objectStore('sources').get(id))) as Source | undefined;
-      if (!source) continue;
-      sources += 1;
-      captures += await result(tx.objectStore('captures').index('source').count(id));
-      for (const job of await sessionJobs(tx, source.session_id, id)) jobIds.add(job.id);
-    }
-    return { sources, captures, jobs: jobIds.size };
+    const found = await Promise.all([...new Set(sourceIds)].map((id) => result(tx.objectStore('sources').get(id)) as Promise<Source | undefined>));
+    const sources = found.filter((source): source is Source => !!source);
+    const captures = await capturesOf(tx, sources.map((source) => source.id));
+    const jobs = await jobsIncluding(tx, sources, captures);
+    return { sources: sources.length, captures: captures.length, jobs: jobs.length };
   });
 }
 
@@ -656,15 +723,28 @@ function groupSources<S extends SnapshotMeta>(sources: Source[], captures: Captu
     .map((source) => ({ source, captures: (bySource.get(source.id) ?? []).sort(ordered) }));
 }
 
-/** Adds the stored text to each successful snapshot. A missing text means damaged data and is reported, not hidden. */
+/**
+ * A successful snapshot whose text is not in the database (damaged data) reads as a failed snapshot that says so,
+ * so one damaged record neither passes for saved text nor stops the panel, a backup or a restore.
+ */
+function textMissing(snapshot: OkSnapshotMeta): FailedSnapshot {
+  const { id, capture_id, source_id, session_id, captured_at, http_status } = snapshot;
+  return {
+    id, capture_id, source_id, session_id, captured_at, http_status,
+    status: 'failed',
+    error_code: 'text_missing',
+    error_message: 'The saved text of this capture is missing from the browser database.',
+  };
+}
+
+/** Adds the stored text to each successful snapshot. */
 async function withTexts(tx: IDBTransaction, snapshots: SnapshotMeta[]): Promise<Snapshot[]> {
   const texts = tx.objectStore(TEXT_STORE);
   return Promise.all(
     snapshots.map(async (snapshot) => {
       if (snapshot.status !== 'ok') return snapshot;
       const record = (await result(texts.get(snapshot.id))) as SnapshotText | undefined;
-      if (!record) throw new Error(`The saved text of snapshot ${snapshot.id} is missing.`);
-      return { ...snapshot, text: record.text };
+      return record ? { ...snapshot, text: record.text } : textMissing(snapshot);
     }),
   );
 }
@@ -691,14 +771,17 @@ export interface LibraryData {
 
 /** Reads every session and source with captures and snapshot metadata, without any snapshot text, in one consistent read. */
 export function loadLibrary(db: IDBDatabase): Promise<LibraryData> {
-  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots'], 'readonly', async (tx) => {
-    const [sessions, sources, captures, snapshots] = await Promise.all([
+  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE], 'readonly', async (tx) => {
+    const [sessions, sources, captures, snapshots, textIds] = await Promise.all([
       result(tx.objectStore('sessions').getAll()) as Promise<Session[]>,
       result(tx.objectStore('sources').getAll()) as Promise<Source[]>,
       result(tx.objectStore('captures').getAll()) as Promise<Capture[]>,
       result(tx.objectStore('snapshots').getAll()) as Promise<SnapshotMeta[]>,
+      // Keys only: the texts themselves are read one at a time, when a source is opened.
+      result(tx.objectStore(TEXT_STORE).getAllKeys()).then((keys) => new Set(keys as string[])),
     ]);
-    return { sessions: sortSessions(sessions), sources: groupSources(sources, captures, snapshots) };
+    const checked = snapshots.map((s) => (s.status === 'ok' && !textIds.has(s.id) ? textMissing(s) : s));
+    return { sessions: sortSessions(sessions), sources: groupSources(sources, captures, checked) };
   });
 }
 
@@ -743,29 +826,75 @@ export function latestJob(db: IDBDatabase, sessionId: string): Promise<ResearchJ
 
 export type DataSnapshot = { [K in DataStore]: unknown[] };
 
-/** Reads every record of every data store in one consistent read. */
-export function readAllData(db: IDBDatabase): Promise<DataSnapshot> {
+/**
+ * Reads every record of every data store in one consistent read, one record
+ * at a time and store by store in DATA_STORES order, successful snapshots with
+ * their texts. A backup is written from it without holding all records at
+ * once. An error thrown by `visit` stops the read.
+ */
+export function visitAllData(db: IDBDatabase, visit: (store: DataStore, record: unknown) => void): Promise<void> {
   return inTransaction(db, [...DATA_STORES, TEXT_STORE], 'readonly', async (tx) => {
-    const entries = await Promise.all(
-      DATA_STORES.map(async (store) => [store, await result(tx.objectStore(store).getAll())] as const),
-    );
-    const data = Object.fromEntries(entries) as DataSnapshot;
-    data.snapshots = await withTexts(tx, data.snapshots as SnapshotMeta[]);
-    return data;
+    const texts = tx.objectStore(TEXT_STORE);
+    for (const store of DATA_STORES) {
+      await new Promise<void>((resolve, reject) => {
+        const request = tx.objectStore(store).openCursor();
+        const next = (cursor: IDBCursorWithValue, record: unknown) => {
+          try {
+            visit(store, record);
+            cursor.continue();
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        };
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return resolve();
+          const value = cursor.value as SnapshotMeta;
+          if (store !== 'snapshots' || value.status !== 'ok') return next(cursor, cursor.value);
+          const text = texts.get(value.id);
+          text.onsuccess = () => {
+            const record = text.result as SnapshotText | undefined;
+            next(cursor, record ? { ...value, text: record.text } : textMissing(value));
+          };
+          text.onerror = () => reject(text.error ?? new Error('IndexedDB request failed.'));
+        };
+        request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed.'));
+      });
+    }
   });
+}
+
+/** Reads every record of every data store in one consistent read. */
+export async function readAllData(db: IDBDatabase): Promise<DataSnapshot> {
+  const data = Object.fromEntries(DATA_STORES.map((store) => [store, [] as unknown[]])) as DataSnapshot;
+  await visitAllData(db, (store, record) => data[store].push(record));
+  return data;
 }
 
 /**
  * Replaces all data in one transaction. If any record is rejected the
  * transaction aborts and the previous data stays exactly as it was.
+ * A session that exists now keeps the higher of its two next S-numbers, so
+ * labels given out after an older backup are never given to other sources.
  */
 export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<void> {
   // Thumbnails are not in backups; the ones of the replaced data go with it.
   return inTransaction(db, [...DATA_STORES, TEXT_STORE, THUMB_STORE], 'readwrite', async (tx) => {
+    const current = new Map(
+      ((await result(tx.objectStore('sessions').getAll())) as Session[]).map((s) => [s.id, s.next_source_number]),
+    );
     for (const store of [...DATA_STORES, TEXT_STORE, THUMB_STORE]) tx.objectStore(store).clear();
     for (const store of DATA_STORES) {
       if (store === 'snapshots') continue;
-      for (const record of data[store]) tx.objectStore(store).add(record);
+      for (const record of data[store]) {
+        if (store !== 'sessions') {
+          tx.objectStore(store).add(record);
+          continue;
+        }
+        const session = record as Session;
+        const next = Math.max(session.next_source_number, current.get(session.id) ?? 0);
+        tx.objectStore(store).add({ ...session, next_source_number: next });
+      }
     }
     for (const snapshot of data.snapshots as Snapshot[]) {
       const { meta, text } = splitSnapshot(snapshot);

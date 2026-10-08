@@ -2,7 +2,7 @@ import type { DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from
 import type { Capture, OkSnapshotMeta, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
-import { chooseSnapshot, describeFailure, failedSnapshotOf, laterFailureOf, okSnapshotOf } from './selection';
+import { FRAME_UNESTABLISHED_NOTE, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
 import { plural } from './text';
 
 /** Descriptions need only snapshot metadata, so they work for the side panel and the library alike. */
@@ -27,6 +27,11 @@ export function fmtTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Megabytes (10^6 bytes) with at most one decimal, for backup sizes. */
+export function fmtMegabytes(bytes: number): string {
+  return `${(bytes / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`;
 }
 
 export function fmtBytes(bytes: number): string {
@@ -110,12 +115,21 @@ export function captureLine(capture: Capture, snapshot: SnapshotMeta | undefined
   return '';
 }
 
-/** Provenance lines of one capture: where a link was found and the address as visited. */
+/** What the capture says about an embedded frame it was selected in, or null. */
+function frameLine(capture: Capture): string | null {
+  if (!capture.frame) return null;
+  return frameSourceUnestablished(capture.frame) ? FRAME_UNESTABLISHED_NOTE : 'Selected in an embedded frame';
+}
+
+/** Provenance lines of one capture: an embedded frame, where a saved link, a recorded page or a frame was found, and the address as visited. */
 export function captureExtra(capture: Capture, dedupUrl: string): string {
   return [
+    frameLine(capture) ?? '',
     capture.kind === 'link'
       ? `Found on ${capture.found_on ?? 'an unknown page'}${capture.anchor_text ? ` · link text “${capture.anchor_text}”` : ''}`
-      : '',
+      : capture.found_on
+        ? `Found on ${capture.found_on}`
+        : '',
     capture.original_url !== dedupUrl ? `Original URL: ${capture.original_url}` : '',
   ]
     .filter(Boolean)
@@ -187,6 +201,13 @@ export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | und
   if (capture.original_url !== dedupUrl) rows.push({ label: 'As visited', value: capture.original_url, mono: true });
   if (capture.kind === 'link') {
     rows.push({ label: 'Found on', value: `${capture.found_on ?? 'unknown page'}${capture.anchor_text ? ` · link text “${capture.anchor_text}”` : ''}`, mono: false });
+  } else if (capture.found_on) {
+    rows.push({ label: 'Found on', value: capture.found_on, mono: false });
+  }
+  const frame = frameLine(capture);
+  if (frame) {
+    const address = capture.frame?.url && frameSourceUnestablished(capture.frame) ? ` Frame address: ${capture.frame.url}` : '';
+    rows.push({ label: 'Frame', value: frame + address, mono: false });
   }
   if (capture.fragment) {
     rows.push(

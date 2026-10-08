@@ -28,6 +28,7 @@ import {
   thumbnailIds,
   undoCapture,
   undoCaptures,
+  undoSavedCaptures,
   updateCaptureNote,
   updateSessionText,
   updateSourceNote,
@@ -101,7 +102,7 @@ describe('sessions', () => {
     const db = await openDb(name);
     const data = await readAllData(db);
     expect(data.sessions).toEqual([{ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '', archived_at: null }]);
-    expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '' }]);
+    expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '', merged_ids: [] }]);
   });
 
   it('upgrades a schema 2 database by moving snapshot texts to their own store, unchanged', async () => {
@@ -223,6 +224,22 @@ describe('commitCaptures', () => {
   });
 });
 
+describe('undoSavedCaptures', () => {
+  it('undoes saved tabs or a recording but keeps the pages with a note or moved since', async () => {
+    const db = await freshDb();
+    const other = await createSession(db, 'Port strike');
+    const at = '2026-10-07T09:00:00.000Z';
+    const saved = await commitCaptures(db, ['a', 'b', 'c', 'd'].map((p) => linkDraft(`https://example.com/${p}`, at, URL_A)));
+    await updateSourceNote(db, saved[0]!.source.id, 'Source note');
+    await updateCaptureNote(db, saved[1]!.capture.id, 'Capture note');
+    await moveSource(db, saved[2]!.source.id, other.id);
+    const items = saved.map((r) => ({ capture_id: r.capture.id, session_id: r.capture.session_id }));
+    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 1, kept: 3 });
+    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 0, kept: 3 });
+    expect((await readAllData(db)).sources.map((s) => (s as { dedup_url: string }).dedup_url).sort()).toEqual(['a', 'b', 'c'].map((p) => `https://example.com/${p}`));
+  });
+});
+
 describe('moveSource', () => {
   it('moves a source with its captures and snapshots, joins a source with the same address and never reuses labels', async () => {
     const db = await freshDb();
@@ -341,6 +358,79 @@ describe('undoCapture', () => {
     expect((await readAllData(db)).jobs).toHaveLength(0);
     expect((await commitCapture(db, await pageDraft(URL_B, 'b', '2026-10-06T09:03:00.000Z'))).source.number).toBe(2);
     expect(await remainderIsValid(db)).toBe(true);
+  });
+
+  it('deletes the Research Jobs of a former session that hold the text of a moved source', async () => {
+    const db = await freshDb();
+    const other = await createSession(db, 'Port strike');
+    const a = await commitCapture(db, await pageDraft(URL_A, 'Alpha text', '2026-10-06T09:00:00.000Z'));
+    const b = await commitCapture(db, await pageDraft(URL_B, 'Beta text', '2026-10-06T09:01:00.000Z'));
+    const joined = await commitCapture(db, await pageDraft(URL_B, 'Beta there', '2026-10-06T09:02:00.000Z', other.id));
+    await generate(db, INBOX_SESSION_ID, 'with-a', [b.source.id]);
+    await generate(db, INBOX_SESSION_ID, 'with-b', [a.source.id]);
+    await moveSource(db, a.source.id, other.id);
+    // B joins the source with the same address there, so the job names B's old ID.
+    await moveSource(db, b.source.id, other.id);
+
+    expect(await countForDeletion(db, other.id, a.source.id)).toEqual({ sources: 1, captures: 1, jobs: 1 });
+    expect(await deleteSource(db, a.source.id)).toEqual({ sources: 1, captures: 1, jobs: 1 });
+    expect(await deleteSource(db, joined.source.id)).toEqual({ sources: 1, captures: 2, jobs: 1 });
+    expect((await readAllData(db)).jobs).toHaveLength(0);
+  });
+
+  it('deletes the Links only jobs of every source that joined a deleted one along a chain of moves, without changing them, also after a restore', async () => {
+    const db = await freshDb();
+    const [one, two, three] = [await createSession(db, 'One'), await createSession(db, 'Two'), await createSession(db, 'Three')];
+    const at = '2026-10-07T09:00:00.000Z';
+    const a = await commitCapture(db, linkDraft(URL_A, at, URL_B, one.id));
+    const b = await commitCapture(db, linkDraft(URL_A, at, URL_B, two.id));
+    const c = await commitCapture(db, linkDraft(URL_A, at, URL_B, three.id));
+    const linksOnly = async (sessionId: string, id: string) =>
+      saveJob(db, buildResearchJob({ view: await loadSessionView(db, sessionId), settings: { ...DEFAULT_JOB_SETTINGS, context_mode: 'links' }, id, createdAt: at }));
+    await linksOnly(one.id, 'job-a');
+    await moveSource(db, a.source.id, two.id);
+    await linksOnly(two.id, 'job-b');
+    const jobsBefore = (await readAllData(db)).jobs;
+    await moveSource(db, b.source.id, three.id);
+    const data = await readAllData(db);
+    expect(data.jobs).toEqual(jobsBefore);
+    expect((data.sources as Array<{ id: string; merged_ids: string[] }>).find((s) => s.id === c.source.id)!.merged_ids.sort()).toEqual([a.source.id, b.source.id].sort());
+
+    const settings = { active_session_id: INBOX_SESSION_ID, presets: DEFAULT_PRESETS, job_settings: {} };
+    const checked = await validateBackup(JSON.stringify(createBackup(data, settings, at)));
+    if (!checked.ok) throw new Error(checked.error);
+    await replaceAllData(db, checked.backup.data);
+    expect(await deleteSource(db, c.source.id)).toEqual({ sources: 1, captures: 3, jobs: 2 });
+    expect((await readAllData(db)).jobs).toHaveLength(0);
+  });
+
+  it('reads a snapshot whose saved text is missing as failed, without stopping the panel, the library, backup or restore', async () => {
+    const db = await freshDb();
+    const a = await commitCapture(db, await pageDraft(URL_A, 'Alpha text', '2026-10-06T09:00:00.000Z'));
+    await commitCapture(db, await pageDraft(URL_B, 'Beta text', '2026-10-06T09:01:00.000Z'));
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('snapshot_texts', 'readwrite');
+      tx.objectStore('snapshot_texts').delete(a.snapshot!.id);
+      tx.oncomplete = resolve;
+      tx.onerror = reject;
+    });
+    const missing = { status: 'failed', error_code: 'text_missing' };
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources[0]!.captures[0]!.snapshot).toMatchObject(missing);
+    expect(chooseSnapshot((await loadLibrary(db)).sources.find((s) => s.source.id === a.source.id)!).entry?.snapshot).toMatchObject(missing);
+    expect(await remainderIsValid(db)).toBe(true);
+    await replaceAllData(db, await readAllData(db));
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.map((s) => s.captures[0]!.snapshot!.status)).toEqual(['failed', 'ok']);
+  });
+});
+
+describe('replaceAllData', () => {
+  it('restores an older backup without giving labels used since to other sources', async () => {
+    const db = await freshDb();
+    await commitCapture(db, await pageDraft(URL_A, 'a', '2026-10-07T09:00:00.000Z'));
+    const backup = await readAllData(db);
+    expect((await commitCapture(db, await pageDraft(URL_B, 'b', '2026-10-07T09:01:00.000Z'))).source.number).toBe(2);
+    await replaceAllData(db, backup);
+    expect((await commitCapture(db, await pageDraft('https://example.com/c', 'c', '2026-10-07T09:02:00.000Z'))).source.number).toBe(3);
   });
 });
 

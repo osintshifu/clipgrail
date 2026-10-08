@@ -114,3 +114,11 @@ export function normalizeUrl(input: string): string | null {
 
   return url.href;
 }
+
+/** Longest embedded-frame address kept with a selection; a longer one (such as a data: URL) is recorded as not read. */
+export const MAX_FRAME_URL_LENGTH = 8192;
+
+/** An embedded frame's address as it can be stored: any scheme, within the length limit, without breaking characters. */
+export function frameAddress(url: unknown): string | null {
+  return typeof url === 'string' && url && url.length <= MAX_FRAME_URL_LENGTH && !hasBreakingCharacter(url) ? url : null;
+}

@@ -31,6 +31,12 @@ export interface Source {
   created_at: string;
   /** Private note about the source. */
   note: string;
+  /**
+   * IDs of the sources that joined this one when they were moved into its
+   * session, with the IDs those had taken over. Research Jobs keep the IDs
+   * they were generated with, so deleting this source finds them by these too.
+   */
+  merged_ids: string[];
 }
 
 /** tab: the address and title of an open tab, saved without reading the page. */
@@ -46,6 +52,16 @@ export interface Fragment {
   original_character_count: number;
   /** dom-selection keeps line breaks; menu-selection-text is Chrome's flattened copy, used when the page could not be read. */
   method: 'dom-selection' | 'menu-selection-text';
+}
+
+/**
+ * A selection made in an embedded frame. `url` is the frame's address as read
+ * (any scheme, such as about:srcdoc or blob:), or null when it could not be
+ * read. A frame with an http or https address is the capture's source; any
+ * other frame's source URL is not established and the page is kept as context.
+ */
+export interface CaptureFrame {
+  url: string | null;
 }
 
 export interface Capture {
@@ -65,6 +81,8 @@ export interface Capture {
   anchor_text: string | null;
   /** Selection captures only. */
   fragment: Fragment | null;
+  /** Selections made in an embedded frame; null otherwise, and on every capture made before frames were recorded. */
+  frame: CaptureFrame | null;
   /** Page, link and tab captures have a snapshot; selection captures do not. */
   snapshot_id: string | null;
   /** Private note. */
@@ -81,7 +99,9 @@ export type SnapshotErrorCode =
   | 'http_error'
   | 'empty_text'
   | 'extraction_error'
-  | 'timeout';
+  | 'timeout'
+  // The saved text of a successful snapshot is not in the database (damaged data); set when reading, never by a capture.
+  | 'text_missing';
 
 interface SnapshotBase {
   id: string;

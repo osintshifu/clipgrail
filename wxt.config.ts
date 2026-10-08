@@ -6,8 +6,8 @@ export default defineConfig({
   manifest: {
     name: 'ClipGrail',
     description: 'Local web research capture.',
-    // sidePanel.open() needs Chrome 116.
-    minimum_chrome_version: '116',
+    // The newest API used: sidePanel.onClosed (Chrome 142). sidePanel.close and onOpened need 141, action.openPopup 127.
+    minimum_chrome_version: '142',
     permissions: [
       // Read the current tab only after a user action (toolbar icon, shortcut, context menu).
       'activeTab',

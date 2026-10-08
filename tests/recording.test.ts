@@ -1,8 +1,10 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { loadSessionView } from '../src/lib/db';
+import { captureExtra } from '../src/lib/describe';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { foundOnFor, recordVisit } from '../src/lib/recording';
+import { DEFAULT_JOB_SETTINGS, buildResearchJob } from '../src/lib/research-job';
 import { freshDb } from './helpers';
 
 const RESULTS = 'https://news.example.org/search?q=strike';
@@ -24,7 +26,7 @@ describe('recording', () => {
     expect(foundOnFor({ transition: 'link', qualifiers: [] }, { url: 'chrome://newtab/', found_on: null }, null)).toBeNull();
   });
 
-  it('saves a visited page as an address with where it was found, once per session', async () => {
+  it('saves a visited page as an address with where it was found, shows and exports that, once per session', async () => {
     const db = await freshDb();
     const visit = { url: 'https://port.example.org/closures', title: 'Night closures', found_on: RESULTS, at: '2026-10-07T09:00:00.000Z' };
     const saved = await recordVisit(db, INBOX_SESSION_ID, visit);
@@ -32,6 +34,10 @@ describe('recording', () => {
     expect(saved?.snapshot?.status).toBe('pending');
     expect(await recordVisit(db, INBOX_SESSION_ID, { ...visit, at: '2026-10-07T09:05:00.000Z' })).toBeNull();
     expect(await recordVisit(db, INBOX_SESSION_ID, { ...visit, url: 'chrome://settings/' })).toBeNull();
-    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources).toHaveLength(1);
+    const view = await loadSessionView(db, INBOX_SESSION_ID);
+    expect(view.sources).toHaveLength(1);
+    expect(captureExtra(saved!.capture, saved!.source.dedup_url)).toBe(`Found on ${RESULTS}`);
+    const settings = { ...DEFAULT_JOB_SETTINGS, include_link_context: true };
+    expect(buildResearchJob({ view, settings, id: 'job', createdAt: visit.at }).text).toContain(`- Found on <${RESULTS}>`);
   });
 });

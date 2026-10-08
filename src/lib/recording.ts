@@ -1,4 +1,4 @@
-import type { CommitResult } from './db';
+import type { CommitResult, SavedCapture } from './db';
 import { commitCapture, hasSourceAddress } from './db';
 import { isProvenanceUrl, normalizeUrl } from './url';
 
@@ -10,14 +10,16 @@ export interface Recording {
   window_id: number;
   started_at: string;
   /** Captures this recording saved, for Undo when it stops. */
-  capture_ids: string[];
+  captures: SavedCapture[];
+  /** Pages the browser refused to store; the recording is then incomplete and says so. */
+  failed: number;
 }
 
 export const RECORDING_KEY = 'recording';
 
 export function isRecording(value: unknown): value is Recording {
   const v = value as Partial<Recording> | null;
-  return !!v && typeof v.window_id === 'number' && typeof v.started_at === 'string' && Array.isArray(v.capture_ids);
+  return !!v && typeof v.window_id === 'number' && typeof v.started_at === 'string' && Array.isArray(v.captures) && typeof v.failed === 'number';
 }
 
 /** How Chrome says a page was reached (webNavigation transition type and qualifiers). */

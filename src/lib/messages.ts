@@ -1,3 +1,5 @@
+import type { SavedCapture } from './db';
+
 /** Messages from the side panel to the background service worker. */
 export interface ClipRequest {
   type: 'clip';
@@ -29,9 +31,11 @@ export interface RecordRequest {
   windowId: number;
 }
 
-/** The captures a stopped recording saved (empty after a start). */
+/** The captures a stopped recording saved and the pages it could not save (none after a start), or why it failed. */
 export interface RecordResponse {
-  capture_ids: string[];
+  captures: SavedCapture[];
+  failed: number;
+  error?: string;
 }
 
 export function isRecordRequest(value: unknown): value is RecordRequest {

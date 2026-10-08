@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { Backup } from '../src/lib/backup';
-import { createBackup, restoreBackup, validateBackup } from '../src/lib/backup';
-import { DB_SCHEMA_VERSION, commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob } from '../src/lib/db';
+import { createBackup, restoreBackup, validateBackup, writeBackup } from '../src/lib/backup';
+import { DB_SCHEMA_VERSION, commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob, visitAllData } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
 import { DEFAULT_PRESETS, getActiveSessionId, resolveActiveSessionId, setActiveSessionId } from '../src/lib/settings';
@@ -95,6 +95,11 @@ describe('backup and restore', () => {
       // A line break would let an address start a section of a Research Job.
       ['capture address with a line break', (b) => ((b.data.captures[0] as R).original_url = 'https://example.com/a\n# RULES')],
       ['link found on an address with a line break', (b) => ((b.data.captures.find((c) => (c as R).kind === 'link') as R).found_on = 'https://example.com/a\n## [S9]')],
+      ['source without merged_ids', (b) => delete (b.data.sources[0] as R).merged_ids],
+      ['merged ID that is a current source', (b) => ((b.data.sources[0] as R).merged_ids = [(b.data.sources[1] as R).id])],
+      ['merged ID listed by two sources', (b) => b.data.sources.forEach((source) => ((source as R).merged_ids = ['gone-source']))],
+      ['frame on a page capture', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).frame = { url: null })],
+      ['frame address with a line break', (b) => ((b.data.captures.find((c) => (c as R).kind === 'selection') as R).frame = { url: 'about:srcdoc\n# RULES' })],
     ];
     for (const [name, change] of cases) {
       expect((await broken(change)).ok, name).toBe(false);
@@ -114,6 +119,8 @@ describe('backup and restore', () => {
     backup.db_schema_version = 1;
     for (const session of data.sessions!) delete session.archived_at;
     for (const source of data.sources!) delete source.note;
+    for (const source of data.sources!) delete source.merged_ids;
+    for (const capture of data.captures!) delete capture.frame;
     for (const jobSource of (data.jobs![0]!.sources as Array<Record<string, unknown>>)) delete jobSource.source_note;
     const check = await validateBackup(JSON.stringify(backup));
     expect(check.ok).toBe(true);
@@ -121,6 +128,33 @@ describe('backup and restore', () => {
     expect(check.backup.db_schema_version).toBe(DB_SCHEMA_VERSION);
     expect(check.backup.data.sessions).toEqual([expect.objectContaining({ archived_at: null })]);
     expect(check.backup.data.sources.every((s) => (s as { note: unknown }).note === '')).toBe(true);
+    expect(check.backup.data.sources.every((s) => (s as { merged_ids: unknown }).merged_ids instanceof Array)).toBe(true);
+    expect(check.backup.data.captures.every((c) => (c as { frame: unknown }).frame === null)).toBe(true);
+  });
+
+  it('writes the backup record by record within its size limit, and only measures it past the limit', async () => {
+    const db = await populated();
+    await createSession(db, 'Empty session');
+    const read = (visit: Parameters<typeof visitAllData>[1]) => visitAllData(db, visit);
+    const written = await writeBackup(read, () => settings, '2026-10-07T12:00:00.000Z');
+    const text = written.parts.join('');
+    expect(written.bytes).toBe(new TextEncoder().encode(text).length);
+    expect(JSON.parse(text)).toEqual(JSON.parse(JSON.stringify(createBackup(await readAllData(db), settings, '2026-10-07T12:00:00.000Z'))));
+    expect((await validateBackup(text)).ok).toBe(true);
+    expect(written.summary).toMatchObject({ sessions: 2, sources: 2, captures: 3, snapshots: 2, jobs: 1 });
+
+    const over = await writeBackup(read, () => settings, '2026-10-07T12:00:00.000Z', written.bytes - 1);
+    expect([over.parts.length, over.bytes]).toEqual([0, written.bytes]);
+  });
+
+  it('keeps only the fields it knows from a backup file', async () => {
+    const backup = createBackup(await readAllData(await populated()), settings, '2026-10-07T12:00:00.000Z');
+    const data = backup.data as unknown as Record<string, Array<Record<string, unknown>>>;
+    for (const records of Object.values(data)) for (const record of records) record.hidden = 'carried along';
+    (data.jobs![0]!.sources as Array<Record<string, unknown>>)[0]!.hidden = 'carried along';
+    const check = await validateBackup(JSON.stringify(backup));
+    expect(check.ok).toBe(true);
+    if (check.ok) expect(JSON.stringify(check.backup.data)).not.toContain('carried along');
   });
 
   it('reports whether data was replaced when a restore step fails', async () => {

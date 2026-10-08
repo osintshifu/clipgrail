@@ -1,4 +1,4 @@
-import type { DataSnapshot } from './db';
+import type { DataSnapshot, DataStore } from './db';
 import { DATA_STORES, DB_SCHEMA_VERSION } from './db';
 import { INBOX_SESSION_ID } from './model';
 import type { Capture, Session, Snapshot, Source } from './model';
@@ -6,8 +6,8 @@ import type { JobSettings } from './research-job';
 import type { Preset } from './settings';
 import { mergePresets } from './settings';
 import { sha256Hex } from './snapshot';
-import { MAX_SNAPSHOT_CHARACTERS, countCharacters } from './text';
-import { isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
+import { MAX_SNAPSHOT_CHARACTERS, countCharacters, utf8Length } from './text';
+import { frameAddress, isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
 
 export const BACKUP_FORMAT = 'clipgrail-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -48,6 +48,68 @@ export function createBackup(data: DataSnapshot, settings: BackupSettings, creat
   };
 }
 
+/**
+ * Largest backup file ClipGrail writes or reads, in bytes. Measured in
+ * Chrome 154: making, checking and restoring a backup takes up to about five
+ * times its size in memory (300 MB: 1.6 GB, 13 to 18 s per step), and at
+ * 450 MB the page ran out of memory. 200 MB keeps a wide margin.
+ */
+export const MAX_BACKUP_BYTES = 200_000_000;
+
+export interface WrittenBackup {
+  /** The backup as JSON text in parts, to be joined by the file they go into; empty when the backup is over the limit. */
+  parts: string[];
+  /** Size of the whole backup in UTF-8 bytes, also when it is over the limit. */
+  bytes: number;
+  summary: BackupSummary;
+}
+
+/**
+ * Writes a backup as JSON text in parts, one record per line, without
+ * building a single string of the whole backup. Once the backup passes
+ * `limit` bytes, parts are no longer kept and the rest is only measured, so
+ * the caller can say how large it would be. `settingsFor` gets the IDs of the
+ * sessions read.
+ */
+export async function writeBackup(
+  read: (visit: (store: DataStore, record: unknown) => void) => Promise<void>,
+  settingsFor: (sessionIds: Set<string>) => BackupSettings,
+  createdAt: string,
+  limit = MAX_BACKUP_BYTES,
+): Promise<WrittenBackup> {
+  let parts: string[] = [];
+  let bytes = 0;
+  const add = (part: string) => {
+    bytes += utf8Length(part);
+    if (bytes > limit) parts = [];
+    else parts.push(part);
+  };
+  const counts = Object.fromEntries(DATA_STORES.map((store) => [store, 0])) as Record<DataStore, number>;
+  const sessionIds = new Set<string>();
+  let open = -1;
+  const openUntil = (index: number) => {
+    while (open < index) {
+      if (open >= 0) add(']');
+      open += 1;
+      add(`${open ? ',' : ''}\n${JSON.stringify(DATA_STORES[open])}:[`);
+    }
+  };
+  add(JSON.stringify({ format: BACKUP_FORMAT, format_version: BACKUP_FORMAT_VERSION, db_schema_version: DB_SCHEMA_VERSION, created_at: createdAt }).slice(0, -1) + ',"data":{');
+  await read((store, record) => {
+    openUntil(DATA_STORES.indexOf(store));
+    add(`${counts[store] ? ',' : ''}\n${JSON.stringify(record)}`);
+    counts[store] += 1;
+    if (store === 'sessions') sessionIds.add((record as Session).id);
+  });
+  openUntil(DATA_STORES.length - 1);
+  add(`]\n},\n"settings":${JSON.stringify(settingsFor(sessionIds))}}\n`);
+  return {
+    parts: bytes > limit ? [] : parts,
+    bytes,
+    summary: { created_at: createdAt, sessions: counts.sessions, sources: counts.sources, captures: counts.captures, snapshots: counts.snapshots, jobs: counts.jobs },
+  };
+}
+
 /** File name with the local date and time, for example clipgrail-backup-20261005-1430.json. */
 export function backupFileName(createdAt: string): string {
   const d = new Date(createdAt);
@@ -67,6 +129,56 @@ export function summarize(data: DataSnapshot, createdAt: string): BackupSummary 
 }
 
 class Invalid extends Error {}
+
+/**
+ * Restored records are rebuilt from the fields ClipGrail knows, so anything
+ * else in a backup file is dropped instead of being stored and carried into
+ * later backups. Fields that are absent stay absent.
+ */
+function pick(r: Rec, keys: readonly string[]): Rec {
+  const out: Rec = {};
+  for (const key of keys) if (r[key] !== undefined) out[key] = r[key];
+  return out;
+}
+const SESSION_KEYS = ['id', 'name', 'created_at', 'next_source_number', 'prompt', 'notes', 'archived_at'] as const;
+const SOURCE_KEYS = ['id', 'session_id', 'number', 'dedup_url', 'created_at', 'note', 'merged_ids'] as const;
+const CAPTURE_KEYS = ['id', 'session_id', 'source_id', 'kind', 'captured_at', 'original_url', 'tab_title', 'found_on', 'anchor_text', 'fragment', 'frame', 'snapshot_id', 'note'] as const;
+const FRAGMENT_KEYS = ['text', 'character_count', 'sha256', 'truncated', 'original_character_count', 'method'] as const;
+const SNAPSHOT_BASE_KEYS = ['id', 'capture_id', 'source_id', 'session_id', 'status'] as const;
+const SNAPSHOT_KEYS = {
+  ok: [...SNAPSHOT_BASE_KEYS, 'captured_at', 'character_count', 'sha256', 'extraction_method', 'fallback_reason', 'truncated', 'original_character_count', 'title', 'byline', 'site_name', 'lang', 'published_time', 'canonical_url', 'page_url', 'http_status', 'text'],
+  failed: [...SNAPSHOT_BASE_KEYS, 'captured_at', 'error_code', 'error_message', 'http_status'],
+  pending: SNAPSHOT_BASE_KEYS,
+} as const;
+const JOB_KEYS = ['id', 'format_version', 'session_id', 'session_name', 'created_at', 'prompt', 'settings', 'session_notes', 'sources', 'stats', 'text'] as const;
+const JOB_SOURCE_KEYS = ['label', 'source_id', 'url', 'title', 'site_name', 'byline', 'published_time', 'status', 'material', 'missing_reason', 'latest_failure', 'snapshot', 'selections', 'source_note', 'notes', 'link_context', 'capture_times', 'original_urls'] as const;
+const JOB_TEXT_KEYS = ['text', 'character_count', 'available_character_count', 'shortened_by_limit'] as const;
+const JOB_SNAPSHOT_KEYS = [...JOB_TEXT_KEYS, 'snapshot_id', 'captured_at', 'extraction_method', 'fallback_reason', 'stored_sha256', 'truncated_at_capture', 'original_character_count'] as const;
+const JOB_SELECTION_KEYS = [...JOB_TEXT_KEYS, 'capture_id', 'captured_at', 'truncated_at_capture', 'method', 'frame_source_unestablished'] as const;
+const JOB_STATS_KEYS = ['source_count', 'character_count', 'utf8_bytes', 'missing_count', 'partial_count'] as const;
+
+function cleanCapture(c: Rec): Rec {
+  const out = pick(c, CAPTURE_KEYS);
+  if (c.fragment !== null) out.fragment = pick(c.fragment as Rec, FRAGMENT_KEYS);
+  if (c.frame !== null) out.frame = pick(c.frame as Rec, ['url']);
+  return out;
+}
+function cleanJob(j: Rec): Rec {
+  const out = pick(j, JOB_KEYS);
+  out.settings = parseJobSettings(j.settings, 'job settings');
+  out.stats = pick(j.stats as Rec, JOB_STATS_KEYS);
+  out.sources = (j.sources as Rec[]).map((source) => {
+    const s = pick(source, JOB_SOURCE_KEYS);
+    if (source.snapshot !== null) s.snapshot = pick(source.snapshot as Rec, JOB_SNAPSHOT_KEYS);
+    s.selections = (source.selections as Rec[]).map((sel) => pick(sel, JOB_SELECTION_KEYS));
+    if (source.latest_failure) s.latest_failure = pick(source.latest_failure as Rec, ['description', 'captured_at']);
+    if (source.notes !== null) s.notes = (source.notes as Rec[]).map((n) => pick(n, ['capture_id', 'note']));
+    if (source.link_context !== null) s.link_context = (source.link_context as Rec[]).map((l) => pick(l, ['capture_id', 'found_on', 'anchor_text']));
+    if (source.capture_times !== null) s.capture_times = (source.capture_times as Rec[]).map((t) => pick(t, ['capture_id', 'kind', 'captured_at']));
+    return s;
+  });
+  return out;
+}
 
 type Rec = Record<string, unknown>;
 function obj(value: unknown, where: string): Rec {
@@ -213,6 +325,8 @@ function validateJob(j: Rec, sessions: Map<string, Rec>): void {
       strOrNull(sel, 'captured_at', w);
       bool(sel, 'truncated_at_capture', w);
       oneOf(sel, 'method', ['dom-selection', 'menu-selection-text'] as const, w);
+      // Jobs generated before frames were recorded have no frame_source_unestablished.
+      if (sel.frame_source_unestablished !== undefined) bool(sel, 'frame_source_unestablished', w);
     }
     // Jobs generated before sources had notes have no source_note.
     if (s.source_note !== undefined) strOrNull(s, 'source_note', w);
@@ -286,7 +400,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     const schemaVersion = root.db_schema_version;
     // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
     // Version 4 only added thumbnails, which backups leave out: version 3 data is the same.
-    if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3 && schemaVersion !== DB_SCHEMA_VERSION) {
+    // Version 5 added merged_ids to sources and frame to captures.
+    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);
@@ -301,6 +416,11 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       // Schema 1 had no archived sessions and no source notes; the database upgrade adds the same defaults.
       data.sessions = data.sessions.map((s) => ({ archived_at: null, ...s }));
       data.sources = data.sources.map((s) => ({ note: '', ...s }));
+    }
+    if (schemaVersion < 5) {
+      // As the database upgrade does: no merged sources, and no frame recorded for earlier captures.
+      data.sources = data.sources.map((s) => ({ merged_ids: [], ...s }));
+      data.captures = data.captures.map((c) => ({ frame: null, ...c }));
     }
 
     const sessions = uniqueIds(data.sessions, 'sessions');
@@ -338,6 +458,16 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       str(s, 'created_at', where, false);
       str(s, 'note', where);
     }
+    // An ID a source took over when another source joined it belongs to that source alone, and to no current source.
+    const mergedOwner = new Map<string, unknown>();
+    for (const s of sources.values()) {
+      const where = `source ${String(s.id)}`;
+      for (const id of strings(s.merged_ids, `${where}: "merged_ids"`)) {
+        if (sources.has(id)) throw new Invalid(`${where}: merged ID ${id} is the ID of a current source.`);
+        if (mergedOwner.has(id)) throw new Invalid(`${where}: merged ID ${id} is listed ${mergedOwner.get(id) === s.id ? 'twice' : 'by two sources'}.`);
+        mergedOwner.set(id, s.id);
+      }
+    }
 
     const snapshots = uniqueIds(data.snapshots, 'snapshots');
     const captures = uniqueIds(data.captures, 'captures');
@@ -354,6 +484,11 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       strOrNull(c, 'anchor_text', where);
       str(c, 'note', where);
       const snapshotId = strOrNull(c, 'snapshot_id', where);
+      if (c.frame !== null) {
+        if (kind !== 'selection') throw new Invalid(`${where}: only selection captures have a frame.`);
+        const frame = obj(c.frame, `${where} frame`);
+        if (frame.url !== null && frameAddress(frame.url) !== frame.url) throw new Invalid(`${where}: the frame address is not valid.`);
+      }
       if (kind === 'selection') {
         if (snapshotId !== null) throw new Invalid(`${where}: a selection capture cannot have a snapshot.`);
         const f = obj(c.fragment, `${where} fragment`);
@@ -384,7 +519,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       str(s, 'captured_at', where, false);
       intOrNull(s, 'http_status', where);
       if (status === 'failed') {
-        oneOf(s, 'error_code', ['page_unavailable', 'http_error', 'empty_text', 'extraction_error', 'timeout'] as const, where);
+        oneOf(s, 'error_code', ['page_unavailable', 'http_error', 'empty_text', 'extraction_error', 'timeout', 'text_missing'] as const, where);
         str(s, 'error_message', where);
         continue;
       }
@@ -423,11 +558,11 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       db_schema_version: DB_SCHEMA_VERSION,
       created_at: createdAt,
       data: {
-        sessions: data.sessions as unknown as Session[],
-        sources: data.sources as unknown as Source[],
-        captures: data.captures as unknown as Capture[],
-        snapshots: data.snapshots as unknown as Snapshot[],
-        jobs: data.jobs,
+        sessions: data.sessions.map((r) => pick(r, SESSION_KEYS)) as unknown as Session[],
+        sources: data.sources.map((r) => pick(r, SOURCE_KEYS)) as unknown as Source[],
+        captures: data.captures.map(cleanCapture) as unknown as Capture[],
+        snapshots: data.snapshots.map((r) => pick(r, SNAPSHOT_KEYS[r.status as keyof typeof SNAPSHOT_KEYS])) as unknown as Snapshot[],
+        jobs: data.jobs.map(cleanJob),
       },
       settings,
     };

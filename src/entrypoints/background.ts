@@ -12,6 +12,7 @@ import { OPEN_MODE_KEY, getActiveSessionId, getOpenMode, resolveActiveSessionId 
 import { captureThumbnail } from '../lib/thumbnail';
 import type { Recording, TrailEntry } from '../lib/recording';
 import { RECORDING_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
+import { plural } from '../lib/text';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -99,8 +100,7 @@ function trackPanel(windowId: number, open: boolean): void {
 }
 
 function closePanel(windowId: number): void {
-  // sidePanel.close needs Chrome 141.
-  browser.sidePanel.close?.({ windowId }).catch(() => undefined);
+  browser.sidePanel.close({ windowId }).catch(() => undefined);
   trackPanel(windowId, false);
 }
 
@@ -161,18 +161,49 @@ async function startRecording(windowId: number): Promise<RecordResponse> {
   // The pages already open are where the first links of the recording are found.
   const tabs = await browser.tabs.query({ windowId });
   const pages = Object.fromEntries(tabs.filter((t) => t.id !== undefined && t.url).map((t) => [String(t.id), { url: t.url!, found_on: null }]));
-  const recording: Recording = { window_id: windowId, started_at: new Date().toISOString(), capture_ids: [] };
+  const recording: Recording = { window_id: windowId, started_at: new Date().toISOString(), captures: [], failed: 0 };
   await browser.storage.session.set({ [RECORDING_KEY]: recording, [TRAIL_KEY]: pages });
   listenToNavigation();
   showRecordingBadge(true);
-  return { capture_ids: [] };
+  // A recording that had to stop may have left its reason on the icon.
+  void browser.action.setTitle({ title: browser.runtime.getManifest().action?.default_title ?? 'ClipGrail' });
+  return { captures: [], failed: 0 };
 }
 
 async function stopRecording(): Promise<RecordResponse> {
   const recording = await currentRecording();
   await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]);
   showRecordingBadge(false);
-  return { capture_ids: recording?.capture_ids ?? [] };
+  return { captures: recording?.captures ?? [], failed: recording?.failed ?? 0 };
+}
+
+/**
+ * Ends a recording whose own state can no longer be written: it would
+ * otherwise look complete while pages go unsaved. The panel is told how many
+ * pages were saved; if even that fails, the toolbar icon says so.
+ */
+async function abandonRecording(recording: Recording): Promise<void> {
+  showRecordingBadge(false);
+  await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]).catch(() => undefined);
+  const saved = recording.captures.length;
+  const text = `Recording stopped: ClipGrail could not keep track of it. ${plural(saved, 'page')} ${saved === 1 ? 'was' : 'were'} saved before that.`;
+  try {
+    await publishNotice({ window_id: recording.window_id, level: 'error', text, capture_id: null });
+  } catch {
+    void browser.action.setBadgeText({ text: '!' });
+    void browser.action.setTitle({ title: text });
+  }
+}
+
+/** Counts a page the recording could not save. */
+async function recordFailure(started: string): Promise<void> {
+  const now = await currentRecording().catch(() => null);
+  if (now?.started_at !== started) return;
+  try {
+    await browser.storage.session.set({ [RECORDING_KEY]: { ...now, failed: now.failed + 1 } });
+  } catch {
+    await abandonRecording(now);
+  }
 }
 
 /** Notes where a main-frame navigation in the recorded window came from. */
@@ -189,7 +220,8 @@ function navigated(tabId: number, url: string, transition: string, qualifiers: s
       opener = pages[String(tab.openerTabId)]?.url ?? (await browser.tabs.get(tab.openerTabId).catch(() => null))?.url ?? null;
     }
     pages[String(tabId)] = { url, found_on: foundOnFor({ transition, qualifiers }, previous, opener) };
-    await browser.storage.session.set({ [TRAIL_KEY]: pages });
+    // Without its trail the recording would name the wrong pages as where the next ones were found.
+    await browser.storage.session.set({ [TRAIL_KEY]: pages }).catch(() => abandonRecording(recording));
   });
 }
 
@@ -201,6 +233,7 @@ function recordSoon(tabId: number): void {
     tabId,
     setTimeout(() => {
       pendingTabs.delete(tabId);
+      // recordTab handles its own failures; this only keeps a failed read of the recording from going unhandled.
       void serial(() => recordTab(tabId)).catch(() => undefined);
     }, 700),
   );
@@ -211,19 +244,30 @@ async function recordTab(tabId: number): Promise<void> {
   if (!recording) return;
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.url || tab.windowId !== recording.window_id || tab.incognito || tab.status !== 'complete') return;
-  const entry = (await trail())[String(tabId)];
-  const db = await getDb();
-  const saved = await recordVisit(db, await resolveActiveSessionId(db), {
-    url: tab.url,
-    title: tab.title ?? '',
-    found_on: entry?.url === tab.url ? entry.found_on : null,
-    at: new Date().toISOString(),
-  });
+  let saved;
+  try {
+    const entry = (await trail())[String(tabId)];
+    const db = await getDb();
+    saved = await recordVisit(db, await resolveActiveSessionId(db), {
+      url: tab.url,
+      title: tab.title ?? '',
+      found_on: entry?.url === tab.url ? entry.found_on : null,
+      at: new Date().toISOString(),
+    });
+  } catch {
+    await recordFailure(recording.started_at);
+    return;
+  }
   if (!saved) return;
   // Stopped meanwhile: the page is saved, but no longer part of this recording's Undo.
   const now = await currentRecording();
   if (now?.started_at !== recording.started_at) return;
-  await browser.storage.session.set({ [RECORDING_KEY]: { ...now, capture_ids: [...now.capture_ids, saved.capture.id] } });
+  const capture = { capture_id: saved.capture.id, session_id: saved.capture.session_id };
+  try {
+    await browser.storage.session.set({ [RECORDING_KEY]: { ...now, captures: [...now.captures, capture] } });
+  } catch {
+    await abandonRecording(now);
+  }
 }
 
 let listening = false;
@@ -233,11 +277,14 @@ function listenToNavigation(): void {
   if (listening || !navigation) return;
   listening = true;
   navigation.onCommitted.addListener((d) => d.frameId === 0 && navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers));
-  navigation.onHistoryStateUpdated.addListener((d) => {
+  // Pages that change their address without loading: history.pushState, and a new #fragment (a different source, such as a Telegram channel).
+  const inPage = (d: { frameId: number; tabId: number; url: string; transitionType: string; transitionQualifiers: string[] }) => {
     if (d.frameId !== 0) return;
     navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers);
     recordSoon(d.tabId);
-  });
+  };
+  navigation.onHistoryStateUpdated.addListener(inPage);
+  navigation.onReferenceFragmentUpdated.addListener(inPage);
   navigation.onCompleted.addListener((d) => d.frameId === 0 && recordSoon(d.tabId));
 }
 
@@ -253,9 +300,8 @@ export default defineBackground(() => {
     },
     () => void (openPanelsKnown = true),
   );
-  // sidePanel.onOpened and onClosed need Chrome 141.
-  browser.sidePanel.onOpened?.addListener(({ windowId }) => trackPanel(windowId, true));
-  browser.sidePanel.onClosed?.addListener(({ windowId }) => trackPanel(windowId, false));
+  browser.sidePanel.onOpened.addListener(({ windowId }) => trackPanel(windowId, true));
+  browser.sidePanel.onClosed.addListener(({ windowId }) => trackPanel(windowId, false));
   browser.windows.onRemoved.addListener((windowId) => openPanels.has(windowId) && trackPanel(windowId, false));
 
   listenToNavigation();
@@ -304,7 +350,7 @@ export default defineBackground(() => {
       void run(
         tab.windowId,
         undefined,
-        (db, sessionId) => captureSelection(db, tab, sessionId, { frameId: info.frameId, menuSelectionText: info.selectionText }),
+        (db, sessionId) => captureSelection(db, tab, sessionId, { frameId: info.frameId, frameUrl: info.frameUrl, menuSelectionText: info.selectionText }),
         captureThumbnail(tab.windowId),
       );
     } else if (info.menuItemId === 'save-link' && info.linkUrl) {
@@ -321,7 +367,9 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (isRecordRequest(message)) {
-      void serial(() => (message.action === 'start' ? startRecording(message.windowId) : stopRecording())).then(sendResponse, () => sendResponse({ capture_ids: [] }));
+      void serial(() => (message.action === 'start' ? startRecording(message.windowId) : stopRecording())).then(sendResponse, (error: unknown) =>
+        sendResponse({ captures: [], failed: 0, error: error instanceof Error ? error.message : String(error) }),
+      );
       return true;
     }
     if (!isClipRequest(message)) return false;

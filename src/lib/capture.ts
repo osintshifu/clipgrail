@@ -1,12 +1,12 @@
 import { browser } from 'wxt/browser';
 import type { CaptureDraft, CommitResult } from './db';
 import { commitCapture } from './db';
-import type { PageExtraction } from './model';
+import type { CaptureFrame, PageExtraction } from './model';
 import { sourceLabel } from './model';
-import { describeFailure } from './selection';
+import { describeFailure, frameSourceUnestablished } from './selection';
 import type { SnapshotDraft } from './snapshot';
 import { buildFragment, buildSnapshotDraft, failedSnapshotDraft } from './snapshot';
-import { isProvenanceUrl, normalizeUrl } from './url';
+import { frameAddress, isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
 
 /** Longest wait for the extractor before the capture is saved as failed (timeout). */
 export const EXTRACTION_TIMEOUT_MS = 30_000;
@@ -98,7 +98,13 @@ function savedMessage(result: CommitResult): string {
   if (result.capture.kind === 'link') return `Saved ${label} as a link, not opened · Pending`;
   if (result.capture.kind === 'selection') {
     const partial = result.capture.fragment?.truncated ? ' · partial: cut at the length limit' : '';
-    return `Clipped selection to ${label} · ${where}${partial}`;
+    const frame = result.capture.frame;
+    const from = !frame
+      ? ''
+      : frameSourceUnestablished(frame)
+        ? ' · from an embedded frame, source URL not established'
+        : ` · from an embedded frame (${new URL(frame.url!).hostname})`;
+    return `Clipped selection to ${label} · ${where}${from}${partial}`;
   }
   if (snapshot?.status === 'failed') return `Saved ${label} without text: ${describeFailure(snapshot)}`;
   if (snapshot?.status === 'ok') {
@@ -176,25 +182,45 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
 }
 
 /**
+ * Where a selection is saved. In the page itself: the page. In an embedded
+ * frame with an http or https address: that address, found on the page. In
+ * any other frame (about:srcdoc, blob:, or an address that could not be read)
+ * the selection's source URL is not established: the page is kept as context
+ * and the capture notes the frame, without claiming the page as its origin.
+ */
+export function selectionTarget(
+  tabUrl: string,
+  frameId: number,
+  frameUrl: unknown,
+): { url: string; found_on: string | null; frame: CaptureFrame | null } {
+  if (frameId === 0) return { url: tabUrl, found_on: null, frame: null };
+  const address = frameAddress(frameUrl);
+  if (address && isCapturableUrl(address)) return { url: address, found_on: isProvenanceUrl(tabUrl) ? tabUrl : null, frame: { url: address } };
+  return { url: tabUrl, found_on: null, frame: { url: address } };
+}
+
+/**
  * Captures the selected text of a tab (or of one frame). `menuSelectionText`
  * is Chrome's flattened selection from the context menu, used only when the
- * frame itself cannot be read.
+ * frame itself cannot be read; `frameUrl` is the frame's address as the
+ * context menu reports it.
  */
 export async function captureSelection(
   db: IDBDatabase,
   tab: TabInfo,
   sessionId: string,
-  options: { frameId?: number; menuSelectionText?: string } = {},
+  options: { frameId?: number; frameUrl?: string; menuSelectionText?: string } = {},
 ): Promise<CaptureOutcome> {
   const capturedAt = new Date().toISOString();
   if (tab.id === undefined) return notSaved('no_tab');
   if (!tab.url) return notSaved('no_access');
-  const dedupUrl = normalizeUrl(tab.url);
-  if (!dedupUrl) return notSaved('blocked_page');
+  const pageUrl = normalizeUrl(tab.url);
+  if (!pageUrl) return notSaved('blocked_page');
 
   let text = '';
   let method: 'dom-selection' | 'menu-selection-text' = 'dom-selection';
   const frameId = options.frameId ?? 0;
+  let frameUrl: unknown = options.frameUrl ?? null;
   try {
     const results = await browser.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [frameId] },
@@ -202,7 +228,9 @@ export async function captureSelection(
     });
     const value = results[0]?.result as { text?: unknown; url?: unknown } | undefined;
     // In the top frame the selection must come from the page the source URL was taken from.
-    if (frameId === 0 && value && normalizeUrl(String(value.url)) !== dedupUrl) return notSaved('page_changed');
+    if (frameId === 0 && value && normalizeUrl(String(value.url)) !== pageUrl) return notSaved('page_changed');
+    // A frame's own document says where it is, also after it navigated.
+    if (frameId !== 0 && typeof value?.url === 'string') frameUrl = value.url;
     text = typeof value?.text === 'string' ? value.text : '';
   } catch (error) {
     const kind = classifyScriptError(error);
@@ -216,16 +244,20 @@ export async function captureSelection(
   const fragment = await buildFragment(text, method);
   if (!fragment) return notSaved('empty_selection');
 
+  const target = selectionTarget(tab.url, frameId, frameUrl);
+  const frameSource = target.url !== tab.url;
   return save(db, {
     session_id: sessionId,
     kind: 'selection',
-    dedup_url: dedupUrl,
+    dedup_url: frameSource ? normalizeUrl(target.url)! : pageUrl,
     captured_at: capturedAt,
-    original_url: tab.url,
-    tab_title: tab.title ?? '',
-    found_on: null,
+    original_url: target.url,
+    // The tab title belongs to the page, not to a frame saved as its own source.
+    tab_title: frameSource ? '' : (tab.title ?? ''),
+    found_on: target.found_on,
     anchor_text: null,
     fragment,
+    frame: target.frame,
     snapshot: null,
   });
 }
