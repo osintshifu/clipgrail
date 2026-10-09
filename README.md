@@ -1,5 +1,6 @@
 <div align="center">
 
+![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-1F62C4?style=flat-square)
 ![Chrome 142+](https://img.shields.io/badge/Chrome-142%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-555555?style=flat-square)
 ![Local storage](https://img.shields.io/badge/storage-local-00897B?style=flat-square)
@@ -35,7 +36,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 
 ### Features
 
-| | |
+| Feature | What it does |
 | --- | --- |
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
