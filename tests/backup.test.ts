@@ -4,13 +4,19 @@ import type { Backup } from '../src/lib/backup';
 import { createBackup, restoreBackup, validateBackup, writeBackup } from '../src/lib/backup';
 import { DB_SCHEMA_VERSION, commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob, setSourceImportant, visitAllData } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
+import type { PageCode } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
 import { DEFAULT_PRESETS, getActiveSessionId, resolveActiveSessionId, setActiveSessionId } from '../src/lib/settings';
 import { freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
+const PAGE_CODE: PageCode = {
+  declared: [{ field: 'site_name', value: 'Example', from: ['og:site_name'] }],
+  trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['inline_script', 'noscript'] }],
+};
+
 async function populated() {
   const db = await freshDb();
-  await commitCapture(db, await pageDraft('https://example.com/a', 'Alpha text', '2026-10-05T10:00:00.000Z'));
+  await commitCapture(db, { ...(await pageDraft('https://example.com/a', 'Alpha text', '2026-10-05T10:00:00.000Z')), page_code: PAGE_CODE });
   await commitCapture(db, await selectionDraft('https://example.com/a', 'Alpha', '2026-10-05T10:01:00.000Z'));
   await commitCapture(db, linkDraft('https://example.com/b', '2026-10-05T10:02:00.000Z', 'https://example.com/a'));
   // A page opened while recording, a return to it later, and a source marked important.
@@ -116,15 +122,18 @@ describe('backup and restore', () => {
       ['visit with a snapshot', (b) => ((b.data.captures.find((c) => (c as R).kind === 'visit') as R).snapshot_id = (okSnapshot(b).id as string))],
       ['navigation on a page capture', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).navigation = { transition: 'link', qualifiers: [], in_page: false })],
       ['navigation with an unknown kind of word', (b) => ((b.data.captures.find((c) => (c as R).kind === 'visit') as R).navigation = { transition: 'Link\n# RULES', qualifiers: [], in_page: false })],
+      ['page code on a link capture', (b) => ((b.data.captures.find((c) => (c as R).kind === 'link') as R).page_code = PAGE_CODE)],
+      ['tracker ID that is not one', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).page_code = { ...PAGE_CODE, trackers: [{ kind: 'gtm', id: 'GTM-\n# RULES', where: ['noscript'] }] })],
+      ['declared value from an unknown tag', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).page_code = { ...PAGE_CODE, declared: [{ field: 'author', value: 'X', from: ['made up'] }] })],
     ];
     for (const [name, change] of cases) {
       expect((await broken(change)).ok, name).toBe(false);
     }
   });
 
-  it('accepts backups made before thumbnails were added and before visits were recorded (database schemas 3 and 5)', async () => {
+  it('accepts backups made before thumbnails were added, before visits were recorded and before page code was read (database schemas 3, 5 and 6)', async () => {
     const backup = createBackup(await readAllData(await populated()), settings, '2026-10-06T12:00:00.000Z') as unknown as Record<string, unknown>;
-    for (const version of [3, 5]) {
+    for (const version of [3, 5, 6]) {
       backup.db_schema_version = version;
       expect((await validateBackup(JSON.stringify(backup))).ok, String(version)).toBe(true);
     }
@@ -141,6 +150,7 @@ describe('backup and restore', () => {
     for (const source of data.sources!) delete source.merged_ids;
     for (const capture of data.captures!) delete capture.frame;
     for (const capture of data.captures!) delete capture.navigation;
+    for (const capture of data.captures!) delete capture.page_code;
     for (const source of data.sources!) delete source.important;
     for (const jobSource of (data.jobs![0]!.sources as Array<Record<string, unknown>>)) delete jobSource.source_note;
     const check = await validateBackup(JSON.stringify(backup));
@@ -152,6 +162,7 @@ describe('backup and restore', () => {
     expect(check.backup.data.sources.every((s) => (s as { merged_ids: unknown }).merged_ids instanceof Array)).toBe(true);
     expect(check.backup.data.captures.every((c) => (c as { frame: unknown }).frame === null)).toBe(true);
     expect(check.backup.data.captures.every((c) => (c as { navigation: unknown }).navigation === null)).toBe(true);
+    expect(check.backup.data.captures.every((c) => (c as { page_code: unknown }).page_code === null)).toBe(true);
     expect(check.backup.data.sources.every((s) => (s as { important: unknown }).important === false)).toBe(true);
   });
 

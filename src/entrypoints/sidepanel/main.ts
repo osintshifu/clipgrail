@@ -50,6 +50,7 @@ import { buildResearchJob, isJobOutdated } from '../../lib/research-job';
 import type { SourceStatus } from '../../lib/selection';
 import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
 import { openLibrary } from '../../lib/library-tab';
+import { pageCodeBlock } from '../../lib/page-code-block';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { OpenMode, Preset } from '../../lib/settings';
@@ -92,6 +93,8 @@ import {
   fmtTime,
   hostOf,
   inboxEmptyingText,
+  pageCodeCapture,
+  pageCodeView,
   sessionDeletionText,
   sourceDeletionText,
   sourceMeta,
@@ -934,7 +937,15 @@ function detailsSection(entry: SourceEntry): Child[] {
     h('p', { class: 'small' }, [
       'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
     ]),
+    pageCodeOf(entry),
   ];
+}
+
+/** The page code of the newest capture that read it, else what Readability read with the current text. */
+function pageCodeOf(entry: SourceEntry): Child {
+  const shown = pageCodeCapture(entry);
+  const code = shown && pageCodeView(shown.capture, shown.snapshot);
+  return code ? pageCodeBlock(code, `Capture ${shown.number} · ${fmtTime(shown.capture.captured_at)}`) : null;
 }
 
 function renderDetail(): void {

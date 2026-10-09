@@ -5,6 +5,7 @@ import type { Capture, Session, Snapshot, Source } from './model';
 import type { JobSettings } from './research-job';
 import type { Preset } from './settings';
 import { mergePresets } from './settings';
+import { cleanPageCode } from './page-code';
 import { sha256Hex } from './snapshot';
 import { MAX_SNAPSHOT_CHARACTERS, countCharacters, utf8Length } from './text';
 import { frameAddress, isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
@@ -145,7 +146,7 @@ function pick(r: Rec, keys: readonly string[]): Rec {
 }
 const SESSION_KEYS = ['id', 'name', 'created_at', 'next_source_number', 'prompt', 'notes', 'archived_at'] as const;
 const SOURCE_KEYS = ['id', 'session_id', 'number', 'dedup_url', 'created_at', 'note', 'merged_ids', 'important'] as const;
-const CAPTURE_KEYS = ['id', 'session_id', 'source_id', 'kind', 'captured_at', 'original_url', 'tab_title', 'found_on', 'anchor_text', 'fragment', 'frame', 'navigation', 'snapshot_id', 'note'] as const;
+const CAPTURE_KEYS = ['id', 'session_id', 'source_id', 'kind', 'captured_at', 'original_url', 'tab_title', 'found_on', 'anchor_text', 'fragment', 'frame', 'navigation', 'page_code', 'snapshot_id', 'note'] as const;
 const FRAGMENT_KEYS = ['text', 'character_count', 'sha256', 'truncated', 'original_character_count', 'method'] as const;
 const SNAPSHOT_BASE_KEYS = ['id', 'capture_id', 'source_id', 'session_id', 'status'] as const;
 const SNAPSHOT_KEYS = {
@@ -165,6 +166,7 @@ function cleanCapture(c: Rec): Rec {
   if (c.fragment !== null) out.fragment = pick(c.fragment as Rec, FRAGMENT_KEYS);
   if (c.frame !== null) out.frame = pick(c.frame as Rec, ['url']);
   if (c.navigation !== null) out.navigation = pick(c.navigation as Rec, ['transition', 'qualifiers', 'in_page']);
+  if (c.page_code !== null) out.page_code = cleanPageCode(c.page_code);
   return out;
 }
 function cleanJob(j: Rec): Rec {
@@ -415,8 +417,9 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     const schemaVersion = root.db_schema_version;
     // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
     // Version 4 only added thumbnails, which backups leave out: version 3 data is the same.
-    // Version 5 added merged_ids to sources and frame to captures; version 6 added important to sources, navigation to captures and visits.
-    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, 5, DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    // Version 5 added merged_ids to sources and frame to captures; version 6 added important to sources, navigation to captures and visits;
+    // version 7 added page_code to captures.
+    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, 5, 6, DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);
@@ -441,6 +444,10 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       // As the database upgrade does: nothing marked important, and no navigation recorded for earlier captures.
       data.sources = data.sources.map((s) => ({ important: false, ...s }));
       data.captures = data.captures.map((c) => ({ navigation: null, ...c }));
+    }
+    if (schemaVersion < 7) {
+      // As the database upgrade does: no page code read for earlier captures.
+      data.captures = data.captures.map((c) => ({ page_code: null, ...c }));
     }
 
     const sessions = uniqueIds(data.sessions, 'sessions');
@@ -513,6 +520,10 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       if (c.navigation !== null) {
         if (kind !== 'tab' && kind !== 'visit') throw new Invalid(`${where}: only recorded pages and visits have a navigation.`);
         navigation(c, where);
+      }
+      if (c.page_code !== null) {
+        if (kind !== 'page' && kind !== 'selection') throw new Invalid(`${where}: only page and selection captures have page code.`);
+        if (!cleanPageCode(c.page_code)) throw new Invalid(`${where}: the page code is not valid.`);
       }
       if (kind === 'visit') {
         // A visit notes a return to a page: no text, no selection, no link text.

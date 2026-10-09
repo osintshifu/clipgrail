@@ -115,5 +115,19 @@ describe('library', () => {
     expect(choices(4)).toEqual([[3, null], [2, null], [1, 3]]);
     expect(choices(3)).toEqual([[4, null], [2, null], [1, 3]]);
   });
+
+  it('finds sources by the trackers and values in their page code, in every session', async () => {
+    const db = await freshDb();
+    const other = await createSession(db, 'Other');
+    const code = { declared: [{ field: 'publisher' as const, value: 'Harbour Authority Ltd', from: ['schema.org publisher'] }], trackers: [{ kind: 'ga4' as const, id: 'G-7QX2KF31PL', where: ['script_address' as const] }] };
+    await commitCapture(db, { ...(await pageDraft('https://a.example.org/', 'Alpha', '2026-10-01T10:00:00.000Z')), page_code: code });
+    await commitCapture(db, { ...(await pageDraft('https://b.example.net/', 'Beta', '2026-10-02T10:00:00.000Z', other.id)), page_code: code });
+    await commitCapture(db, await pageDraft('https://c.example.com/', 'Gamma', '2026-10-03T10:00:00.000Z'));
+    const rows = libraryRows(await loadLibrary(db));
+    const search = (input: string) =>
+      filterRows(rows, { ...all, query: input }, new Map()).map((row) => `${row.host} ${searchSnippet(row, parseSearch(input), undefined)?.where ?? '-'}`);
+    expect(search('G-7QX2KF31PL')).toEqual(['b.example.net Page code', 'a.example.org Page code']);
+    expect(search('"harbour authority"')).toEqual(['b.example.net Page code', 'a.example.org Page code']);
+  });
 });
 

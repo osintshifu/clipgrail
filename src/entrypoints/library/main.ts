@@ -14,6 +14,7 @@ import {
   fmtTime,
   hostOf,
   inboxEmptyingText,
+  pageCodeView,
   sessionDeletionText,
   sourceDeletionText,
   sourcesDeletionText,
@@ -27,6 +28,7 @@ import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { compareTexts } from '../../lib/diff';
+import { pageCodeBlock } from '../../lib/page-code-block';
 import type { DiffPart, TextDiff } from '../../lib/diff';
 import { ALL_SOURCES, SORT_LABELS, compareChoices, filterRows, libraryRows, searchSnippet, textIdsOf, textShaOf, versionsOf } from '../../lib/library';
 import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
@@ -1084,6 +1086,7 @@ function renderReaderContents(): void {
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? versions.length - 1 : (index + moves[event.key]! + versions.length) % versions.length;
     viewCapture(versions[next]!.capture.capture.id);
   });
+  const pageCode = pageCodeView(viewed.capture.capture, viewed.capture.snapshot);
   const details = h('details', { on: { toggle: () => (detailsOpen = details.open) } }, [
     h('summary', {}, ['Details']),
     h(
@@ -1097,6 +1100,7 @@ function renderReaderContents(): void {
     h('p', { class: 'small' }, [
       'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
     ]),
+    pageCode ? pageCodeBlock(pageCode) : null,
   ]);
   details.open = detailsOpen;
   fill(reader, [

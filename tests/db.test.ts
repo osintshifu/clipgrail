@@ -106,7 +106,7 @@ describe('sessions', () => {
     const data = await readAllData(db);
     expect(data.sessions).toEqual([{ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '', archived_at: null }]);
     expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '', merged_ids: [], important: false }]);
-    expect(data.captures).toEqual([{ id: 'cap-1', session_id: INBOX_SESSION_ID, source_id: 'src-1', kind: 'tab', captured_at: 'x', note: '', frame: null, navigation: null }]);
+    expect(data.captures).toEqual([{ id: 'cap-1', session_id: INBOX_SESSION_ID, source_id: 'src-1', kind: 'tab', captured_at: 'x', note: '', frame: null, navigation: null, page_code: null }]);
   });
 
   it('upgrades a schema 2 database by moving snapshot texts to their own store, unchanged', async () => {

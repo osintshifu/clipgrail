@@ -1,5 +1,5 @@
 import type { CaptureEntry, DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
-import type { Capture, CaptureNavigation, OkSnapshotMeta, SnapshotMeta } from './model';
+import type { Capture, CaptureNavigation, DeclaredField, OkSnapshotMeta, SnapshotMeta, TrackerKind, TrackerPlace } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
 import { FRAME_UNESTABLISHED_NOTE, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
@@ -287,6 +287,93 @@ export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | und
     });
   }
   return rows;
+}
+
+// ---------- Page code ----------
+
+const DECLARED_LABELS: Record<DeclaredField, string> = {
+  site_name: 'Site name',
+  author: 'Author',
+  publisher: 'Publisher',
+  published: 'Published',
+  type: 'Type',
+  x_account: 'X account',
+  canonical: 'Canonical',
+  generator: 'Generator',
+};
+const TRACKER_LABELS: Record<TrackerKind, string> = {
+  ga4: 'Google Analytics 4',
+  ua: 'Google Analytics (Universal)',
+  gtm: 'Google Tag Manager',
+  meta_pixel: 'Meta Pixel',
+  adsense: 'Google AdSense',
+};
+const PLACE_WORDS: Record<TrackerPlace, string> = {
+  script_address: 'script address',
+  inline_script: 'inline script',
+  noscript: 'noscript frame',
+  ad_tag: 'ad tag',
+  image: 'tracking image',
+};
+
+export const PAGE_CODE_NOTE =
+  "Read from the page code when the page was clipped; not part of the saved text or its SHA-256. A tracker that loads only after cookie consent, or runs on the website's server, is not seen: no tracker listed does not mean the page does not track.";
+
+export interface PageCodeRow {
+  label: string;
+  value: string;
+  /** Where the value was read: the tags it was declared in, or where a tracker ID was found. */
+  from: string;
+  mono: boolean;
+}
+
+export interface PageCodeView {
+  declared: PageCodeRow[];
+  /** Null when the page code was not read for the capture. */
+  trackers: PageCodeRow[] | null;
+  note: string;
+}
+
+/**
+ * What the page code said at a capture, for its details. A page or selection
+ * clipped before the page code was read shows what Readability read with the
+ * text instead. Null for captures that never read the page.
+ */
+export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefined): PageCodeView | null {
+  const code = capture.page_code;
+  if (code) {
+    return {
+      declared: code.declared.map((d) => ({ label: DECLARED_LABELS[d.field], value: d.value, from: d.from.join(', '), mono: false })),
+      trackers: code.trackers.map((t) => ({ label: TRACKER_LABELS[t.kind], value: t.id, from: t.where.map((w) => PLACE_WORDS[w]).join(', '), mono: true })),
+      note: PAGE_CODE_NOTE,
+    };
+  }
+  if (capture.kind !== 'page' && capture.kind !== 'selection') return null;
+  const ok = snapshot?.status === 'ok' ? snapshot : null;
+  const read: Array<[string, string | null | undefined]> = [
+    ['Site name', ok?.site_name],
+    ['Author', ok?.byline],
+    ['Published', ok?.published_time],
+    ['Canonical', ok?.canonical_url],
+  ];
+  const declared = read.flatMap(([label, value]) => (value ? [{ label, value, from: 'read by Readability', mono: false }] : []));
+  return { declared, trackers: null, note: 'The page code was not read: this capture was made before ClipGrail read it.' };
+}
+
+/** The capture whose page code the side panel shows: the newest that read it, else the one with the current text. */
+export function pageCodeCapture(entry: SourceEntry): { capture: Capture; snapshot: SnapshotMeta | undefined; number: number } | null {
+  const numbered = entry.captures.map((c, i) => ({ ...c, number: i + 1 }));
+  const read = numbered.filter((c) => c.capture.page_code).at(-1);
+  if (read) return read;
+  const current = okSnapshotOf(chooseSnapshot(entry));
+  return numbered.find((c) => current && c.snapshot === current) ?? null;
+}
+
+/** The values of a capture's page code as one text, for search. */
+export function pageCodeText(capture: Capture): string {
+  const code = capture.page_code;
+  if (!code) return '';
+  return [...code.declared.map((d) => `${DECLARED_LABELS[d.field]}: ${d.value}`), ...code.trackers.map((t) => `${TRACKER_LABELS[t.kind]}: ${t.id}`)].join(' · ');
 }
 
 // ---------- Deleting data ----------

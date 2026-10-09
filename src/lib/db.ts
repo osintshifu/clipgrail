@@ -1,10 +1,10 @@
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, Session, Snapshot, SnapshotMeta, Source } from './model';
+import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, PageCode, Session, Snapshot, SnapshotMeta, Source } from './model';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 6;
+export const DB_SCHEMA_VERSION = 7;
 /** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
@@ -112,6 +112,10 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         // v6: sources can be marked important; recorded pages keep how they were reached. Earlier captures have no navigation recorded.
         defaults.sources.important = false;
         defaults.captures.navigation = null;
+      }
+      if (event.oldVersion >= 1 && event.oldVersion < 7) {
+        // v7: page and selection captures keep the page code read when they were clipped. Earlier captures have none.
+        defaults.captures.page_code = null;
       }
       for (const [store, fields] of Object.entries(defaults)) {
         if (Object.keys(fields).length && request.transaction) backfill(request.transaction.objectStore(store), fields);
@@ -340,6 +344,8 @@ export interface CaptureDraft {
   frame?: CaptureFrame | null;
   /** Pages saved by a recording and visits (see CaptureNavigation); absent otherwise. */
   navigation?: CaptureNavigation | null;
+  /** Page and selection captures: the page code read beside them (see PageCode); absent otherwise. */
+  page_code?: PageCode | null;
   /** Required for page, link and tab captures, absent for selections and visits. */
   snapshot: SnapshotDraft | null;
 }
@@ -415,6 +421,7 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     fragment: draft.fragment,
     frame: draft.frame ?? null,
     navigation: draft.navigation ?? null,
+    page_code: draft.page_code ?? null,
     snapshot_id: snapshotId,
     note: '',
   };

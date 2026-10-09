@@ -61,3 +61,34 @@ describe('selection in an embedded frame', () => {
     expect(top.saved && top.result.capture).toMatchObject({ found_on: null, frame: null, tab_title: 'Story' });
   });
 });
+
+describe('page code of a capture', () => {
+  it('keeps the page code read with a clipped page or selection, only when it is valid and from the page saved', async () => {
+    const db = await freshDb();
+    const tab = { id: 7, url: 'https://example.com/a', title: 'Page A' };
+    const code = {
+      declared: [{ field: 'site_name', value: 'Example', from: ['og:site_name'] }],
+      trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['inline_script'] }],
+    };
+    scriptReturns({ ...extraction('Page A text', { page_url: tab.url }), page_code: { ...code, extra: 'dropped' } });
+    const page = await capturePage(db, tab, INBOX_SESSION_ID);
+    expect(page.saved && page.result.capture.page_code).toEqual(code);
+
+    // A selection reads the page code with a script of its own, in the document it is saved from.
+    const selectionReads = (pageCode: unknown) =>
+      vi.spyOn(browser.scripting, 'executeScript').mockImplementation(async (injection) =>
+        [{ frameId: 0, result: 'files' in injection ? pageCode : { text: 'Selected words', url: tab.url } }] as never,
+      );
+    selectionReads({ ...code, page_url: tab.url });
+    const selection = await captureSelection(db, tab, INBOX_SESSION_ID);
+    expect(selection.saved && selection.result.capture.page_code).toEqual(code);
+    // Page code of a page that is no longer the one saved, or not valid, is left out; the selection is still saved.
+    selectionReads({ ...code, page_url: 'https://example.com/b' });
+    const moved = await captureSelection(db, tab, INBOX_SESSION_ID);
+    expect(moved.saved && moved.result.capture.page_code).toBeNull();
+    scriptReturns({ ...extraction('Page A text', { page_url: tab.url }), page_code: { ...code, trackers: [{ kind: 'gtm', id: 'not an ID', where: ['inline_script'] }] } });
+    const invalid = await capturePage(db, tab, INBOX_SESSION_ID);
+    expect(invalid.saved && invalid.result.capture.page_code).toBeNull();
+  });
+});
+

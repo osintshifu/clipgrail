@@ -10,8 +10,8 @@ Clicking the toolbar icon opens ClipGrail in a popup, which closes when you clic
 
 | Action | How | What is saved |
 |---|---|---|
-| Clip the current page | **Clip page**, Alt+Shift+K, or right-click > **Clip page to ClipGrail** | Readable text of the page |
-| Clip a selection | Select text, then **Selection** or right-click > **Clip selection to ClipGrail** | The selected text |
+| Clip the current page | **Clip page**, Alt+Shift+K, or right-click > **Clip page to ClipGrail** | Readable text of the page, and its page code |
+| Clip a selection | Select text, then **Selection** or right-click > **Clip selection to ClipGrail** | The selected text, and the page code |
 | Save a link | Right-click a link > **Save link to ClipGrail (not opened)** | The link address and, when it is unambiguous, the link text; the linked page is not opened or downloaded |
 | Save tabs | **Tabs ▾** > **This tab** (or **N selected tabs**) or **All tabs in this window** | The address and title of each tab; the pages are not read |
 | Record pages | The circle with a red dot at the top of the side panel; click the red square to stop | The address and title of every page you open in that window and the page whose link or form led to it; the pages are not read |
@@ -46,6 +46,8 @@ ClipGrail uses Mozilla Readability to get the article text of a page. When Reada
 
 Click a source to see its status and saved text (**Text**), every capture with its note (**Captures**), and when the snapshot was taken, the extraction method and the SHA-256 (**Details**). The SHA-256 identifies the exact saved text, so you can check that a copy is unchanged. It does not prove what the page showed or who published it.
 
+**Details** also show the page code read when the page was clipped. **Declared by the page** lists what the page says about itself: site name, author, publisher, publication date, type, X account, canonical address and generator, each with the tags it came from, such as `og:site_name` or `schema.org author`. **Trackers in the page code** lists the IDs of Google Analytics, Google Tag Manager, Meta Pixel and Google AdSense, each with where it was found: a script address, an inline script, a noscript frame, an ad tag or a tracking image. The same ID on several sites often points to the same operator. The page code is not part of the saved text or its SHA-256. A tracker that loads only after cookie consent, or runs on the website's server, is not seen, so a page with no trackers listed may still track. The side panel shows the newest capture that read the page code; the library shows the capture you are reading. For a page clipped before ClipGrail read the page code, **Details** show the site name, author, publication date and canonical address that Readability read with the text.
+
 ## Organizing sessions
 
 - Click the session name at the top of the panel to switch sessions, create one with **New session** or **Rename** the active one. The Inbox can't be renamed or archived.
@@ -60,7 +62,7 @@ Click a source to see its status and saved text (**Text**), every capture with i
 **Library** at the top of the side panel opens the library in a browser tab: all your sessions and sources in one place, for reading and finding material. The side panel stays the place for clipping and for working on the active session.
 
 - **All sources** lists the sources of every session, including the Inbox and archived sessions. Each source shows its label together with its session name, because every session has its own S1.
-- Search finds sources that contain every word you type, in their title, address, label (for example S3), notes, selections or saved text, including earlier versions. Case and diacritics do not matter, so `zrodlo` finds "Źródło". Put words in quotes to find a phrase. `site:example.org` keeps sources from that site and its subdomains; `after:2026-10-01` and `before:2026-10-31` keep sources with a capture on or after, or on or before, that day. While saved texts are read, the count shows **Searching saved text…**.
+- Search finds sources that contain every word you type, in their title, address, label (for example S3), notes, selections, saved text, including earlier versions, or page code, so `G-7QX2KF31PL` finds every source whose code had that Google Analytics ID. Case and diacritics do not matter, so `zrodlo` finds "Źródło". Put words in quotes to find a phrase. `site:example.org` keeps sources from that site and its subdomains; `after:2026-10-01` and `before:2026-10-31` keep sources with a capture on or after, or on or before, that day. While saved texts are read, the count shows **Searching saved text…**.
 - When a word is not in the title, address or label but in a note, a selection or saved text, the source shows the passage with the words marked and where it is: **Note**, **Selection**, **Saved text** or **Earlier text** with the capture number. Opening the source shows the capture where it was found; words in its selection or saved text are marked and the reader scrolls to the first.
 - You can show only one status, for example **Address only** to see what still has no text, show only sources marked **Important**, and sort by last capture or by date added.
 - **Timeline**, next to the name of a session, lists its captures and recorded visits in the order they happened, by day: a page opened while recording and how it was reached, visited again, clipped, a selection or a link saved. Clicking an event opens its source at that capture. Search and filters narrow the timeline to the events of the sources they keep, and `after:` and `before:` keep the events of those days. **All sources** has no timeline.
@@ -159,7 +161,7 @@ ClipGrail has no account, server or telemetry and loads no external fonts or scr
 | `tabs` (optional) | Reading the addresses and titles of tabs when you save tabs or record; Chrome asks for it the first time |
 | `webNavigation` (optional) | While recording, telling how each page was reached (a link, a form, the address bar, a bookmark, Back or Forward, a reload), so where a page was found and whether it was visited again is never guessed; Chrome asks for it the first time you record |
 
-ClipGrail reads the content of a tab only after you act on that tab. With the optional `tabs` permission it can also see the addresses and titles of open tabs, and reads them only when you save tabs or while you record. It does not access your browsing history list.
+ClipGrail reads the content of a tab only after you act on that tab. Reading the page code to find trackers loads nothing from them. With the optional `tabs` permission it can also see the addresses and titles of open tabs, and reads them only when you save tabs or while you record. It does not access your browsing history list.
 
 ClipGrail does not run in Incognito windows: Chrome does not offer to allow it there, so nothing you do in an Incognito window is saved.
 

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_BACKUP_BYTES } from '../src/lib/backup';
-import { fmtMegabytes } from '../src/lib/describe';
+import { PAGE_CODE_NOTE, fmtMegabytes, fmtTime } from '../src/lib/describe';
 import { commitCapture, createSession, listSessions, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { recordVisit } from '../src/lib/recording';
@@ -104,13 +104,25 @@ describe('side panel', () => {
     const db = await openDb();
     const second = await createSession(db, 'Second');
     const a = await commitCapture(db, await pageDraft('https://example.com/a', 'text A', '2026-10-05T10:00:00.000Z'));
-    const b = await commitCapture(db, await pageDraft('https://example.com/a', 'text A v2', '2026-10-05T10:01:00.000Z'));
+    const b = await commitCapture(db, {
+      ...(await pageDraft('https://example.com/a', 'text A v2', '2026-10-05T10:01:00.000Z')),
+      page_code: { declared: [{ field: 'site_name', value: 'Example', from: ['og:site_name'] }], trackers: [] },
+    });
     await updateSessionText(db, INBOX_SESSION_ID, { prompt: 'Initial prompt' });
     await import('../src/entrypoints/sidepanel/main');
     await vi.waitFor(() => expect(document.querySelectorAll('#source-list .src')).toHaveLength(1));
 
     // Two notes edited right after each other are both saved.
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
+    // Details show the page code of the newest capture that read it.
+    $('detail-tab-details').click();
+    expect(Array.from(document.querySelectorAll('#detail-section .page-code > :not(dl)'), (e) => e.textContent)).toEqual([
+      `Capture 2 · ${fmtTime('2026-10-05T10:01:00.000Z')}`,
+      'Declared by the page',
+      'Trackers in the page code',
+      'None found.',
+      PAGE_CODE_NOTE,
+    ]);
     $('detail-tab-captures').click();
     // A text that differs from an earlier one opens its comparison in the library.
     document.querySelector<HTMLButtonElement>('.compare-link')!.click();

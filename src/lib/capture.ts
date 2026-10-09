@@ -1,15 +1,18 @@
 import { browser } from 'wxt/browser';
 import type { CaptureDraft, CommitResult } from './db';
 import { commitCapture } from './db';
-import type { CaptureFrame, PageExtraction } from './model';
+import type { CaptureFrame, PageCode, PageExtraction } from './model';
 import { sourceLabel } from './model';
 import { describeFailure, frameSourceUnestablished } from './selection';
 import type { SnapshotDraft } from './snapshot';
 import { buildFragment, buildSnapshotDraft, failedSnapshotDraft } from './snapshot';
 import { frameAddress, isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
+import { cleanPageCode } from './page-code';
 
 /** Longest wait for the extractor before the capture is saved as failed (timeout). */
 export const EXTRACTION_TIMEOUT_MS = 30_000;
+/** Reading the page code beside a selection; a page that takes longer is saved without it. */
+const PAGE_CODE_TIMEOUT_MS = 5_000;
 
 export type NotSavedReason =
   | 'no_tab'
@@ -141,6 +144,7 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
   if (!dedupUrl) return notSaved('blocked_page');
 
   let snapshot: SnapshotDraft;
+  let pageCode: PageCode | null = null;
   try {
     const results = await withTimeout(
       browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['/extract.js'] }),
@@ -153,6 +157,7 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
     snapshot = isPageExtraction(value)
       ? await buildSnapshotDraft(value, new Date().toISOString())
       : failedSnapshotDraft('extraction_error', 'The extractor returned no result.', new Date().toISOString());
+    if (isPageExtraction(value)) pageCode = cleanPageCode(value.page_code);
   } catch (error) {
     const now = new Date().toISOString();
     if (error instanceof DOMException && error.name === 'TimeoutError') {
@@ -177,8 +182,23 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
     found_on: null,
     anchor_text: null,
     fragment: null,
+    page_code: pageCode,
     snapshot,
   });
+}
+
+/**
+ * The page code of the document a selection is saved from: the frame when the frame is the source, else the page.
+ * Null when it cannot be read or the document is no longer at the source's address.
+ */
+async function selectionPageCode(tabId: number, frameId: number, dedupUrl: string): Promise<PageCode | null> {
+  try {
+    const results = await withTimeout(browser.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['/page-code.js'] }), PAGE_CODE_TIMEOUT_MS);
+    const value = results[0]?.result as { page_url?: unknown } | undefined;
+    return typeof value?.page_url === 'string' && normalizeUrl(value.page_url) === dedupUrl ? cleanPageCode(value) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -246,10 +266,11 @@ export async function captureSelection(
 
   const target = selectionTarget(tab.url, frameId, frameUrl);
   const frameSource = target.url !== tab.url;
+  const dedupUrl = frameSource ? normalizeUrl(target.url)! : pageUrl;
   return save(db, {
     session_id: sessionId,
     kind: 'selection',
-    dedup_url: frameSource ? normalizeUrl(target.url)! : pageUrl,
+    dedup_url: dedupUrl,
     captured_at: capturedAt,
     original_url: target.url,
     // The tab title belongs to the page, not to a frame saved as its own source.
@@ -258,6 +279,7 @@ export async function captureSelection(
     anchor_text: null,
     fragment,
     frame: target.frame,
+    page_code: await selectionPageCode(tab.id, frameSource ? frameId : 0, dedupUrl),
     snapshot: null,
   });
 }

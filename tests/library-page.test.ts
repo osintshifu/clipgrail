@@ -41,7 +41,10 @@ describe('library page', () => {
     const db = await openDb();
     const strike = await createSession(db, 'Port strike');
     const first = await commitCapture(db, await pageDraft('https://docs.example.org/report', 'Version one of the report.', '2026-10-01T10:00:00.000Z'));
-    await commitCapture(db, await pageDraft('https://docs.example.org/report', 'Version two of the report.', '2026-10-05T10:00:00.000Z'));
+    await commitCapture(db, {
+      ...(await pageDraft('https://docs.example.org/report', 'Version two of the report.', '2026-10-05T10:00:00.000Z')),
+      page_code: { declared: [], trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['inline_script', 'noscript'] }] },
+    });
     const link = await commitCapture(db, linkDraft('https://news.example.net/statement', '2026-10-05T11:00:00.000Z', 'https://news.example.net/', strike.id));
     // A notice that changed in its first and last paragraphs, with four unchanged paragraphs between.
     const paragraphs = ['Berths 4 to 7 are closed.', 'Tugs are mandatory.', 'Waste reception is suspended.', 'Security level 1.', 'Dues are waived.', 'Questions: channel 12.'];
@@ -59,6 +62,8 @@ describe('library page', () => {
     ]);
     expect(versions()[0]!.querySelector('.ver-meta')?.textContent).toContain('Text differs from capture\u00a01');
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
+    // Details show the trackers the viewed capture read from the page code.
+    expect($('reader').querySelector('.page-code dl')?.textContent).toBe('Google Tag ManagerGTM-5JX9ZQ · inline script, noscript frame');
 
     // An earlier version is shown for reading; the current text stays marked as the one Research Jobs use.
     versions()[1]!.click();

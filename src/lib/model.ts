@@ -59,6 +59,33 @@ export interface CaptureNavigation {
   in_page: boolean;
 }
 
+/** What a page declares about itself in its code: OpenGraph, X cards, schema.org data, meta tags and its canonical link. */
+export type DeclaredField = 'site_name' | 'author' | 'publisher' | 'published' | 'type' | 'x_account' | 'canonical' | 'generator';
+
+export interface DeclaredValue {
+  field: DeclaredField;
+  value: string;
+  /** The tags it was read from, such as "og:site_name" or "schema.org author" (see DECLARED_TAGS). */
+  from: string[];
+}
+
+export type TrackerKind = 'ga4' | 'ua' | 'gtm' | 'meta_pixel' | 'adsense';
+
+/** Where in the page code a tracker ID was found. */
+export type TrackerPlace = 'script_address' | 'inline_script' | 'noscript' | 'ad_tag' | 'image';
+
+export interface Tracker {
+  kind: TrackerKind;
+  id: string;
+  where: TrackerPlace[];
+}
+
+/** Read from the page code when a page or a selection was clipped. Not part of the saved text or its SHA-256. */
+export interface PageCode {
+  declared: DeclaredValue[];
+  trackers: Tracker[];
+}
+
 /** Text the user selected on a page. */
 export interface Fragment {
   text: string;
@@ -102,6 +129,8 @@ export interface Capture {
   frame: CaptureFrame | null;
   /** Pages saved by a recording, and visits: how the page was reached. Null otherwise, and on every capture made before it was recorded. */
   navigation: CaptureNavigation | null;
+  /** Page and selection captures: what the page code declared and the trackers in it. Null when it was not read, and on every capture made before it was. */
+  page_code: PageCode | null;
   /** Page, link and tab captures have a snapshot; selection captures do not. */
   snapshot_id: string | null;
   /** Private note. */
@@ -185,7 +214,7 @@ export function sourceLabel(source: Pick<Source, 'number'>): string {
 }
 
 /** Result returned by the extractor script running in the page. */
-export type PageExtraction =
+export type PageExtraction = (
   | {
       ok: true;
       text: string;
@@ -208,4 +237,8 @@ export type PageExtraction =
       error_message: string;
       page_url: string;
       http_status: number | null;
-    };
+    }
+) & {
+  /** Read from the page code beside the text; null when that failed. */
+  page_code?: PageCode | null;
+};

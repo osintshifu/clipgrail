@@ -5,6 +5,7 @@ import type { SearchQuery, Snippet, TextHit } from './search';
 import { fold, inDays, onSite, parseSearch, searchable, snippetOf } from './search';
 import type { SourceStatus } from './selection';
 import { capturedTitle, chooseSnapshot } from './selection';
+import { pageCodeText } from './describe';
 
 /** A source as the library reads it: captures with snapshot metadata, texts loaded on demand. */
 export type LibraryEntry = SourceEntry<SnapshotMeta>;
@@ -109,13 +110,17 @@ interface Field {
   capture_id: string | null;
 }
 
-/** Notes and selections of a source, newest capture first: the parts a search finds that the list does not show. */
+/** Notes, selections and page code of a source, newest capture first: the parts a search finds that the list does not show. */
 function fieldsOf(entry: LibraryEntry): Field[] {
   const fields: Field[] = [];
   if (entry.source.note) fields.push(noteField(entry.source.note, null));
   const captures = [...entry.captures].reverse();
   for (const { capture } of captures) if (capture.note) fields.push(noteField(capture.note, capture.id));
   for (const { capture } of captures) if (capture.fragment) fields.push({ where: 'Selection', ...fragmentText(capture.fragment), capture_id: capture.id });
+  for (const { capture } of captures) {
+    const text = pageCodeText(capture);
+    if (text) fields.push({ where: 'Page code', text, folded: fold(text), capture_id: capture.id });
+  }
   return fields;
 }
 

@@ -4,7 +4,7 @@ import { commitCapture, loadSessionView } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { chooseSnapshot } from '../src/lib/selection';
 import { buildSnapshotDraft } from '../src/lib/snapshot';
-import { STATUS_LABELS, comparisonLine, fmtTime, sourceMeta, statusSentence, textComparisons } from '../src/lib/describe';
+import { PAGE_CODE_NOTE, STATUS_LABELS, comparisonLine, fmtTime, pageCodeCapture, pageCodeView, sourceMeta, statusSentence, textComparisons } from '../src/lib/describe';
 import { extraction, failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 describe('source status texts', () => {
@@ -80,3 +80,37 @@ describe('text comparisons', () => {
     ]);
   });
 });
+
+describe('page code in details', () => {
+  it('shows the values and trackers a capture read with where each came from, and what Readability read for a page clipped before', async () => {
+    const db = await freshDb();
+    const url = 'https://example.com/notice';
+    await commitCapture(db, await pageDraft(url, 'Clipped before page code was read.', '2026-10-09T10:00:00.000Z'));
+    const [before] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    const old = pageCodeCapture(before!)!;
+    expect(pageCodeView(old.capture, old.snapshot)).toEqual({
+      declared: [],
+      trackers: null,
+      note: 'The page code was not read: this capture was made before ClipGrail read it.',
+    });
+
+    await commitCapture(db, {
+      ...(await pageDraft(url, 'Clipped with page code.', '2026-10-09T11:00:00.000Z')),
+      page_code: {
+        declared: [{ field: 'published', value: '2026-10-09T09:12:00+02:00', from: ['article:published_time', 'schema.org datePublished'] }],
+        trackers: [{ kind: 'ga4', id: 'G-7QX2KF31PL', where: ['script_address', 'inline_script'] }],
+      },
+    });
+    await commitCapture(db, await selectionDraft(url, 'Clipped', '2026-10-09T12:00:00.000Z'));
+    const [entry] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    // The side panel shows the newest capture that read the page code, not a later selection made without it.
+    const shown = pageCodeCapture(entry!)!;
+    expect(shown.number).toBe(2);
+    expect(pageCodeView(shown.capture, shown.snapshot)).toEqual({
+      declared: [{ label: 'Published', value: '2026-10-09T09:12:00+02:00', from: 'article:published_time, schema.org datePublished', mono: false }],
+      trackers: [{ label: 'Google Analytics 4', value: 'G-7QX2KF31PL', from: 'script address, inline script', mono: true }],
+      note: PAGE_CODE_NOTE,
+    });
+  });
+});
+
