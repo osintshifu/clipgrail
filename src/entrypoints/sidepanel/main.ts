@@ -84,6 +84,7 @@ import {
   captureExtra,
   captureHead,
   captureLine,
+  comparisonLine,
   detailRows,
   fmtBytes,
   fmtMegabytes,
@@ -96,6 +97,7 @@ import {
   sourceMeta,
   statusSentence,
   storageLines,
+  textComparisons,
 } from '../../lib/describe';
 
 // ---------- Helpers ----------
@@ -876,9 +878,11 @@ function pathBlocks(entry: SourceEntry): Child[] {
 }
 
 function captureCards(entry: SourceEntry): Child[] {
+  const compared = textComparisons(entry.captures);
   return entry.captures.map(({ capture, snapshot }, i) => {
     const head = captureHead(capture, i);
     const line = captureLine(capture, snapshot);
+    const comparison = compared.get(capture.id);
     const extra = captureExtra(capture, entry.source.dedup_url);
     const note = noteEditor({
       id: `note-${capture.id}`, key: `panel:capture:${capture.id}`,
@@ -891,6 +895,7 @@ function captureCards(entry: SourceEntry): Child[] {
     return h('div', { class: 'capture-card' }, [
       h('div', { class: 'head' }, [h('span', { class: 'capture-title' }, [head]), h('span', { class: 'muted' }, [fmtTime(capture.captured_at)])]),
       line ? h('div', { class: 'line' }, [line]) : null,
+      comparison ? h('div', { class: 'line' }, [comparisonLine(comparison)]) : null,
       capture.fragment ? h('pre', { class: 'text-box excerpt' }, [capture.fragment.text]) : null,
       extra ? h('div', { class: 'line' }, [extra]) : null,
       note,

@@ -1,4 +1,4 @@
-import type { DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
+import type { CaptureEntry, DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
 import type { Capture, CaptureNavigation, OkSnapshotMeta, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
@@ -140,6 +140,38 @@ export function captureLine(capture: Capture, snapshot: SnapshotMeta | undefined
     return capture.kind === 'tab' ? 'Address only (tab saved, not read)' : 'Address only (link saved, not opened)';
   }
   return '';
+}
+
+export interface TextComparison {
+  /** True when the earlier capture saved exactly the same text (same SHA-256). */
+  same: boolean;
+  /** The latest earlier capture with the same text, else the nearest earlier capture with text. */
+  earlier: Capture;
+  /** Its number in the Captures list. */
+  number: number;
+}
+
+/**
+ * How each capture with saved page text after the first compares with an earlier one, keyed by capture id.
+ * Captures are oldest first and numbered as in the Captures list.
+ */
+export function textComparisons(captures: Array<CaptureEntry<SnapshotMeta>>): Map<string, TextComparison> {
+  const compared = new Map<string, TextComparison>();
+  const earlier: Array<{ capture: Capture; number: number; sha256: string }> = [];
+  captures.forEach(({ capture, snapshot }, i) => {
+    if (snapshot?.status !== 'ok') return;
+    const same = earlier.findLast((e) => e.sha256 === snapshot.sha256);
+    const match = same ?? earlier.at(-1);
+    if (match) compared.set(capture.id, { same: !!same, earlier: match.capture, number: match.number });
+    earlier.push({ capture, number: i + 1, sha256: snapshot.sha256 });
+  });
+  return compared;
+}
+
+/** "Same text as capture 2" or "Text differs from capture 2", for the Captures lists. */
+export function comparisonLine(comparison: TextComparison): string {
+  // A no-break space keeps the number on the line of the word "capture".
+  return `${comparison.same ? 'Same text as' : 'Text differs from'} capture\u00a0${comparison.number}`;
 }
 
 /** What the capture says about an embedded frame it was selected in, or null. */

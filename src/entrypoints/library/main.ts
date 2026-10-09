@@ -9,6 +9,7 @@ import {
   captureDetailRows,
   captureHead,
   captureLine,
+  comparisonLine,
   fmtNumber,
   fmtTime,
   hostOf,
@@ -19,6 +20,7 @@ import {
   sourceMeta,
   sourceRows,
   statusSentence,
+  textComparisons,
 } from '../../lib/describe';
 import { $, fill, h } from '../../lib/dom';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
@@ -652,10 +654,10 @@ function editNote(kind: 'source' | 'capture', id: string, value: string, label: 
   });
 }
 
-function versionButton(version: Version, checked: boolean): HTMLButtonElement {
+function versionButton(version: Version, checked: boolean, compared: string | undefined): HTMLButtonElement {
   const { capture, snapshot } = version.capture;
   const note = capture.note.trim();
-  const meta = [fmtTime(capture.captured_at), captureLine(capture, snapshot), note ? `note: “${note.length > 80 ? `${note.slice(0, 80)}…` : note}”` : '']
+  const meta = [fmtTime(capture.captured_at), captureLine(capture, snapshot), compared ?? '', note ? `note: “${note.length > 80 ? `${note.slice(0, 80)}…` : note}”` : '']
     .filter(Boolean)
     .join(' · ');
   return h(
@@ -830,11 +832,15 @@ function renderReaderContents(): void {
   const current = versions.find((v) => v.current);
   const viewed = versions.find((v) => v.capture.capture.id === viewedCaptureId) ?? current ?? versions[0]!;
   viewedCaptureId = viewed.capture.capture.id;
+  const compared = textComparisons(entry.captures);
   const url = entry.source.dedup_url;
   const group = h(
     'div',
     { attrs: { role: 'radiogroup', 'aria-label': `Captures of ${row.label}` } },
-    versions.map((v) => versionButton(v, v === viewed)),
+    versions.map((v) => {
+      const comparison = compared.get(v.capture.capture.id);
+      return versionButton(v, v === viewed, comparison && comparisonLine(comparison));
+    }),
   );
   group.addEventListener('keydown', (event) => {
     const moves: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };

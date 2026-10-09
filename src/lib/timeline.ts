@@ -3,7 +3,8 @@
  * data already read for the library and the side panel.
  */
 import type { SourceEntry } from './db';
-import { fmtNumber, hostOf, navigationWords } from './describe';
+import type { TextComparison } from './describe';
+import { fmtNumber, fmtTime, hostOf, navigationWords, textComparisons } from './describe';
 import type { Capture, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import { describeFailure } from './selection';
@@ -57,7 +58,14 @@ export interface TimelineEvent {
   detail: string;
 }
 
-function eventOf(entry: Entry, capture: Capture, snapshot: SnapshotMeta | undefined, byAddress: Map<string, Entry>): TimelineEvent {
+/** The comparison of a clip on the timeline, which shows no capture numbers: the earlier clip by its time, with its day when that differs. */
+function comparedByTime(comparison: TextComparison, at: string): string {
+  const time = fmtTime(comparison.earlier.captured_at);
+  const when = time.slice(0, 10) === fmtTime(at).slice(0, 10) ? time.slice(11) : time;
+  return `${comparison.same ? 'Same text as' : 'Text differs from'} the clip at ${when}`;
+}
+
+function eventOf(entry: Entry, capture: Capture, snapshot: SnapshotMeta | undefined, byAddress: Map<string, Entry>, comparison?: TextComparison): TimelineEvent {
   const how = arrival(capture, byAddress) ?? '';
   const event = (verb: string, detail: string) => ({ entry, capture, verb, detail });
   switch (capture.kind) {
@@ -71,12 +79,10 @@ function eventOf(entry: Entry, capture: Capture, snapshot: SnapshotMeta | undefi
       return event('Link saved, not opened', capture.found_on ? `found on ${pageRef(capture.found_on, byAddress)}` : '');
     case 'page':
       if (snapshot?.status === 'ok') {
-        return event(
-          'Clipped',
-          snapshot.truncated
-            ? `partial text, ${fmtNumber(snapshot.character_count)} of ${fmtNumber(snapshot.original_character_count)} characters`
-            : `${fmtNumber(snapshot.character_count)} characters`,
-        );
+        const saved = snapshot.truncated
+          ? `partial text, ${fmtNumber(snapshot.character_count)} of ${fmtNumber(snapshot.original_character_count)} characters`
+          : `${fmtNumber(snapshot.character_count)} characters`;
+        return event('Clipped', comparison ? `${saved} · ${comparedByTime(comparison, capture.captured_at)}` : saved);
       }
       return event('Clip failed', snapshot?.status === 'failed' ? describeFailure(snapshot) : '');
   }
@@ -84,9 +90,12 @@ function eventOf(entry: Entry, capture: Capture, snapshot: SnapshotMeta | undefi
 
 /** Every capture and visit of the sources, oldest first. */
 export function timelineEvents(entries: Entry[], byAddress: Map<string, Entry> = sourcesByAddress(entries)): TimelineEvent[] {
-  const events = entries.flatMap((entry) => [
-    ...entry.captures.map(({ capture, snapshot }) => eventOf(entry, capture, snapshot, byAddress)),
-    ...entry.visits.map((visit) => eventOf(entry, visit, undefined, byAddress)),
-  ]);
+  const events = entries.flatMap((entry) => {
+    const compared = textComparisons(entry.captures);
+    return [
+      ...entry.captures.map(({ capture, snapshot }) => eventOf(entry, capture, snapshot, byAddress, compared.get(capture.id))),
+      ...entry.visits.map((visit) => eventOf(entry, visit, undefined, byAddress)),
+    ];
+  });
   return events.sort((a, b) => a.capture.captured_at.localeCompare(b.capture.captured_at) || a.capture.id.localeCompare(b.capture.id));
 }

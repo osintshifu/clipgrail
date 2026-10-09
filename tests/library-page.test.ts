@@ -52,6 +52,7 @@ describe('library page', () => {
       ['Capture 2 · Page', 'true', true],
       ['Capture 1 · Page', 'false', false],
     ]);
+    expect(versions()[0]!.querySelector('.ver-meta')?.textContent).toContain('Text differs from capture\u00a01');
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
 
     // An earlier version is shown for reading; the current text stays marked as the one Research Jobs use.

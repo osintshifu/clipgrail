@@ -4,7 +4,7 @@ import { commitCapture, loadSessionView } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { chooseSnapshot } from '../src/lib/selection';
 import { buildSnapshotDraft } from '../src/lib/snapshot';
-import { STATUS_LABELS, fmtTime, sourceMeta, statusSentence } from '../src/lib/describe';
+import { STATUS_LABELS, comparisonLine, fmtTime, sourceMeta, statusSentence, textComparisons } from '../src/lib/describe';
 import { extraction, failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 describe('source status texts', () => {
@@ -53,5 +53,30 @@ describe('source status texts', () => {
     expect(sourceMeta(entry!)).toBe('10 chars · 2 captures · latest attempt failed');
     expect(statusSentence(entry!)).toMatch(/^Readable text saved .* · capture 1 of 2\. Latest attempt (.+) failed: HTTP 404\.$/);
     expect(statusSentence(entry!)).toContain(`Latest attempt ${fmtTime('2026-10-06T12:20:00.000Z')} failed`);
+  });
+});
+
+describe('text comparisons', () => {
+  it('mark a saved text as the same as the latest earlier capture with that SHA-256, else as different from the nearest earlier text', async () => {
+    const db = await freshDb();
+    const url = 'https://example.com/notice';
+    const at = (minute: number) => `2026-10-09T10:${String(minute).padStart(2, '0')}:00.000Z`;
+    await commitCapture(db, await pageDraft(url, 'Berths 4 to 7 are closed.', at(1)));
+    await commitCapture(db, await pageDraft(url, 'Berths 4 to 7 are closed.', at(2)));
+    await commitCapture(db, await selectionDraft(url, 'Berths 4 to 7', at(3)));
+    await commitCapture(db, failedDraft(url, at(4)));
+    await commitCapture(db, await pageDraft(url, 'Berths 4 to 8 are closed.', at(5)));
+    await commitCapture(db, await pageDraft(url, 'Berths 4 to 7 are closed.', at(6)));
+
+    const [entry] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    const compared = textComparisons(entry!.captures);
+    expect(entry!.captures.map((c) => { const comparison = compared.get(c.capture.id); return comparison ? comparisonLine(comparison) : null; })).toEqual([
+      null,
+      'Same text as capture\u00a01',
+      null,
+      null,
+      'Text differs from capture\u00a02',
+      'Same text as capture\u00a02',
+    ]);
   });
 });
