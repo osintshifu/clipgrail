@@ -437,11 +437,14 @@ export interface SavedCapture {
  * Undo of saved tabs or a recording, which can come long after the first
  * page was saved. Captures the user has worked on since stay: a capture with
  * a note, or one whose source has a note or was moved to another session.
+ * `stayed` counts the removed captures whose source stays with other captures,
+ * such as a clip of the page made since.
  */
-export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promise<{ removed: number; kept: number }> {
+export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promise<{ removed: number; kept: number; stayed: number }> {
   return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
     let removed = 0;
     let kept = 0;
+    let stayed = 0;
     for (const { capture_id, session_id } of saved) {
       const capture = (await result(tx.objectStore('captures').get(capture_id))) as Capture | undefined;
       if (!capture) continue;
@@ -450,10 +453,10 @@ export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promi
         kept += 1;
         continue;
       }
-      await removeCapture(tx, capture);
+      if (!(await removeCapture(tx, capture))) stayed += 1;
       removed += 1;
     }
-    return { removed, kept };
+    return { removed, kept, stayed };
   });
 }
 

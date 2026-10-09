@@ -1683,7 +1683,9 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       rows[Math.min(n - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]!.box.focus();
     } else if (event.key === 'o' || event.key === 'O') {
-      browser.tabs.create({ url: rows[at]!.page.source.dedup_url, windowId }).catch((error: unknown) => sheetError(`Page not opened: ${errorText(error)}`));
+      // A new active tab would close the toolbar popup, and the review with it.
+      const active = !document.documentElement.classList.contains('popup');
+      browser.tabs.create({ url: rows[at]!.page.source.dedup_url, windowId, active }).catch((error: unknown) => sheetError(`Page not opened: ${errorText(error)}`));
     } else return;
     event.preventDefault();
   });
@@ -1694,10 +1696,14 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
     undoSavedCaptures(db, chosen).then(
       (result) => {
         if (sheetKind === 'review-recording') closeSheet();
-        const kept = n - chosen.length + result.kept;
-        const worked = result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '';
-        if (result.removed) showToast(`${plural(result.removed, 'recorded page')} removed. ${kept} kept.${worked ? ` ${worked}` : ''}`);
-        else showToast(worked ? `Nothing removed: ${worked}` : 'Those pages were already removed.');
+        const gone = result.removed - result.stayed;
+        const kept = n - chosen.length + result.kept + result.stayed;
+        const reasons = [
+          result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '',
+          result.stayed ? `${plural(result.stayed, 'page')} you clipped ${result.stayed === 1 ? 'is' : 'are'} kept.` : '',
+        ].filter(Boolean).join(' ');
+        if (gone) showToast(`${plural(gone, 'recorded page')} removed. ${kept} kept.${reasons ? ` ${reasons}` : ''}`);
+        else showToast(reasons ? `Nothing removed: ${reasons}` : 'Those pages were already removed.');
         void refreshData();
       },
       (error: unknown) => {

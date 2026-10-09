@@ -384,7 +384,7 @@ describe('side panel', () => {
     const second = rows[1]!.querySelector('input')!;
     expect(document.activeElement).toBe(second);
     second.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true }));
-    expect(fake.created.at(-1)).toEqual({ url: 'https://www.example.com/cookies', windowId: 1 });
+    expect(fake.created.at(-1)).toEqual({ url: 'https://www.example.com/cookies', windowId: 1, active: true });
     second.click();
     expect(rows[1]!.classList.contains('removed')).toBe(true);
     expect(remove.textContent).toBe('Remove 1 page');

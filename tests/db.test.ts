@@ -225,18 +225,19 @@ describe('commitCaptures', () => {
 });
 
 describe('undoSavedCaptures', () => {
-  it('undoes saved tabs or a recording but keeps the pages with a note or moved since', async () => {
+  it('undoes saved tabs or a recording but keeps the pages with a note or moved since, and the sources clipped since', async () => {
     const db = await freshDb();
     const other = await createSession(db, 'Port strike');
     const at = '2026-10-07T09:00:00.000Z';
-    const saved = await commitCaptures(db, ['a', 'b', 'c', 'd'].map((p) => linkDraft(`https://example.com/${p}`, at, URL_A)));
+    const saved = await commitCaptures(db, ['a', 'b', 'c', 'd', 'e'].map((p) => linkDraft(`https://example.com/${p}`, at, URL_A)));
     await updateSourceNote(db, saved[0]!.source.id, 'Source note');
     await updateCaptureNote(db, saved[1]!.capture.id, 'Capture note');
     await moveSource(db, saved[2]!.source.id, other.id);
+    await commitCapture(db, linkDraft('https://example.com/e', '2026-10-07T09:05:00.000Z', URL_A));
     const items = saved.map((r) => ({ capture_id: r.capture.id, session_id: r.capture.session_id }));
-    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 1, kept: 3 });
-    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 0, kept: 3 });
-    expect((await readAllData(db)).sources.map((s) => (s as { dedup_url: string }).dedup_url).sort()).toEqual(['a', 'b', 'c'].map((p) => `https://example.com/${p}`));
+    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 2, kept: 3, stayed: 1 });
+    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 0, kept: 3, stayed: 0 });
+    expect((await readAllData(db)).sources.map((s) => (s as { dedup_url: string }).dedup_url).sort()).toEqual(['a', 'b', 'c', 'e'].map((p) => `https://example.com/${p}`));
   });
 });
 
