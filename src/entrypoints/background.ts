@@ -1,17 +1,20 @@
 import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import type { CaptureOutcome, TabInfo } from '../lib/capture';
-import { captureLink, capturePage, captureSelection } from '../lib/capture';
+import { captureAddress, captureLink, capturePage, captureSelection, clipSummary, savedText } from '../lib/capture';
 import { announceDataChange } from '../lib/changes';
-import { openDb, saveThumbnail, setWriteListener } from '../lib/db';
-import type { ClipResponse, RecordResponse } from '../lib/messages';
-import { isClipRequest, isFromOwnPage, isRecordRequest } from '../lib/messages';
+import { clipTargets, listSessions, loadSessionView, openDb, saveThumbnail, setWriteListener, undoSavedCaptures } from '../lib/db';
+import type { DestinationId } from '../lib/destinations';
+import { DESTINATIONS } from '../lib/destinations';
+import { oneSourceJob } from '../lib/research-job';
+import type { ClipResponse, ClipSourcesRequest, OffscreenCopy, RecordResponse } from '../lib/messages';
+import { isClipCancelRequest, isClipRequest, isClipSourcesRequest, isFromOwnPage, isRecordRequest } from '../lib/messages';
 import { openLibrary } from '../lib/library-tab';
 import { publishNotice } from '../lib/notice';
-import { OPEN_MODE_KEY, getActiveSessionId, getExcludedSites, getOpenMode, resolveActiveSessionId } from '../lib/settings';
+import { OPEN_MODE_KEY, getActiveSessionId, getExcludedSites, getJobSettings, getOpenMode, resolveActiveSessionId } from '../lib/settings';
 import { captureThumbnail } from '../lib/thumbnail';
 import type { Recording, TrailEntry } from '../lib/recording';
-import { RECORDING_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
+import { RECORDING_KEY, REVIEW_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
 import { plural } from '../lib/text';
 import { normalizeUrl } from '../lib/url';
 
@@ -54,6 +57,167 @@ async function run(
     const message = `Capture failed: ${error instanceof Error ? error.message : String(error)}`;
     await publishNotice({ window_id: windowId ?? null, level: 'error', text: message, capture_id: null });
     return { saved: false, message };
+  }
+}
+
+/** Page menu items that clip the page or the selection and open a chat with a job of it. */
+const OPEN_IN: Record<string, DestinationId> = { 'open-in-chatgpt': 'chatgpt', 'open-in-claude': 'claude', 'open-in-gemini': 'gemini', 'open-in-perplexity': 'perplexity' };
+
+/** Copies run one at a time: each opens and closes the hidden clipboard page. */
+let copyWork: Promise<unknown> = Promise.resolve();
+
+/** Copies text through the hidden clipboard page; returns why it failed, or null once copied. Needs clipboardWrite. */
+function copyText(text: string): Promise<string | null> {
+  const next = copyWork.then(() => copyOnce(text));
+  copyWork = next.catch(() => undefined);
+  return next;
+}
+
+async function copyOnce(text: string): Promise<string | null> {
+  try {
+    if (!(await browser.offscreen.hasDocument())) {
+      await browser.offscreen.createDocument({ url: 'offscreen.html', reasons: ['CLIPBOARD'], justification: 'Copy a job to the clipboard for the chat it is opened in.' });
+    }
+    const message: OffscreenCopy = { type: 'offscreen-copy', text };
+    const response = (await browser.runtime.sendMessage(message)) as { copied?: boolean } | undefined;
+    return response?.copied ? null : 'the browser did not copy it';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    void browser.offscreen.closeDocument().catch(() => undefined);
+  }
+}
+
+/**
+ * Clips the page or the selection to the active session and makes a job of that one source: the session's prompt
+ * and settings, its text in full or only this selection. The job is copied, then the chat opens in a tab next to
+ * the page for the user to paste it. The job is not kept in the session.
+ */
+async function openInChat(
+  destination: DestinationId,
+  tab: TabInfo & { index?: number },
+  selection: { frameId?: number; frameUrl?: string; text?: string } | null,
+  copyAllowed: Promise<boolean>,
+): Promise<void> {
+  const windowId = tab.windowId;
+  const notice = (level: 'info' | 'error', text: string, captureId: string | null = null) =>
+    publishNotice({ window_id: windowId ?? null, level, text, capture_id: captureId });
+  try {
+    if (!(await copyAllowed.catch(() => false))) {
+      return void (await notice('error', "Not opened: ClipGrail needs Chrome's permission to copy the job to the clipboard."));
+    }
+    const db = await getDb();
+    const sessionId = await resolveActiveSessionId(db);
+    const thumbnail = captureThumbnail(windowId);
+    const outcome = selection
+      ? await captureSelection(db, tab, sessionId, { frameId: selection.frameId, frameUrl: selection.frameUrl, menuSelectionText: selection.text })
+      : await capturePage(db, tab, sessionId);
+    if (!outcome.saved) return void (await report(outcome, windowId));
+    const image = await thumbnail;
+    if (image) await saveThumbnail(db, outcome.result.capture.id, image).catch(() => undefined);
+    // A page whose text could not be read has nothing to send.
+    if (!selection && outcome.result.snapshot?.status !== 'ok') return void (await report(outcome, windowId));
+    const clipped = { source_id: outcome.result.source.id, capture_id: outcome.result.capture.id };
+    const view = await loadSessionView(db, sessionId);
+    const job = oneSourceJob(view, await getJobSettings(sessionId), clipped, selection ? 'selections' : 'full', crypto.randomUUID(), new Date().toISOString());
+    const adapter = DESTINATIONS[destination];
+    const failed = await copyText(job.text);
+    if (failed) {
+      return void (await notice('error', `${outcome.message}. The job could not be copied (${failed}), so ${adapter.name} was not opened. Use Create job in the side panel.`, outcome.result.capture.id));
+    }
+    await browser.tabs.create({ url: adapter.launch_url!, windowId, ...(tab.index === undefined ? {} : { index: tab.index + 1 }) });
+    await notice('info', 'Job copied. Paste it into the chat.', outcome.result.capture.id);
+  } catch (error) {
+    await notice('error', `Not opened: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
+  }
+}
+
+/** Starts recording from the page menu, with the page it was used on as the first page. */
+function recordFromMenu(windowId: number, tabId: number): void {
+  const notice = (level: 'info' | 'error', text: string) => publishNotice({ window_id: windowId, level, text, capture_id: null });
+  // Asked in the click itself: Chrome shows its permission prompt only for a user action.
+  browser.permissions.request({ permissions: ['tabs', 'webNavigation'] }).then(
+    async (granted) => {
+      if (!granted) return notice('error', "Recording not started: ClipGrail needs Chrome's permission to see the pages you open.");
+      await serial(() => startRecording(windowId));
+      recordSoon(tabId);
+      const db = await getDb();
+      const sessionId = await resolveActiveSessionId(db);
+      const name = (await listSessions(db)).find((s) => s.id === sessionId)?.name ?? 'the active session';
+      await notice('info', `Recording. Pages you open in this window are saved to ${name} as addresses.`);
+    },
+    (error: unknown) => notice('error', `Recording not started: ${error instanceof Error ? error.message : String(error)}`),
+  ).catch(() => undefined);
+}
+
+/** Stops the recording from the page menu; the panel of the recorded window shows the review. */
+function stopFromMenu(windowId: number | undefined): void {
+  void serial(stopRecording)
+    .then((result) => browser.storage.session.set({ [REVIEW_KEY]: { ...result, window_id: windowId ?? null, at: Date.now() } }))
+    .catch(() => undefined);
+}
+
+/** Clips run one at a time, so a second request waits instead of opening its pages alongside. */
+let clipWork: Promise<unknown> = Promise.resolve();
+function serialClip<T>(work: () => Promise<T>): Promise<T> {
+  const next = clipWork.then(work, work);
+  clipWork = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * Clip requests waiting for Chrome to allow their sites, one per window, in session storage: the service worker
+ * may stop while Chrome asks, and starts again when the sites are allowed. A request not allowed in time is dropped.
+ */
+const PENDING_CLIPS_KEY = 'pendingClips';
+const PENDING_CLIP_MS = 2 * 60_000;
+type PendingClip = ClipSourcesRequest & { at: number };
+
+async function pendingClips(): Promise<PendingClip[]> {
+  const value: unknown = (await browser.storage.session.get(PENDING_CLIPS_KEY))[PENDING_CLIPS_KEY];
+  return Array.isArray(value) ? (value as PendingClip[]).filter((p) => Date.now() - p.at < PENDING_CLIP_MS) : [];
+}
+
+function queueClip(request: ClipSourcesRequest): Promise<void> {
+  return serialClip(async () => {
+    const others = (await pendingClips()).filter((p) => p.windowId !== request.windowId);
+    await browser.storage.session.set({ [PENDING_CLIPS_KEY]: [...others, { ...request, at: Date.now() }] });
+  });
+}
+
+function cancelClip(windowId: number): Promise<void> {
+  return serialClip(async () => {
+    await browser.storage.session.set({ [PENDING_CLIPS_KEY]: (await pendingClips()).filter((p) => p.windowId !== windowId) });
+  });
+}
+
+/** Runs the waiting clips whose sites Chrome now allows; the others keep waiting. */
+function runAllowedClips(): Promise<void> {
+  return serialClip(async () => {
+    const ready: PendingClip[] = [];
+    const waiting: PendingClip[] = [];
+    for (const pending of await pendingClips()) (await browser.permissions.contains({ origins: pending.origins }) ? ready : waiting).push(pending);
+    await browser.storage.session.set({ [PENDING_CLIPS_KEY]: waiting });
+    for (const request of ready) await clipSources(request);
+  });
+}
+
+/** Clips sources saved as a URL only, one page after another, and says what happened in a notice. */
+async function clipSources(request: ClipSourcesRequest): Promise<void> {
+  const notice = (level: 'info' | 'error', text: string, captureId: string | null = null) =>
+    publishNotice({ window_id: request.windowId, level, text, capture_id: captureId }).catch(() => undefined);
+  try {
+    const db = await getDb();
+    // After a recording: the pages left unchecked go, under the rules of Undo.
+    if (request.remove?.length) await undoSavedCaptures(db, request.remove, 'review');
+    const done = [];
+    for (const target of await clipTargets(db, request.sourceIds)) done.push({ target, outcome: await captureAddress(db, target, request.windowId) });
+    if (!done.length) return void (await notice('error', 'Nothing was clipped: the sources were deleted.'));
+    const clipped = done.filter((d) => savedText(d.outcome)).length;
+    const only = done.length === 1 ? done[0]!.outcome : null;
+    await notice(clipped === done.length ? 'info' : 'error', clipSummary(done), only?.saved ? only.result.capture.id : null);
+  } catch (error) {
+    await notice('error', `Not clipped: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -153,9 +317,19 @@ async function trail(): Promise<Record<string, TrailEntry>> {
   return value && typeof value === 'object' ? (value as Record<string, TrailEntry>) : {};
 }
 
+/** The window being recorded, known without waiting, so the page menu can stop it within the click. */
+let recordedWindow: number | null = null;
+
 function showRecordingBadge(on: boolean): void {
   void browser.action.setBadgeText({ text: on ? 'REC' : '' });
   if (on) void browser.action.setBadgeBackgroundColor({ color: '#d93025' });
+}
+
+/** The page menu offers Start recording, or Stop recording while one runs. */
+function showRecordingMenu(windowId: number | null): void {
+  recordedWindow = windowId;
+  void browser.contextMenus.update('record-start', { visible: windowId === null }).catch(() => undefined);
+  void browser.contextMenus.update('record-stop', { visible: windowId !== null }).catch(() => undefined);
 }
 
 async function startRecording(windowId: number): Promise<RecordResponse> {
@@ -168,6 +342,7 @@ async function startRecording(windowId: number): Promise<RecordResponse> {
   await browser.storage.session.set({ [RECORDING_KEY]: recording, [TRAIL_KEY]: pages });
   listenToNavigation();
   showRecordingBadge(true);
+  showRecordingMenu(windowId);
   // A recording that had to stop may have left its reason on the icon.
   void browser.action.setTitle({ title: browser.runtime.getManifest().action?.default_title ?? 'ClipGrail' });
   return previous && previous.window_id !== windowId ? { captures: [], failed: 0, moved: { saved: previous.captures.length } } : { captures: [], failed: 0 };
@@ -177,6 +352,7 @@ async function stopRecording(): Promise<RecordResponse> {
   const recording = await currentRecording();
   await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]);
   showRecordingBadge(false);
+  showRecordingMenu(null);
   return { captures: recording?.captures ?? [], visits: recording?.visits ?? [], failed: recording?.failed ?? 0 };
 }
 
@@ -187,6 +363,7 @@ async function stopRecording(): Promise<RecordResponse> {
  */
 async function abandonRecording(recording: Recording): Promise<void> {
   showRecordingBadge(false);
+  showRecordingMenu(null);
   await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]).catch(() => undefined);
   const saved = recording.captures.length;
   const text = `Recording stopped: ClipGrail could not keep track of it. ${plural(saved, 'page')} ${saved === 1 ? 'was' : 'were'} saved before that.`;
@@ -328,19 +505,32 @@ export default defineBackground(() => {
   browser.windows.onRemoved.addListener((windowId) => openPanels.has(windowId) && trackPanel(windowId, false));
 
   listenToNavigation();
+  void currentRecording().then((recording) => showRecordingMenu(recording?.window_id ?? null), () => undefined);
   // A recording ends with its window, or when Chrome's access to tabs or navigation is turned off.
   browser.windows.onRemoved.addListener((windowId) => {
     void serial(async () => ((await currentRecording())?.window_id === windowId ? stopRecording() : undefined));
   });
+  // Sites allowed for Clip page: the clips waiting for them run now.
+  browser.permissions.onAdded.addListener(({ origins }) => void (origins?.length && runAllowedClips().catch(() => undefined)));
   browser.permissions.onRemoved.addListener(({ permissions }) => {
     if (permissions?.some((p) => p === 'tabs' || p === 'webNavigation')) void serial(stopRecording);
   });
 
   browser.runtime.onInstalled.addListener(() => {
     void browser.contextMenus.removeAll().then(() => {
-      browser.contextMenus.create({ id: 'clip-page', title: 'Clip page to ClipGrail', contexts: ['page'] });
-      browser.contextMenus.create({ id: 'clip-selection', title: 'Clip selection to ClipGrail', contexts: ['selection'] });
-      browser.contextMenus.create({ id: 'save-link', title: 'Save link to ClipGrail (not opened)', contexts: ['link'] });
+      // One ClipGrail entry in the page menu, with what fits where the user right-clicked.
+      browser.contextMenus.create({ id: 'clipgrail', title: 'ClipGrail', contexts: ['page', 'selection', 'link'] });
+      type Where = 'page' | 'selection' | 'link';
+      const item = (id: string, title: string, contexts: [Where, ...Where[]], more: { parentId?: string; visible?: boolean } = {}) =>
+        browser.contextMenus.create({ id, title, contexts, parentId: 'clipgrail', ...more });
+      item('clip-page', 'Clip page', ['page']);
+      item('clip-selection', 'Clip selection', ['selection']);
+      item('save-link', 'Clip URL', ['link']);
+      item('record-start', 'Start recording', ['page'], { visible: recordedWindow === null });
+      item('record-stop', 'Stop recording', ['page', 'selection', 'link'], { visible: recordedWindow !== null });
+      browser.contextMenus.create({ id: 'open-in-separator', type: 'separator', parentId: 'clipgrail', contexts: ['page', 'selection'] });
+      item('open-in', 'Open in', ['page', 'selection']);
+      for (const [id, destination] of Object.entries(OPEN_IN)) item(id, DESTINATIONS[destination].name, ['page', 'selection'], { parentId: 'open-in' });
       // Right-click on the toolbar button.
       browser.contextMenus.create({ id: 'open-panel', title: 'Open side panel', contexts: ['action'], visible: false });
       browser.contextMenus.create({ id: 'open-library', title: 'Open library', contexts: ['action'] });
@@ -368,8 +558,21 @@ export default defineBackground(() => {
         .catch(() => undefined);
       return;
     }
+    if (info.menuItemId === 'record-stop') {
+      const windowId = recordedWindow ?? tab?.windowId;
+      showResult(windowId);
+      stopFromMenu(windowId);
+      return;
+    }
     showResult(tab?.windowId);
-    if (info.menuItemId === 'clip-page' && tab) {
+    if (info.menuItemId === 'record-start' && tab?.windowId !== undefined && tab.id !== undefined) {
+      recordFromMenu(tab.windowId, tab.id);
+    } else if (typeof info.menuItemId === 'string' && info.menuItemId in OPEN_IN && tab) {
+      const selection = info.selectionText ? { frameId: info.frameId, frameUrl: info.frameUrl, text: info.selectionText } : null;
+      // Asked in the click itself, once: the job is copied by ClipGrail's own hidden page, which needs this permission.
+      const copyAllowed = browser.permissions.request({ permissions: ['clipboardWrite'] });
+      void openInChat(OPEN_IN[info.menuItemId]!, tab, selection, copyAllowed);
+    } else if (info.menuItemId === 'clip-page' && tab) {
       void run(tab.windowId, undefined, (db, sessionId) => capturePage(db, tab, sessionId), captureThumbnail(tab.windowId));
     } else if (info.menuItemId === 'clip-selection' && tab) {
       void run(
@@ -397,6 +600,16 @@ export default defineBackground(() => {
         sendResponse({ captures: [], failed: 0, error: error instanceof Error ? error.message : String(error) }),
       );
       return true;
+    }
+    if (isClipSourcesRequest(message)) {
+      void queueClip(message).then(runAllowedClips).catch(() => undefined);
+      sendResponse({ queued: true });
+      return false;
+    }
+    if (isClipCancelRequest(message)) {
+      void cancelClip(message.windowId).catch(() => undefined);
+      sendResponse({ cancelled: true });
+      return false;
     }
     if (!isClipRequest(message)) return false;
     void run(

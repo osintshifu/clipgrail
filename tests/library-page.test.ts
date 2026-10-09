@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { commitCapture, createSession, openDb, loadNote, loadSessionView, updateSourceNote, listSessions } from '../src/lib/db';
 import { linkDraft, pageDraft } from './helpers';
 
-const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, refresh: () => undefined as void }));
+const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, refresh: () => undefined as void, requests: [] as unknown[], messages: [] as unknown[] }));
 
 vi.mock('../src/lib/changes', () => ({ announceDataChange: () => undefined, onDataChange: (fn: () => void) => { fake.refresh = fn; } }));
 
@@ -22,7 +22,12 @@ vi.mock('wxt/browser', () => ({
       },
       onChanged: { addListener: () => undefined },
     },
-    runtime: { id: 'clipgrail-test' },
+    runtime: {
+      id: 'clipgrail-test',
+      sendMessage: async (message: unknown) => (fake.messages.push(message), { queued: true }),
+    },
+    permissions: { request: async (request: unknown) => (fake.requests.push(request), true) },
+    windows: { getCurrent: async () => ({ id: 5 }) },
   },
 }));
 
@@ -360,32 +365,53 @@ describe('organizing in the library', () => {
     const { db, session, capture } = await openExample('Pivots');
     const code = { declared: [], trackers: [{ kind: 'ga4' as const, id: 'G-PIV0T2K9QX', where: ['script_address' as const] }] };
     const wallet = 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh';
-    const a = await commitCapture(db, { ...(await pageDraft('https://a.example.test/', `Donate: ${wallet}.`, '2026-10-06T10:00:00.000Z', session.id)), page_code: code });
+    // The first page also links to an account no other source has; a third source is saved as a URL only.
+    const account = { kind: 'github' as const, value: 'github.com/harbour-desk', where: ['link' as const] };
+    const a = await commitCapture(db, { ...(await pageDraft('https://a.example.test/', `Donate: ${wallet}.`, '2026-10-06T10:00:00.000Z', session.id)), page_code: { ...code, values: [account] } });
     const b = await commitCapture(db, { ...(await pageDraft('https://b.example.test/', `Fund ${wallet}`, '2026-10-06T11:00:00.000Z', session.id)), page_code: code });
+    await commitCapture(db, linkDraft('https://c.example.test/', '2026-10-06T12:00:00.000Z', 'https://a.example.test/', session.id));
     fake.refresh();
     Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((n) => n.textContent?.startsWith('Pivots'))!.click();
     // Each list keeps its own search.
     const search = $<HTMLInputElement>('search');
     search.value = 'a.example';
     search.dispatchEvent(new Event('input'));
-    await vi.waitFor(() => expect($('result-count').textContent).toBe('1 of 3 sources'));
+    await vi.waitFor(() => expect($('result-count').textContent).toBe('1 of 4 sources'));
     $('mode-pivots').click();
-    await vi.waitFor(() => expect($('result-count').textContent).toBe('2 shared of 2 values'));
+    await vi.waitFor(() => expect($('result-count').textContent).toBe('3 values'));
     expect([search.value, search.placeholder]).toEqual(['', 'Search values']);
     $('mode-sources').click();
     expect(search.value).toBe('a.example');
     $('mode-pivots').click();
     expect(location.hash).toBe(`#view=${session.id}&mode=pivots&source=${capture.source.id}`);
     const values = () => Array.from(document.querySelectorAll('#rows .pv-row'), (r) => r.textContent);
-    expect(values()).toEqual([
-      'GA4G-PIV0T2K9QX2 sourcesGoogle Analytics 4 · a.example.test, b.example.test',
-      `BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`,
+    // Every value is listed, those on more sites first, with a note on the source nothing was read from.
+    expect([values(), $('list-note').textContent]).toEqual([
+      [
+        'GA4G-PIV0T2K9QX2 sourcesGoogle Analytics 4 · a.example.test, b.example.test',
+        `BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`,
+        'GitHubgithub.com/harbour-desk1 sourceGitHub · a.example.test',
+      ],
+      '1 source is saved as a URL only: clip it to read its values.',
     ]);
+    $('shared-only').click();
+    expect([values().length, $('result-count').textContent]).toEqual([2, '2 shared of 3 values']);
+    $('shared-only').click();
     // The kind and the search narrow the values; the search of sources is kept for the Sources list.
     const kind = $<HTMLSelectElement>('pivot-kind');
-    kind.value = 'text';
+    kind.value = 'contact';
     kind.dispatchEvent(new Event('change'));
-    expect([values(), $('result-count').textContent]).toEqual([[`BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`], '1 of 2 values']);
+    expect([values().map((v) => v?.slice(0, 6)), $('result-count').textContent]).toEqual([['BTCbc1', 'GitHub'], '2 of 3 values']);
+    // A value read from the page's links opens its source with the value in Details.
+    document.querySelectorAll<HTMLButtonElement>('#rows .pv-row')[1]!.click();
+    expect([$('reader').querySelector('.status-line')?.textContent, $('reader').querySelector('.pv-use-meta')?.textContent]).toEqual([
+      'In 1 source on 1 site. Found in the page when it was clipped.',
+      'a.example.test · Page link',
+    ]);
+    document.querySelector<HTMLButtonElement>('#reader .pv-use')!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe(`Donate: ${wallet}.`));
+    expect([$('reader').querySelector<HTMLDetailsElement>('details')?.open, $('reader').querySelector('.page-code dl:last-of-type')?.textContent]).toEqual([true, 'GitHubgithub.com/harbour-desk · link']);
+    $('mode-pivots').click();
     $('clear-filters').click();
     search.value = 'btc';
     search.dispatchEvent(new Event('input'));
@@ -404,25 +430,59 @@ describe('organizing in the library', () => {
     expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
     expect(document.querySelector('#rows .pv-row')?.getAttribute('aria-current')).toBe('true');
 
-    // Copy puts the value on the clipboard.
-    const writeText = vi.fn(async () => undefined);
+    // Copy puts the value on the clipboard: from the open value, from its row, from Details, and the list as a table.
+    const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
     $('copy-pivot').click();
     await vi.waitFor(() => expect($('copy-pivot').textContent).toBe('Copied'));
     expect(writeText).toHaveBeenCalledWith('G-PIV0T2K9QX');
+    document.querySelector<HTMLButtonElement>('#rows .pv-copy')!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    document.querySelector<HTMLButtonElement>('#reader .pv-use')!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('.page-code .copy-value')).not.toBeNull());
+    $('reader').querySelector<HTMLButtonElement>('.page-code .copy-value')!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+    expect(writeText.mock.calls.map(([text]) => text)).toEqual(['G-PIV0T2K9QX', 'G-PIV0T2K9QX', 'G-PIV0T2K9QX']);
+    // Copy list copies the values the search left.
+    $('mode-pivots').click();
+    $('copy-pivots').click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith('Kind\tValue\tSources\tSites\nGoogle Analytics 4\tG-PIV0T2K9QX\t2\ta.example.test, b.example.test\n'));
+    document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
 
     // Show sources lists the sources the value is in, until its filter is removed with its button or Clear filters.
     $('show-pivot-sources').click();
-    expect([$('mode-sources').getAttribute('aria-pressed'), search.value, $('pivot-filter').textContent, $('result-count').textContent]).toEqual(['true', '', 'G-PIV0T2K9QX', '2 of 3 sources']);
+    expect([$('mode-sources').getAttribute('aria-pressed'), search.value, $('pivot-filter').textContent, $('result-count').textContent]).toEqual(['true', '', 'G-PIV0T2K9QX', '2 of 4 sources']);
     expect(Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'), (r) => r.dataset.id).sort()).toEqual([a.source.id, b.source.id].sort());
     $('pivot-filter').click();
-    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '3 sources']);
+    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '4 sources']);
     $('mode-pivots').click();
     document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
     $('show-pivot-sources').click();
     $('clear-filters').click();
-    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '3 sources']);
+    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '4 sources']);
+  });
+
+  it('clips a source saved as a URL only from its page and from the selection bar, asking Chrome for its site only', async () => {
+    const { db, session, capture } = await openExample('Clip');
+    const link = await commitCapture(db, linkDraft('https://www.port.example.org/notices/41', '2026-10-09T10:00:00.000Z', 'https://example.test/Clip', session.id));
+    fake.refresh();
+    await vi.waitFor(() => expect(document.querySelector(`#rows [data-id="${link.source.id}"]`)).not.toBeNull());
+    document.querySelector<HTMLButtonElement>(`#rows .src[data-id="${link.source.id}"]`)!.click();
+    await vi.waitFor(() => expect($('clip-source')).not.toBeNull());
+    $('clip-source').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Clipping 1 page…'));
+    expect([fake.requests.at(-1), fake.messages.at(-1)]).toEqual([
+      { origins: ['*://*.port.example.org/*'] },
+      { type: 'clip-sources', sourceIds: [link.source.id], windowId: 5, origins: ['*://*.port.example.org/*'] },
+    ]);
+    // Selected sources: only those saved as a URL only are clipped.
+    for (const id of [capture.source.id, link.source.id]) document.querySelector<HTMLInputElement>(`#rows .pick-box[data-pick="${id}"]`)!.click();
+    expect([$('clip-selected').hidden, $('clip-selected').textContent]).toEqual([false, 'Clip 1 page']);
+    $('clip-selected').click();
+    await vi.waitFor(() => expect(fake.messages).toHaveLength(2));
+    expect(fake.messages.at(-1)).toMatchObject({ type: 'clip-sources', sourceIds: [link.source.id] });
+    $('clear-selection').click();
   });
 
   it('finds a source by its saved text, shows where, and opens the earlier version the words are in', async () => {

@@ -34,10 +34,16 @@ import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { compareTexts } from '../../lib/diff';
 import { pageCodeBlock } from '../../lib/page-code-block';
+import { clipAddressOf, sitePatterns } from '../../lib/clip-address';
+import type { ClipCancelRequest, ClipSourcesRequest } from '../../lib/messages';
+import type { Notice } from '../../lib/notice';
+import { NOTICE_KEY } from '../../lib/notice';
+import type { CopyReport } from '../../lib/copy';
+import { copyButton, copyToClipboard, copyableValue } from '../../lib/copy';
 import type { DiffPart, TextDiff } from '../../lib/diff';
 import { ALL_SOURCES, SORT_LABELS, compareChoices, filterRows, libraryRows, searchSnippet, textIdsOf, textShaOf, versionsOf } from '../../lib/library';
 import type { LibraryEntry, LibraryFilter, LibraryRow, LibrarySort, TextHits, Version } from '../../lib/library';
-import { PIVOT_GROUPS, PIVOT_KINDS, PIVOT_NOTES, collectPivots, filterPivots, textFinds } from '../../lib/pivots';
+import { PIVOT_GROUPS, PIVOT_KINDS, PIVOT_NOTES, collectPivots, filterPivots, pivotsTable, textFinds } from '../../lib/pivots';
 import type { Pivot, PivotFilter, PivotUse, TextFind } from '../../lib/pivots';
 import { fold, inDays, localDay, parseSearch, searchWords, searchable, storedRanges, textHit } from '../../lib/search';
 import type { SearchQuery, Snippet } from '../../lib/search';
@@ -62,10 +68,12 @@ const filter: LibraryFilter = { view: ALL_SOURCES, query: '', status: 'any', imp
 let mode: 'sources' | 'timeline' | 'pivots' = 'sources';
 /** The value open in the reader while no source is, by its key; the filters of the list of values; and the value as written in a source opened from it, marked there. */
 let pivotKey: string | null = null;
-const pivotFilter: PivotFilter = { query: '', group: 'all', shared: true };
+const pivotFilter: PivotFilter = { query: '', group: 'all', shared: false };
 let pivotMark: string | null = null;
 /** The values of the view, as last listed. */
 let pivots: Pivot[] = [];
+/** The values the list shows, which Copy list copies. */
+let listedPivots: Pivot[] = [];
 /** Values found in each saved text, by snapshot ID. A saved text never changes, so each is read once. */
 const finds = new Map<string, TextFind[]>();
 let readingFinds = false;
@@ -512,6 +520,10 @@ function renderSelection(): void {
   $('selection-bar').hidden = picked.size === 0;
   $('rows').classList.toggle('selecting', picked.size > 0);
   $('selection-count').textContent = `${fmtNumber(picked.size)} of ${fmtNumber(shown.length)} selected`;
+  const urlOnly = shown.filter((r) => picked.has(r.entry.source.id) && r.status === 'pending').length;
+  const clip = $('clip-selected');
+  clip.hidden = urlOnly === 0;
+  fill(clip, [icon('frame-corners'), `Clip ${count(urlOnly, 'page')}`]);
   const all = $<HTMLInputElement>('select-all');
   all.checked = picked.size > 0 && picked.size === shown.length;
   all.indeterminate = picked.size > 0 && picked.size < shown.length;
@@ -593,10 +605,12 @@ function renderList(): void {
   $('sort').hidden = timeline || pivotsShown || logList;
   $('pivot-kind').hidden = !pivotsShown;
   $('shared-only').hidden = !pivotsShown;
+  $('copy-pivots').hidden = !pivotsShown;
   $('log-session').hidden = !logList;
   $('clear-log').hidden = !logList;
   setSearchLabels(logList ? 'log' : pivotsShown ? 'values' : 'sources');
   $('rows').classList.toggle('timeline', timeline || logList);
+  $('list-note').hidden = true;
   if (logList) renderLogList();
   else if (pivotsShown) renderPivotList();
   else renderSourceList(timeline);
@@ -791,7 +805,8 @@ function readFinds(entries: LibraryEntry[]): void {
 
 function renderPivotList(): void {
   shown = [];
-  const entries = (filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view)).map((r) => r.entry);
+  const inView = filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view);
+  const entries = inView.map((r) => r.entry);
   readFinds(entries);
   pivots = collectPivots(entries, (id) => finds.get(id));
   const listed = filterPivots(pivots, pivotFilter);
@@ -813,7 +828,14 @@ function renderPivotList(): void {
         ? `${fmtNumber(listed.length)} shared of ${count(pivots.length, 'value')}`
         : count(pivots.length, 'value');
   const mixed = filter.view === ALL_SOURCES;
+  listedPivots = listed;
+  $<HTMLButtonElement>('copy-pivots').disabled = !listed.length;
   $('rows').replaceChildren(...listed.map((pivot) => pivotItem(pivot, mixed)));
+  // Nothing is read from a page saved as a URL only.
+  const addressOnly = inView.filter((r) => r.status === 'pending').length;
+  const note = $('list-note');
+  note.hidden = !addressOnly;
+  note.textContent = addressOnly === 1 ? '1 source is saved as a URL only: clip it to read its values.' : `${fmtNumber(addressOnly)} sources are saved as a URL only: clip them to read their values.`;
   const empty = $('list-empty');
   empty.hidden = listed.length > 0;
   if (listed.length) return;
@@ -825,7 +847,7 @@ function renderPivotList(): void {
       : !pivots.length
         ? [
             h('p', {}, [
-              'No values yet. Trackers and what pages declare about themselves are read when you clip a page; email addresses, Bitcoin and Ethereum addresses, IBANs and Telegram links are found in saved text and selections.',
+              "No values yet. They are read when you clip a page or a selection: trackers and what the page declares about itself from its code, and contacts, accounts and payment addresses from its links and text.",
             ]),
           ]
         : pivotFilter.shared && !narrowed
@@ -866,6 +888,8 @@ function pivotItem(pivot: Pivot, mixed: boolean): HTMLLIElement {
         h('span', { class: 'src-meta' }, [meta]),
       ],
     ),
+    // Rows move with the arrow keys; from the keyboard a value is copied with Copy when it is open.
+    Object.assign(copyButton(pivot.value, pivot.value, reportCopy, 'copy-value pv-copy'), { tabIndex: -1 }),
   ]);
 }
 
@@ -896,8 +920,10 @@ function renderPivot(reader: HTMLElement): void {
   const kind = PIVOT_KINDS[pivot.kind];
   const mixed = filter.view === ALL_SOURCES;
   const n = pivot.uses.length;
-  const places = [...new Set(pivot.uses.map((u) => (u.where === 'Selection' ? 'selections' : 'saved text')))].sort();
-  const found = kind.group === 'text' ? `Found in ${places.join(' and ')}.` : `Read from the page code when ${n === 1 ? 'the page was' : 'the pages were'} clipped.`;
+  const clipped = n === 1 ? 'the page when it was clipped' : 'the pages when they were clipped';
+  const places = [...new Set(pivot.uses.map((u) => (!u.snippet ? clipped : u.where === 'Selection' ? 'selections' : 'saved text')))].sort();
+  const listed = places.length > 1 ? `${places.slice(0, -1).join(', ')} and ${places.at(-1)}` : places[0];
+  const found = kind.group === 'contact' ? `Found in ${listed}.` : `Read from the page code when ${n === 1 ? 'the page was' : 'the pages were'} clipped.`;
   fill(reader, [
     h('div', { class: 'crumb' }, [
       h('span', {}, ['Pivot']),
@@ -912,16 +938,16 @@ function renderPivot(reader: HTMLElement): void {
     h('div', { class: 'status-line' }, [
       h('span', {}, [`In ${count(n, 'source')} on ${count(pivot.sites.length, 'site')}${mixed ? `, in ${count(pivot.sessions, 'session')}` : ''}. ${found}`]),
     ]),
-    h('div', { class: 'pv-uses' }, pivot.uses.map((use) => pivotUseButton(pivot, use, mixed))),
+    h('div', { class: 'pv-uses' }, pivot.uses.map((use) => pivotUseButton(use, mixed))),
     h('p', { class: 'small' }, [PIVOT_NOTES[kind.group]]),
   ]);
 }
 
-function pivotUseButton(pivot: Pivot, use: PivotUse, mixed: boolean): HTMLButtonElement {
+function pivotUseButton(use: PivotUse, mixed: boolean): HTMLButtonElement {
   const { source } = use.entry;
   const title = rows.find((r) => r.entry.source.id === source.id)?.title ?? source.dedup_url;
   const meta = [hostOf(source.dedup_url), mixed ? (sessionOf(source.session_id)?.name ?? null) : null, use.where].filter(Boolean).join(' · ');
-  return h('button', { class: 'pv-use', attrs: { type: 'button', 'data-id': source.id, 'data-capture': use.capture_id }, on: { click: () => openPivotUse(pivot, use) } }, [
+  return h('button', { class: 'pv-use', attrs: { type: 'button', 'data-id': source.id, 'data-capture': use.capture_id }, on: { click: () => openPivotUse(use) } }, [
     h('span', { class: 'sid' }, [sourceLabel(source)]),
     h('span', { class: 'pv-use-title' }, [title]),
     h('span', { class: 'pv-use-meta' }, [meta]),
@@ -929,9 +955,9 @@ function pivotUseButton(pivot: Pivot, use: PivotUse, mixed: boolean): HTMLButton
   ]);
 }
 
-/** Opens a source the value is in at the capture where it was found, with the value marked; a value from the page code is in Details. */
-function openPivotUse(pivot: Pivot, use: PivotUse): void {
-  if (PIVOT_KINDS[pivot.kind].group !== 'text') detailsOpen = true;
+/** Opens a source the value is in at the capture where it was found, with the value marked; a value read from the page is in Details. */
+function openPivotUse(use: PivotUse): void {
+  if (!use.snippet) detailsOpen = true;
   openSource(use.entry.source.id, true);
   pivotMark = use.raw;
   scrollToMatch = true;
@@ -1265,7 +1291,7 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
 function highlightMatches(): void {
   const terms = mode === 'pivots' ? (pivotMark ? [fold(searchable(pivotMark))] : []) : parseSearch(filter.query).terms;
   const ranges: Range[] = [];
-  const shown = '#reader .text-box:not([aria-busy]):not(.diff-box), #reader .page-code dd > span:first-child';
+  const shown = '#reader .text-box:not([aria-busy]):not(.diff-box), #reader .page-code dd .dd-text > span:first-child';
   for (const box of terms.length ? document.querySelectorAll<HTMLElement>(shown) : []) {
     const node = box.firstChild;
     if (!(node instanceof Text)) continue;
@@ -1392,6 +1418,8 @@ function diffOf(older: Version, newer: Version, key: string): TextDiff | null | 
 function say(text: string): void {
   $('compare-said').textContent = text;
 }
+
+const reportCopy: CopyReport = (copied, what, error) => (copied ? say(`Copied ${what}.`) : notice(`Not copied: ${errorText(error)}`));
 
 /** The texts being read for a comparison, by its key. */
 let textsReading: string | null = null;
@@ -1637,13 +1665,14 @@ function renderReaderContents(): void {
       { class: 'details' },
       [...sourceRows(entry, session.name), ...captureDetailRows(viewed.capture.capture, viewed.capture.snapshot, url)].flatMap((r) => [
         h('dt', {}, [r.label]),
-        h('dd', { class: r.mono ? 'mono' : '' }, [r.value]),
+        // Addresses and hashes are the values worth copying.
+        r.mono ? copyableValue([r.value], r.value, reportCopy, true) : h('dd', {}, [r.value]),
       ]),
     ),
     h('p', { class: 'small' }, [
       'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
     ]),
-    pageCode ? pageCodeBlock(pageCode) : null,
+    pageCode ? pageCodeBlock(pageCode, reportCopy) : null,
   ]);
   details.open = detailsOpen;
   fill(reader, [
@@ -1662,7 +1691,7 @@ function renderReaderContents(): void {
         [icon(entry.source.important ? 'star-fill' : 'star'), 'Important'],
       ),
       h('button', { class: 'btn-sm', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, [icon('folder-simple'), 'Move to…']),
-      h('button', { class: 'btn-sm delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmDeleteSource(row) } }, [icon('trash'), 'Delete…']),
+      h('button', { class: 'btn-sm delete icon-only', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog', title: 'Delete source', 'aria-label': 'Delete source' }, on: { click: () => void confirmDeleteSource(row) } }, [icon('trash')]),
       expandButton,
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
@@ -1671,6 +1700,13 @@ function renderReaderContents(): void {
       h('img', { class: 'fav-sm', attrs: { src: faviconUrl(url), alt: '' } }),
       h('span', { class: 'url' }, [url]),
       h('a', { class: 'btn-sm', attrs: { id: 'open-page', href: url, target: '_blank', rel: 'noopener noreferrer' } }, [icon('arrow-square-out'), 'Open page']),
+      row.status === 'pending'
+        ? h(
+            'button',
+            { class: 'btn-sm', attrs: { id: 'clip-source', type: 'button', title: 'Open the page in a background tab and save its text' }, on: { click: () => clipSources([row]) } },
+            [icon('frame-corners'), 'Clip page'],
+          )
+        : null,
     ]),
     h('div', { class: 'status-line' }, [chip(row.status), h('span', {}, [statusSentence(entry)])]),
     activeSessionBanner(row),
@@ -1865,6 +1901,40 @@ async function confirmDeleteSource(row: LibraryRow, opener: HTMLElement = $('del
   }, `${row.label} not deleted`, `${row.label} deleted; refresh failed`), opener);
 }
 
+/** This tab's window, where clips the library asks for open their pages and report back. */
+let libraryWindow: number | undefined;
+/** Set while a clip the library asked for runs: its result notice is shown here. */
+let awaitingClip = false;
+
+/**
+ * Clips sources saved as a URL only. The request goes to the background, then Chrome asks, in this click, to let
+ * ClipGrail read their sites; the background clips once they are allowed, opening the pages in background tabs.
+ */
+function clipSources(chosen: LibraryRow[]): void {
+  const targets = chosen.filter((r) => r.status === 'pending');
+  if (!targets.length || libraryWindow === undefined) return;
+  const windowId = libraryWindow;
+  const origins = sitePatterns(targets.map((r) => clipAddressOf(r.entry.source, r.entry.captures.map((c) => c.capture))));
+  const request: ClipSourcesRequest = { type: 'clip-sources', sourceIds: targets.map((r) => r.entry.source.id), windowId, origins };
+  const cancel: ClipCancelRequest = { type: 'clip-sources-cancel', windowId };
+  const refused = (why: string) => {
+    void browser.runtime.sendMessage(cancel).catch(() => undefined);
+    awaitingClip = false;
+    notice(`Not clipped: ${why}`);
+  };
+  // Waiting from now: a clip that ends at once, such as one of a file address, may report before Chrome answers.
+  awaitingClip = true;
+  browser.runtime.sendMessage(request).catch((error: unknown) => notice(`Not clipped: ${errorText(error)}`));
+  // Asked in the click itself: Chrome shows its prompt only for a user action.
+  browser.permissions.request({ origins }).then(
+    (granted) => {
+      if (!granted) return refused(`ClipGrail needs Chrome's permission to read ${origins.length === 1 ? 'this site' : 'these sites'}.`);
+      if (awaitingClip) notice(`Clipping ${count(targets.length, 'page')}…`);
+    },
+    (error: unknown) => refused(errorText(error)),
+  );
+}
+
 async function confirmDeleteSelected(): Promise<void> {
   const chosen = shown.filter((r) => picked.has(r.entry.source.id));
   if (chosen.length === 1) return confirmDeleteSource(chosen[0]!, $('delete-selected'));
@@ -2047,6 +2117,14 @@ function bind(): void {
     pivotFilter.shared = !pivotFilter.shared;
     renderList();
   });
+  const copyList = $<HTMLButtonElement>('copy-pivots');
+  copyList.addEventListener('click', () => {
+    void copyToClipboard(pivotsTable(listedPivots), count(listedPivots.length, 'value'), reportCopy).then((copied) => {
+      if (!copied) return;
+      fill(copyList, [icon('check'), 'Copied']);
+      setTimeout(() => fill(copyList, [icon('copy'), 'Copy list']), 1500);
+    });
+  });
   const logSession = $<HTMLSelectElement>('log-session');
   logSession.addEventListener('change', () => {
     logFilter.session = logSession.value;
@@ -2071,6 +2149,7 @@ function bind(): void {
     rowButtons().find((b) => b.tabIndex === 0)?.focus();
   });
   $('delete-selected').addEventListener('click', () => void confirmDeleteSelected());
+  $('clip-selected').addEventListener('click', () => clipSources(shown.filter((r) => picked.has(r.entry.source.id))));
   $('hide-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: true }, $('show-sessions')));
   $('show-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: false }, $('hide-sessions')));
   bindResize($('resize-nav'), 'nav_width', NAV_WIDTH, () => 0);
@@ -2110,6 +2189,12 @@ function bind(): void {
     selectedButton()?.scrollIntoView({ block: 'nearest' });
   });
   browser.storage.onChanged.addListener((changes, area) => {
+    // The result of a clip asked for here.
+    const sent = changes[NOTICE_KEY]?.newValue as Notice | undefined;
+    if (area === 'session' && sent && awaitingClip && sent.window_id === libraryWindow) {
+      awaitingClip = false;
+      notice(sent.text);
+    }
     const id = changes.activeSessionId?.newValue;
     if (area !== 'local' || typeof id !== 'string') return;
     activeId = id;
@@ -2161,6 +2246,7 @@ async function init(): Promise<void> {
   try {
     db = await openDb();
     setWriteListener(announceDataChange);
+    libraryWindow = (await browser.windows.getCurrent()).id;
     activeId = await getActiveSessionId();
     layout = await getLibraryLayout();
     [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);

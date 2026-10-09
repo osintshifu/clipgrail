@@ -8,11 +8,18 @@ import type { SnapshotDraft } from './snapshot';
 import { buildFragment, buildSnapshotDraft, failedSnapshotDraft } from './snapshot';
 import { frameAddress, isCapturableUrl, isProvenanceUrl, normalizeUrl } from './url';
 import { cleanPageCode } from './page-code';
+import { plural } from './text';
+import type { ClipTarget } from './clip-address';
+import { fileTypeOf } from './clip-address';
 
 /** Longest wait for the extractor before the capture is saved as failed (timeout). */
 export const EXTRACTION_TIMEOUT_MS = 30_000;
 /** Reading the page code beside a selection; a page that takes longer is saved without it. */
 const PAGE_CODE_TIMEOUT_MS = 5_000;
+/** Longest wait for a page opened to be clipped to finish loading; it is read as it is then. */
+const LOAD_TIMEOUT_MS = 20_000;
+/** After loading, pages that write their text with scripts get a moment more. */
+const SETTLE_MS = 1_000;
 
 export type NotSavedReason =
   | 'no_tab'
@@ -24,6 +31,9 @@ export type NotSavedReason =
   | 'page_changed'
   | 'error_page'
   | 'frame_error_page'
+  | 'not_opened'
+  | 'not_a_page'
+  | 'no_site_access'
   | 'storage_error';
 
 export type CaptureOutcome =
@@ -73,6 +83,9 @@ async function notSaved(reason: NotSavedReason, detail?: string): Promise<Captur
     page_changed: 'The page changed while it was being clipped, so nothing was saved. Clip it again.',
     error_page: "This tab shows the browser's error page, not the page, so there is no selection to clip. Nothing was saved. Clip page saves the address as Capture failed.",
     frame_error_page: "This embedded frame shows the browser's error page, not its page, so there is no selection to clip. Nothing was saved.",
+    not_opened: `The page could not be opened${detail ? ` (${detail})` : ''}. Nothing was saved.`,
+    not_a_page: `This address leads to a ${detail?.toUpperCase() ?? ''} file, not a web page, so it was not opened. Nothing was saved.`,
+    no_site_access: `ClipGrail may not read ${detail ?? 'this site'}, so nothing was saved. Allow the site when Chrome asks; a page that moves to another site needs that site too.`,
     storage_error: `Capture not saved: the browser refused to store it${detail ? ` (${detail})` : ''}. Existing data is unchanged.`,
   };
   return { saved: false, reason, message: messages[reason] };
@@ -103,7 +116,7 @@ function savedMessage(result: CommitResult): string {
   const where = result.isNewSource ? 'new source' : `capture ${result.captureCount} of this source`;
   const snapshot = result.snapshot;
   // A link to a page the session already has adds a capture; the source may have its text.
-  if (result.capture.kind === 'link') return `Saved ${label} as a link, not opened · ${result.isNewSource ? 'Address only' : where}`;
+  if (result.capture.kind === 'link') return `Saved ${label} as a link, not opened · ${result.isNewSource ? 'URL only' : where}`;
   if (result.capture.kind === 'selection') {
     const partial = result.capture.fragment?.truncated ? ' · partial: cut at the length limit' : '';
     const frame = result.capture.frame;
@@ -147,36 +160,8 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
   if (!tab.url) return notSaved('no_access');
   const dedupUrl = normalizeUrl(tab.url);
   if (!dedupUrl) return notSaved('blocked_page');
-
-  let snapshot: SnapshotDraft;
-  let pageCode: PageCode | null = null;
-  try {
-    const results = await withTimeout(
-      browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['/extract.js'] }),
-      EXTRACTION_TIMEOUT_MS,
-    );
-    const value: unknown = results[0]?.result;
-    // The text must come from the document the source URL was taken from; a navigation in between would
-    // attach another page's text to this source.
-    if (isPageExtraction(value) && normalizeUrl(value.page_url) !== dedupUrl) return notSaved('page_changed');
-    snapshot = isPageExtraction(value)
-      ? await buildSnapshotDraft(value, new Date().toISOString())
-      : failedSnapshotDraft('extraction_error', 'The extractor returned no result.', new Date().toISOString());
-    if (isPageExtraction(value)) pageCode = cleanPageCode(value.page_code);
-  } catch (error) {
-    const now = new Date().toISOString();
-    if (error instanceof DOMException && error.name === 'TimeoutError') {
-      snapshot = failedSnapshotDraft('timeout', `Extraction did not finish within ${EXTRACTION_TIMEOUT_MS / 1000} s.`, now);
-    } else {
-      const kind = classifyScriptError(error);
-      if (kind === 'no_access' || kind === 'blocked_page' || kind === 'tab_gone') return notSaved(kind);
-      snapshot =
-        kind === 'page_unavailable'
-          ? failedSnapshotDraft('page_unavailable', 'The browser showed an error page instead of the page.', now)
-          : failedSnapshotDraft('extraction_error', error instanceof Error ? error.message : String(error), now);
-    }
-  }
-
+  const read = await readTab(tab.id, dedupUrl);
+  if ('reason' in read) return notSaved(read.reason);
   return save(db, {
     session_id: sessionId,
     kind: 'page',
@@ -187,9 +172,136 @@ export async function capturePage(db: IDBDatabase, tab: TabInfo, sessionId: stri
     found_on: null,
     anchor_text: null,
     fragment: null,
-    page_code: pageCode,
-    snapshot,
+    page_code: read.pageCode,
+    snapshot: read.snapshot,
   });
+}
+
+/**
+ * Reads the text and page code of a tab with the extractor. Access problems are reasons to save nothing; page
+ * problems become a failed snapshot, so the address and the failure are kept.
+ */
+async function readTab(tabId: number, dedupUrl: string): Promise<{ snapshot: SnapshotDraft; pageCode: PageCode | null } | { reason: NotSavedReason }> {
+  try {
+    const results = await withTimeout(browser.scripting.executeScript({ target: { tabId }, files: ['/extract.js'] }), EXTRACTION_TIMEOUT_MS);
+    const value: unknown = results[0]?.result;
+    // The text must come from the document the source URL was taken from; a navigation in between would
+    // attach another page's text to this source.
+    if (isPageExtraction(value) && normalizeUrl(value.page_url) !== dedupUrl) return { reason: 'page_changed' };
+    const now = new Date().toISOString();
+    return isPageExtraction(value)
+      ? { snapshot: await buildSnapshotDraft(value, now), pageCode: cleanPageCode(value.page_code) }
+      : { snapshot: failedSnapshotDraft('extraction_error', 'The extractor returned no result.', now), pageCode: null };
+  } catch (error) {
+    const now = new Date().toISOString();
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      return { snapshot: failedSnapshotDraft('timeout', `Extraction did not finish within ${EXTRACTION_TIMEOUT_MS / 1000} s.`, now), pageCode: null };
+    }
+    const kind = classifyScriptError(error);
+    if (kind === 'no_access' || kind === 'blocked_page' || kind === 'tab_gone') return { reason: kind };
+    const snapshot =
+      kind === 'page_unavailable'
+        ? failedSnapshotDraft('page_unavailable', 'The browser showed an error page instead of the page.', now)
+        : failedSnapshotDraft('extraction_error', error instanceof Error ? error.message : String(error), now);
+    return { snapshot, pageCode: null };
+  }
+}
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+};
+
+/** The tab once it has loaded and settled, or as it is after LOAD_TIMEOUT_MS; null when it was closed meanwhile. */
+function loadedTab(tabId: number): Promise<TabInfo | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const finish = (closed: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      clearTimeout(settle);
+      browser.tabs.onUpdated.removeListener(updated);
+      browser.tabs.onRemoved.removeListener(removed);
+      if (closed) resolve(null);
+      else browser.tabs.get(tabId).then(resolve, () => resolve(null));
+    };
+    // A redirect made by the page starts loading again, which waits for the next page.
+    const status = (value: string | undefined) => {
+      if (value === 'loading') clearTimeout(settle);
+      if (value === 'complete') {
+        clearTimeout(settle);
+        settle = setTimeout(() => finish(false), SETTLE_MS);
+      }
+    };
+    const updated = (id: number, change: { status?: string }) => id === tabId && status(change.status);
+    const removed = (id: number) => id === tabId && finish(true);
+    const deadline = setTimeout(() => finish(false), LOAD_TIMEOUT_MS);
+    browser.tabs.onUpdated.addListener(updated);
+    browser.tabs.onRemoved.addListener(removed);
+    // A page from the cache may have loaded before the listener was added.
+    browser.tabs.get(tabId).then((tab) => status(tab.status), () => finish(true));
+  });
+}
+
+/** True when a clip saved the page's text. */
+export const savedText = (outcome: CaptureOutcome) => outcome.saved && outcome.result.snapshot?.status === 'ok';
+
+/** One message for clipping sources: what happened to one, or how many pages got their text and what happened to the others. */
+export function clipSummary(done: Array<{ target: ClipTarget; outcome: CaptureOutcome }>): string {
+  const told = ({ target, outcome }: { target: ClipTarget; outcome: CaptureOutcome }) => (outcome.saved ? outcome.message : `${target.label}: ${outcome.message}`);
+  if (done.length === 1) return told(done[0]!);
+  const others = done.filter((d) => !savedText(d.outcome)).map(told);
+  return [`Clipped ${done.length - others.length} of ${plural(done.length, 'page')}.`, ...others].join(' ');
+}
+
+/**
+ * Clips a source saved as a URL only: opens its page in a background tab of the window, reads it once it has
+ * loaded, saves the text to that source and closes the tab. Chrome's permission for the site is asked for
+ * beforehand; a page that moved to a site without it is not read. No picture is taken, as the tab is not shown.
+ */
+export async function captureAddress(db: IDBDatabase, target: ClipTarget, windowId?: number): Promise<CaptureOutcome> {
+  const capturedAt = new Date().toISOString();
+  // A file would not give text, and opening most of them starts a download.
+  const file = fileTypeOf(target.url);
+  if (file) return notSaved('not_a_page', file);
+  let tabId: number | undefined;
+  try {
+    try {
+      tabId = (await browser.tabs.create({ url: target.url, active: false, ...(windowId === undefined ? {} : { windowId }) })).id;
+    } catch (error) {
+      return notSaved('not_opened', error instanceof Error ? error.message : String(error));
+    }
+    if (tabId === undefined) return notSaved('not_opened');
+    const tab = await loadedTab(tabId);
+    if (!tab) return notSaved('tab_gone');
+    // Without permission for the site the page is on, Chrome does not give its address.
+    if (!tab.url) return notSaved('no_site_access', hostOf(target.url));
+    const dedupUrl = normalizeUrl(tab.url);
+    if (!dedupUrl) return notSaved('blocked_page');
+    const read = await readTab(tabId, dedupUrl);
+    if ('reason' in read) return notSaved(read.reason === 'no_access' ? 'no_site_access' : read.reason, hostOf(tab.url));
+    // The text is the source's, also from the address its page moved to, which the capture keeps as visited.
+    return await save(db, {
+      session_id: target.session_id,
+      kind: 'page',
+      dedup_url: target.dedup_url,
+      captured_at: capturedAt,
+      original_url: tab.url,
+      tab_title: tab.title ?? '',
+      found_on: null,
+      anchor_text: null,
+      fragment: null,
+      page_code: read.pageCode,
+      snapshot: read.snapshot,
+    });
+  } finally {
+    if (tabId !== undefined) void browser.tabs.remove(tabId).catch(() => undefined);
+  }
 }
 
 /**

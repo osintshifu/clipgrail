@@ -1,23 +1,24 @@
 /**
- * Pivots: values that can tie sources together. Tracker IDs and what pages
- * declare about themselves come from the page code read when a page was
- * clipped; email, Bitcoin and Ethereum addresses, IBANs and Telegram links
- * from saved texts and selections. A value in several sources is a lead to
- * check, not proof that the sources are connected.
+ * Pivots: values that can tie sources together. Tracker IDs, what pages
+ * declare about themselves and the contacts, accounts and payment addresses in
+ * their links, visible text and schema.org data are read when a page is clipped; email,
+ * Bitcoin and Ethereum addresses, IBANs and Telegram links are also found in
+ * saved texts and selections. A value in several sources is a lead to check,
+ * not proof that the sources are connected.
  */
-import type { DeclaredField, Fragment, TrackerKind } from './model';
+import type { DeclaredField, Fragment, PagePlace, PageValueKind, TrackerKind } from './model';
 import type { LibraryEntry } from './library';
 import { versionsOf } from './library';
 import type { Snippet } from './search';
 import { fold, searchWords, searchable } from './search';
-import { DECLARED_LABELS, PLACE_WORDS, TRACKER_LABELS, hostOf } from './describe';
+import { DECLARED_LABELS, PLACE_WORDS, TRACKER_LABELS, VALUE_LABELS, hostOf } from './describe';
 import { findValues } from './values';
 import type { TextValueKind } from './values';
 
-export type PivotGroup = 'tracker' | 'declared' | 'text';
-/** What a page declares that can tie it to others; dates, types, generators and canonical addresses do not. */
-type DeclaredPivot = Extract<DeclaredField, 'site_name' | 'publisher' | 'author' | 'x_account'>;
-export type PivotKind = TrackerKind | DeclaredPivot | TextValueKind;
+export type PivotGroup = 'tracker' | 'declared' | 'contact';
+/** Names a page declares that can tie it to others; dates, types, generators and canonical addresses do not. Its X account is a contact. */
+type DeclaredPivot = Extract<DeclaredField, 'site_name' | 'publisher' | 'author'>;
+export type PivotKind = TrackerKind | DeclaredPivot | PageValueKind;
 
 export interface PivotKindInfo {
   /** A short name shown before the value in the list. */
@@ -29,7 +30,7 @@ export interface PivotKindInfo {
 
 const tracker = (badge: string, kind: TrackerKind): PivotKindInfo => ({ badge, label: TRACKER_LABELS[kind], group: 'tracker', mono: true });
 const declared = (badge: string, field: DeclaredPivot): PivotKindInfo => ({ badge, label: DECLARED_LABELS[field], group: 'declared', mono: false });
-const inText = (badge: string, label: string, mono: boolean): PivotKindInfo => ({ badge, label, group: 'text', mono });
+const contact = (badge: string, kind: PageValueKind, mono = false): PivotKindInfo => ({ badge, label: VALUE_LABELS[kind], group: 'contact', mono });
 
 /** The kinds of values, in the order the list shows values found in as many sources. */
 export const PIVOT_KINDS: Record<PivotKind, PivotKindInfo> = {
@@ -42,22 +43,32 @@ export const PIVOT_KINDS: Record<PivotKind, PivotKindInfo> = {
   site_name: declared('Site', 'site_name'),
   publisher: declared('Publisher', 'publisher'),
   author: declared('Author', 'author'),
-  x_account: declared('X', 'x_account'),
-  email: inText('Email', 'Email address', false),
-  bitcoin: inText('BTC', 'Bitcoin address', true),
-  ethereum: inText('ETH', 'Ethereum address', true),
-  iban: inText('IBAN', 'IBAN', true),
-  telegram: inText('Telegram', 'Telegram link', false),
+  email: contact('Email', 'email'),
+  phone: contact('Phone', 'phone', true),
+  x: contact('X', 'x'),
+  telegram: contact('Telegram', 'telegram'),
+  facebook: contact('Facebook', 'facebook'),
+  instagram: contact('Instagram', 'instagram'),
+  linkedin: contact('LinkedIn', 'linkedin'),
+  youtube: contact('YouTube', 'youtube'),
+  tiktok: contact('TikTok', 'tiktok'),
+  github: contact('GitHub', 'github'),
+  discord: contact('Discord', 'discord'),
+  reddit: contact('Reddit', 'reddit'),
+  bitcoin: contact('BTC', 'bitcoin', true),
+  ethereum: contact('ETH', 'ethereum', true),
+  iban: contact('IBAN', 'iban', true),
 };
 const KIND_ORDER = Object.keys(PIVOT_KINDS);
 
-export const PIVOT_GROUPS: Record<PivotGroup, string> = { tracker: 'Trackers', declared: 'Declared by pages', text: 'In text and selections' };
+export const PIVOT_GROUPS: Record<PivotGroup, string> = { tracker: 'Trackers', declared: 'Declared by pages', contact: 'Contacts and addresses' };
 
 /** What a value shared by several sources can and cannot show, by group. */
 export const PIVOT_NOTES: Record<PivotGroup, string> = {
   tracker: 'The same ID on different sites often means a common operator, but an agency, a template or a copied page can share one too. Check before you conclude.',
   declared: 'Pages declare these about themselves and nothing checks them: the same name on several pages shows they declare it, not who made them.',
-  text: 'The same value in several sources shows they mention it; it does not show who wrote it or that the sources are connected.',
+  contact:
+    "The same value in several sources shows they give or mention it. A page can link to someone else's account, and sites made by one agency or from one template can share one: it does not show who controls it or that the sources are connected.",
 };
 
 /** A value found in a saved text or a selection: where it first appears, with the passage around it. */
@@ -107,11 +118,11 @@ export interface PivotUse {
   entry: LibraryEntry;
   /** The newest capture of the source with the value: the one that opens. */
   capture_id: string;
-  /** Where the value is: the tags or places of the page code, or the saved text or selection. */
+  /** Where the value is: the tags or places of the page code, the page's links or text, or the saved text or selection. */
   where: string;
   /** The value as written there, to mark it in the reader. */
   raw: string;
-  /** For a value in a text, the passage around it. */
+  /** For a value in a saved text or a selection, the passage around it; null for one read from the page, shown in its details. */
   snippet: Snippet | null;
 }
 
@@ -130,14 +141,15 @@ export interface Pivot {
   haystack: string;
 }
 
-const isDeclaredPivot = (field: DeclaredField): field is DeclaredPivot => field in PIVOT_KINDS;
+/** Where in the page a value was read, after "Page". */
+const PAGE_PLACES: Record<PagePlace, string> = { link: 'link', page_text: 'text', schema_org: 'schema.org data' };
 
-/** Names compared without case, accents or extra spaces; an X account also without its @ or the address of its profile. */
-function declaredKey(field: DeclaredPivot, value: string): string {
-  const key = fold(searchable(value)).replace(/ +/g, ' ').trim();
-  if (field !== 'x_account') return key;
-  return key.replace(/^(?:https?:\/\/)?(?:(?:www|mobile)\.)?(?:twitter|x)\.com\/([^/?#]+).*$/, '$1').replace(/^@/, '');
-}
+const isDeclaredPivot = (field: DeclaredField): field is DeclaredPivot => field === 'site_name' || field === 'publisher' || field === 'author';
+
+/** Names compared without case, accents or extra spaces. */
+const nameKey = (value: string) => fold(searchable(value)).replace(/ +/g, ' ').trim();
+/** An X account without case, its @ or the address of its profile. */
+const xKey = (value: string) => nameKey(value).replace(/^(?:https?:\/\/)?(?:(?:www|mobile)\.)?(?:twitter|x)\.com\/([^/?#]+).*$/, '$1').replace(/^@/, '');
 
 /**
  * The values in the given sources, each with the sources it is in, found on
@@ -165,11 +177,16 @@ export function collectPivots(entries: LibraryEntry[], findsOf: (snapshotId: str
       const at = capture.captured_at;
       for (const t of capture.page_code?.trackers ?? []) add(t.kind, t.id, t.id, use(t.where.map((w) => PLACE_WORDS[w]).join(', '), t.id), at);
       for (const d of capture.page_code?.declared ?? []) {
-        if (isDeclaredPivot(d.field)) add(d.field, declaredKey(d.field, d.value), d.value, use(d.from.join(', '), d.value), at);
+        if (isDeclaredPivot(d.field)) add(d.field, nameKey(d.value), d.value, use(d.from.join(', '), d.value), at);
+        else if (d.field === 'x_account') add('x', xKey(d.value), d.value, use(d.from.join(', '), d.value), at);
       }
       const text = version.current ? 'Saved text' : `Earlier text · capture ${version.number}`;
       if (snapshot?.status === 'ok') for (const f of findsOf(snapshot.id) ?? []) add(f.kind, f.value, f.value, use(text, f.raw, f.snippet), at);
       if (capture.fragment) for (const f of findsInSelection(capture.id, capture.fragment)) add(f.kind, f.value, f.value, use('Selection', f.raw, f.snippet), at);
+      // After the saved text, so a value also in it opens there, with the passage around it.
+      for (const v of capture.page_code?.values ?? []) {
+        add(v.kind, v.kind === 'x' ? xKey(v.value) : v.value, v.value, use(`Page ${v.where.map((w) => PAGE_PLACES[w]).join(' and ')}`, v.value), at);
+      }
     }
   }
   return [...found]
@@ -195,6 +212,13 @@ export function collectPivots(entries: LibraryEntry[], findsOf: (snapshotId: str
         KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) ||
         a.value.localeCompare(b.value),
     );
+}
+
+/** Values as a table to paste into a spreadsheet: a header, then kind, value, sources and sites, separated by tabs. */
+export function pivotsTable(pivots: Pivot[]): string {
+  const cell = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const lines = pivots.map((p) => [PIVOT_KINDS[p.kind].label, cell(p.value), String(p.uses.length), p.sites.join(', ')].join('\t'));
+  return [['Kind', 'Value', 'Sources', 'Sites'].join('\t'), ...lines].join('\n') + '\n';
 }
 
 export interface PivotFilter {

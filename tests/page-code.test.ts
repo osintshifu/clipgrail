@@ -53,7 +53,56 @@ describe('page code', () => {
       { field: 'publisher', value: 'Harbour Authority Ltd', from: ['schema.org publisher'] },
     ]);
     // What is stored is checked again and copied without anything else the page put there.
-    expect(cleanPageCode({ ...code, extra: 'x' })).toEqual({ declared: code.declared, trackers: code.trackers });
+    expect(cleanPageCode({ ...code, extra: 'x' })).toEqual({ declared: code.declared, trackers: code.trackers, values: code.values });
+  });
+
+  it('reads contacts, accounts and payment addresses from the links, the text and the schema.org data of the page, and keeps a limited number', () => {
+    // jsdom has no layout, so the text the page shows is its text without scripts here.
+    Object.defineProperty(HTMLElement.prototype, 'innerText', {
+      get(this: HTMLElement) {
+        const copy = this.cloneNode(true) as HTMLElement;
+        for (const script of Array.from(copy.querySelectorAll('script, style'))) script.remove();
+        return copy.textContent;
+      },
+      configurable: true,
+    });
+    const read = (body: string) => readPageCode(new DOMParser().parseFromString(`<!doctype html><html><body>${body}</body></html>`, 'text/html'));
+    const code = read(`<header>
+      <a href="https://twitter.com/HarbourAuth">X</a> <a href="https://x.com/intent/follow?screen_name=harbourauth">Follow</a>
+      <a href="https://twitter.com/HarbourAuth/status/1">Post</a> <a href="https://twitter.com/share?url=https://port.example.org">Share</a>
+      <a href="https://t.me/HarbourNews">Telegram</a> <a href="https://www.facebook.com/harbour.authority/">Facebook</a>
+      <a href="https://www.facebook.com/sharer/sharer.php?u=https://port.example.org">Share</a> <a href="https://instagram.com/harbour_auth">Instagram</a>
+      <a href="https://www.instagram.com/p/C1x2y3z/">Post</a> <a href="https://pl.linkedin.com/company/harbour-authority">LinkedIn</a>
+      <a href="https://www.youtube.com/@HarbourTV/videos">YouTube</a> <a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ">Video</a>
+      <a href="https://www.tiktok.com/@harbour.auth">TikTok</a> <a href="https://github.com/harbour-desk">GitHub</a>
+      <a href="https://github.com/features">Features</a> <a href="https://github.com/harbour-desk/port-app">Code</a>
+      <a href="https://discord.gg/Hb7xQ2">Discord</a> <a href="https://old.reddit.com/r/Harbour/">Reddit</a></header>
+      <footer>Press: <a href="mailto:Press@Port.example.org?subject=Hello">the press office</a>, sales@port.example.org.
+      Call <a href="tel:+48 (22) 555-01-23">+48 22 555 01 23</a> or <a href="tel:112">112</a>. Donate: bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh</footer>
+      <script type="application/ld+json">{"@type":"Organization","email":"mailto:Support@Port.example.org","telephone":"+48-22-555-01-23",
+        "sameAs":["https://twitter.com/HarbourAuth","https://www.wikidata.org/wiki/Q42"],"contactPoint":[{"@type":"ContactPoint","email":"sales@port.example.org"}]}</script>`);
+    // A post, a share button, a page of the site itself and a short number are not values; one written twice is listed once.
+    expect(code.values).toEqual([
+      { kind: 'email', value: 'press@port.example.org', where: ['link'] },
+      { kind: 'email', value: 'sales@port.example.org', where: ['page_text', 'schema_org'] },
+      { kind: 'email', value: 'support@port.example.org', where: ['schema_org'] },
+      { kind: 'phone', value: '+48225550123', where: ['link', 'schema_org'] },
+      { kind: 'x', value: '@HarbourAuth', where: ['link', 'schema_org'] },
+      { kind: 'telegram', value: 't.me/harbournews', where: ['link'] },
+      { kind: 'facebook', value: 'facebook.com/harbour.authority', where: ['link'] },
+      { kind: 'instagram', value: 'instagram.com/harbour_auth', where: ['link'] },
+      { kind: 'linkedin', value: 'linkedin.com/company/harbour-authority', where: ['link'] },
+      { kind: 'youtube', value: 'youtube.com/@harbourtv', where: ['link'] },
+      { kind: 'tiktok', value: 'tiktok.com/@harbour.auth', where: ['link'] },
+      { kind: 'github', value: 'github.com/harbour-desk', where: ['link'] },
+      { kind: 'discord', value: 'discord.gg/Hb7xQ2', where: ['link'] },
+      { kind: 'reddit', value: 'reddit.com/r/harbour', where: ['link'] },
+      { kind: 'bitcoin', value: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', where: ['page_text'] },
+    ]);
+    expect(cleanPageCode(code)).toEqual({ declared: [], trackers: [], values: code.values });
+    // A page with more values than a capture keeps says so.
+    const many = read(Array.from({ length: 105 }, (_, i) => `staff${i}@port.example.org`).join(' '));
+    expect([many.values?.length, many.values_cut]).toEqual([100, true]);
   });
 
   it('reads the forms real pages use, leaves out what the page did not declare, and stays quick on a page built to slow it down', () => {
@@ -87,7 +136,11 @@ line two","author":"Anna Nowak"}}</script>
   });
 
   it('refuses page code that breaks its contract', () => {
-    const valid = { declared: [{ field: 'author', value: 'Anna', from: ['meta author'] }], trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['noscript'] }] };
+    const valid = {
+      declared: [{ field: 'author', value: 'Anna', from: ['meta author'] }],
+      trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['noscript'] }],
+      values: [{ kind: 'x', value: '@HarbourAuth', where: ['link'] }],
+    };
     const broken: unknown[] = [
       null,
       { declared: valid.declared },
@@ -97,6 +150,10 @@ line two","author":"Anna Nowak"}}</script>
       { ...valid, declared: [{ field: 'author', value: 'Anna', from: ['meta author', 'meta author'] }] },
       { ...valid, declared: [{ field: 'canonical', value: 'javascript:alert(1)', from: ['link rel=canonical'] }] },
       { ...valid, declared: Array.from({ length: 41 }, () => valid.declared[0]) },
+      { ...valid, values: [{ kind: 'github', value: 'github.com/features', where: ['link'] }] },
+      { ...valid, values: [{ kind: 'email', value: 'Press@Port.example.org', where: ['link'] }] },
+      { ...valid, values: [{ kind: 'phone', value: '+48225550123', where: ['footer'] }] },
+      { declared: [], trackers: [], values_cut: true },
     ];
     expect(cleanPageCode(valid)).toEqual(valid);
     for (const value of broken) expect(cleanPageCode(value), JSON.stringify(value)).toBeNull();

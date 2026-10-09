@@ -123,12 +123,12 @@ export async function deliverJob(
           : `Could not copy to the clipboard (${reason(error)}). Select the text in the preview or use Export Markdown.`,
     };
   }
-  if (adapter.kind === 'clipboard' || !adapter.launch_url) return { ok: true, message: 'Research Job copied.' };
+  if (adapter.kind === 'clipboard' || !adapter.launch_url) return { ok: true, message: 'Markdown copied.' };
 
   try {
     await env.openUrl(adapter.launch_url);
   } catch (error) {
-    return { ok: false, message: `Research Job copied, but ${adapter.name} could not be opened: ${reason(error)}` };
+    return { ok: false, message: `Job copied, but ${adapter.name} could not be opened: ${reason(error)}` };
   }
-  return { ok: true, message: 'Research Job copied. Paste it into the chat.' };
+  return { ok: true, message: 'Job copied. Paste it into the chat.' };
 }

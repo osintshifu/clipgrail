@@ -67,6 +67,10 @@ button.icon:hover:not(:disabled), button.icon[aria-expanded='true'] { background
 }
 .tabs button:hover:not(:disabled) { background: none; color: var(--fg); }
 .tabs button[aria-selected='true'] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
+/* Create job shows how many sources go into the job, and from Clips an arrow to it as the next step. */
+.tab-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 7px; border-radius: 9px; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent); vertical-align: 1px; }
+.tab-count[hidden], .tab-next[hidden] { display: none; }
+.tab-next { margin-left: 6px; opacity: 0.6; }
 
 /* Main area: scrolls between the header and the action bar */
 main { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }

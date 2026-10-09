@@ -37,9 +37,10 @@ import {
 import type { SavedCapture, SavedPage, SessionView, SourceEntry } from '../../lib/db';
 import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations';
 import { DESTINATIONS, deliverJob } from '../../lib/destinations';
-import type { ClipRequest, ClipResponse, RecordRequest, RecordResponse } from '../../lib/messages';
+import type { ClipCancelRequest, ClipRequest, ClipResponse, ClipSourcesRequest, RecordRequest, RecordResponse } from '../../lib/messages';
+import { clipAddressOf, sitePatterns } from '../../lib/clip-address';
 import type { Recording } from '../../lib/recording';
-import { RECORDING_KEY, isRecording } from '../../lib/recording';
+import { RECORDING_KEY, REVIEW_KEY, isRecording } from '../../lib/recording';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
 import { arrival, ledTo, sourcesByAddress } from '../../lib/timeline';
 import type { Session } from '../../lib/model';
@@ -51,6 +52,8 @@ import type { SourceStatus } from '../../lib/selection';
 import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection';
 import { openLibrary } from '../../lib/library-tab';
 import { pageCodeBlock } from '../../lib/page-code-block';
+import type { CopyReport } from '../../lib/copy';
+import { copyableValue } from '../../lib/copy';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { OpenMode, Preset } from '../../lib/settings';
@@ -170,6 +173,8 @@ let pendingRestore: Backup | null = null;
 let shortcut = '';
 let modifier = 'Ctrl';
 let lastNoticeId = '';
+/** When the last notice shown was published, so a clip's result is not covered by its own progress message. */
+let lastNoticeAt = 0;
 let previousPrompt: string | null = null;
 let notesOpen = false;
 /** The recording of any window, from session storage. */
@@ -225,6 +230,9 @@ function showToast(text: string, options: { level?: 'info' | 'error'; undo?: () 
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, options.level === 'error' ? 15_000 : 8_000);
 }
+const reportCopy: CopyReport = (copied, what, error) =>
+  copied ? showToast(`Copied ${what}.`) : showToast(`Not copied: ${errorText(error)}`, { level: 'error' });
+
 function hideToast(): void {
   $('toast').hidden = true;
   toastUndo = null;
@@ -259,6 +267,7 @@ function handleNotice(notice: Notice | undefined): void {
   if (!notice || notice.id === lastNoticeId) return;
   if (notice.window_id !== null && windowId !== undefined && notice.window_id !== windowId) return;
   lastNoticeId = notice.id;
+  lastNoticeAt = notice.at;
   const captureId = notice.capture_id;
   showToast(notice.text, {
     level: notice.level,
@@ -327,6 +336,11 @@ function toggleMenu(open: boolean): void {
   browser.permissions.contains({ permissions: ['tabs'] }).then(
     (has) => ($('tab-access-button').hidden = !has),
     () => ($('tab-access-button').hidden = true),
+  );
+  // Turn off site access, only while sites allowed for Clip page are kept.
+  browser.permissions.getAll().then(
+    (all) => ($('site-access-button').hidden = !all.origins?.length),
+    () => ($('site-access-button').hidden = true),
   );
 }
 
@@ -841,7 +855,7 @@ function textSection(entry: SourceEntry): Child[] {
   if (!ok && !selections.length) {
     blocks.push(
       h('div', { class: 'no-text' }, [
-        choice.status === 'failed' ? 'No text was saved. Open the page and clip it again to retry.' : 'No text yet. Open the page and clip it to save its text.',
+        choice.status === 'failed' ? 'No text was saved. Open the page and clip it again to retry.' : 'No text yet. Clip page saves its text.',
       ]),
     );
   }
@@ -937,7 +951,8 @@ function detailsSection(entry: SourceEntry): Child[] {
       { class: 'details' },
       detailRows(entry, view?.session.name ?? '').flatMap((row) => [
         h('dt', {}, [row.label]),
-        h('dd', { class: row.mono ? 'mono' : '' }, [row.value]),
+        // Addresses and hashes are the values worth copying.
+        row.mono ? copyableValue([row.value], row.value, reportCopy, true) : h('dd', {}, [row.value]),
       ]),
     ),
     h('p', { class: 'small' }, [
@@ -951,7 +966,7 @@ function detailsSection(entry: SourceEntry): Child[] {
 function pageCodeOf(entry: SourceEntry): Child {
   const shown = pageCodeCapture(entry);
   const code = shown && pageCodeView(shown.capture, shown.snapshot);
-  return code ? pageCodeBlock(code, `Capture ${shown.number} · ${fmtTime(shown.capture.captured_at)}`) : null;
+  return code ? pageCodeBlock(code, reportCopy, `Capture ${shown.number} · ${fmtTime(shown.capture.captured_at)}`) : null;
 }
 
 function renderDetail(): void {
@@ -999,6 +1014,13 @@ function renderDetail(): void {
           },
           [icon(entry.source.important ? 'star-fill' : 'star')],
         ),
+        chooseSnapshot(entry).status === 'pending'
+          ? h(
+              'button',
+              { attrs: { id: 'clip-source', type: 'button', title: 'Open the page in a background tab and save its text' }, on: { click: () => clipSources([entry]) } },
+              [icon('frame-corners'), 'Clip page'],
+            )
+          : null,
         h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, [icon('folder-simple'), 'Move to…']),
         h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer', title: 'Open page', 'aria-label': 'Open page' } }, [icon('arrow-square-out')]),
         h('button', { class: 'delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog', title: 'Delete source', 'aria-label': 'Delete…' }, on: { click: () => void openDeleteSourceSheet(entry) } }, [icon('trash')]),
@@ -1133,7 +1155,7 @@ function openTabsSheet(): void {
   openSheet('tabs', 'Save tabs as addresses', [
     h('p', {}, [
       'Saves the address and title of open tabs as sources marked ',
-      h('b', {}, ['Address only']),
+      h('b', {}, ['URL only']),
       '. Pages are not read; open a tab and clip it to save its text. Chrome asks once for permission to read tab addresses.',
     ]),
     h('button', { class: 'option-button', attrs: { id: 'save-selected', type: 'button' }, on: { click: save('selected') } }, [
@@ -1366,8 +1388,20 @@ function scheduleJobRender(): void {
  * shown; selectTab renders it when the view opens, and Copy, Open in and
  * Export re-read the session and rebuild it before delivering.
  */
+/** The number of sources the job would include, on its tab, with an arrow from Clips to it as the next step. */
+function renderJobTab(): void {
+  const excluded = new Set(settings?.excluded_source_ids ?? []);
+  const n = view ? view.sources.filter((s) => !excluded.has(s.source.id)).length : 0;
+  const count = $('job-count');
+  count.hidden = n === 0;
+  count.textContent = fmtNumber(n);
+  $('job-next').hidden = n === 0 || currentView === 'job';
+  $('tab-job').title = n ? `${plural(n, 'source')} ${n === 1 ? 'goes' : 'go'} into the job` : '';
+}
+
 function renderJob(): void {
   clearTimeout(jobRenderTimer);
+  renderJobTab();
   if (!view || currentView !== 'job') return;
   const excluded = new Set(settings.excluded_source_ids);
   const selectedCount = view.sources.filter((s) => !excluded.has(s.source.id)).length;
@@ -1450,7 +1484,7 @@ async function generateJob(): Promise<void> {
     renderJob();
     $('job-preview').focus();
   } catch (error) {
-    showToast(`Research Job not saved: ${errorText(error)}`, { level: 'error' });
+    showToast(`Job not saved: ${errorText(error)}`, { level: 'error' });
   }
 }
 
@@ -1477,7 +1511,7 @@ async function deliver(id: DestinationId): Promise<void> {
   // Re-read the session first: notes or captures may have changed here or in another window.
   await refreshData();
   if (!job || !draft || isJobOutdated(job, draft)) {
-    status.textContent = 'Settings changed. Generate a new Research Job.';
+    status.textContent = 'Settings changed. Generate a new job.';
     status.classList.add('error');
     status.setAttribute('role', 'alert');
     status.hidden = false;
@@ -1499,8 +1533,8 @@ function deliverFromSheet(id: DestinationId): () => void {
 }
 
 function exportSheet(): void {
-  openSheet('export', 'Export the Research Job', [
-    h('p', {}, ['Both files contain the Research Job exactly as shown in the preview. This is not a backup of your data; use Back up all data for that.']),
+  openSheet('export', 'Export the job', [
+    h('p', {}, ['Both files contain the job exactly as shown in the preview. This is not a backup of your data; use Back up all data for that.']),
     h('button', { class: 'option-button', attrs: { type: 'button', 'data-destination': 'markdown' }, on: { click: deliverFromSheet('markdown') } }, [
       h('span', { class: 'name' }, ['Markdown']),
       h('span', { class: 'file' }, ['clipgrail-session.md']),
@@ -1622,6 +1656,19 @@ async function turnOffTabAccess(): Promise<void> {
   }
 }
 
+/** Withdraws the access to the sites allowed for Clip page; the next Clip page asks again. */
+async function turnOffSiteAccess(): Promise<void> {
+  toggleMenu(false);
+  try {
+    const origins = (await browser.permissions.getAll()).origins ?? [];
+    const removed = !origins.length || (await browser.permissions.remove({ origins }));
+    if (removed) showToast(`Site access turned off for ${plural(origins.length, 'site')}. Clip page asks again.`);
+    else showToast('Site access could not be turned off.', { level: 'error' });
+  } catch (error) {
+    showToast(`Site access could not be turned off: ${errorText(error)}`, { level: 'error' });
+  }
+}
+
 function helpSheet(): void {
   const item = (term: string, ...description: Child[]) => [h('dt', {}, [term]), h('dd', {}, description)];
   openSheet('help', 'How capture works', [
@@ -1630,14 +1677,14 @@ function helpSheet(): void {
         'Clip page',
         'Saves the readable text of the current page with the time, extraction method and SHA-256. ',
         shortcut ? h('kbd', {}, [shortcut]) : null,
-        shortcut ? ' or right-click › Clip page to ClipGrail does the same.' : 'Right-click › Clip page to ClipGrail does the same.',
+        shortcut ? ' or right-click › ClipGrail › Clip page does the same.' : 'Right-click › ClipGrail › Clip page does the same.',
       ),
       ...item('Selection', 'Saves the text you selected on the page. Also in the right-click menu.'),
-      ...item('Links', 'Right-click a link › Save link to ClipGrail (not opened). The address is saved as Address only; the page is not visited.'),
+      ...item('Links', 'Right-click a link › ClipGrail › Clip URL. The address is saved as URL only; the page is not visited. Clip page in its details saves the text later.'),
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it and how you reached it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need and mark the important ones. A page the session already has is noted as visited again when a new page load returns to it 30 minutes or more after it was last saved or visited; reloads, Back and Forward are not. Addresses with a sign-in or access token, such as a password-reset link, are skipped. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
+        'Also right-click › ClipGrail › Start recording, which saves the page you are on first. While recording, every page you open in this window is saved as URL only, with the page whose link led to it and how you reached it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need, mark the important ones and clip the ones you keep. A page the session already has is noted as visited again when a new page load returns to it 30 minutes or more after it was last saved or visited; reloads, Back and Forward are not. Addresses with a sign-in or access token, such as a password-reset link, are skipped. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
       ),
       ...item(
         "Can't read this tab?",
@@ -1820,13 +1867,16 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
     );
   };
   const all = h('input', { attrs: { type: 'checkbox' } });
-  const remove = h('button', { class: 'primary', attrs: { type: 'button' } });
+  const clip = h('button', { class: 'primary', attrs: { type: 'button', title: 'Save the text of the checked pages and remove the unchecked ones' } });
+  const remove = h('button', { attrs: { type: 'button' } });
   const unchecked = () => rows.filter((row) => !row.box.checked);
   const update = () => {
     const count = unchecked().length;
     for (const row of rows) row.label.classList.toggle('removed', !row.box.checked);
     all.checked = count === 0;
     all.indeterminate = count > 0 && count < n;
+    clip.textContent = `Clip ${plural(n - count, 'page')}`;
+    clip.disabled = count === n;
     remove.textContent = `Remove ${plural(count, 'page')}`;
     remove.disabled = count === 0;
   };
@@ -1857,6 +1907,17 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
       browser.tabs.create({ url: rows[at]!.page.source.dedup_url, windowId, active }).catch((error: unknown) => sheetError(`Page not opened: ${errorText(error)}`));
     } else return;
     event.preventDefault();
+  });
+
+  // The checked pages are clipped and the unchecked ones removed, once Chrome allows the sites.
+  clip.addEventListener('click', () => {
+    const keep = rows.filter((row) => row.box.checked);
+    requestClip(
+      keep.map((row) => row.page.source.id),
+      keep.map((row) => row.page.capture.original_url),
+      unchecked().map((row) => row.page.saved),
+      () => sheetKind === 'review-recording' && closeSheet(),
+    );
   });
 
   remove.addEventListener('click', () => {
@@ -1897,11 +1958,58 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
       h('label', { class: 'review-all' }, [all, 'All pages']),
       list,
       h('div', { class: 'sheet-actions review-actions' }, [
+        clip,
         remove,
         h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Keep all']),
       ]),
+      h('p', { class: 'small' }, ["Clip saves the text of the checked pages and removes the unchecked ones. Chrome asks once to let ClipGrail read their sites."]),
     ],
     rows[0]!.box,
+  );
+}
+
+/** The review after Stop in the page menu: the panel of the recorded window shows it, once. */
+function handleReview(value: unknown): void {
+  const review = value as (RecordResponse & { window_id: number | null; at: number }) | undefined;
+  if (!review || !Array.isArray(review.captures) || review.window_id !== windowId || Date.now() - review.at > 60_000) return;
+  void browser.storage.session.remove(REVIEW_KEY).catch(() => undefined);
+  const visits = review.visits ?? [];
+  if (review.captures.length) void reviewRecording(review.captures, visits, review.failed);
+  else showRecordingEnded('Recording stopped.', '', review.captures, visits, review.failed, 'Recording stopped. No new pages.');
+}
+
+/**
+ * Clips sources saved as a URL only. The request goes to the background before Chrome asks to let ClipGrail read
+ * their sites, because the toolbar popup closes when Chrome asks; the background clips once the sites are allowed
+ * and the result comes as a notice. After a recording, `remove` are the pages left unchecked, removed first.
+ */
+function requestClip(ids: string[], urls: string[], remove: SavedCapture[] = [], onAllowed?: () => void): void {
+  if (windowId === undefined || !ids.length) return;
+  const origins = sitePatterns(urls);
+  const request: ClipSourcesRequest = { type: 'clip-sources', sourceIds: ids, windowId, origins, remove };
+  const cancel: ClipCancelRequest = { type: 'clip-sources-cancel', windowId };
+  const refused = (why: string) => {
+    void browser.runtime.sendMessage(cancel).catch(() => undefined);
+    showToast(`Not clipped: ${why}`, { level: 'error' });
+  };
+  const asked = Date.now();
+  browser.runtime.sendMessage(request).catch((error: unknown) => showToast(`Not clipped: ${errorText(error)}`, { level: 'error' }));
+  // Asked in the click itself: Chrome shows its prompt only for a user action.
+  browser.permissions.request({ origins }).then(
+    (granted) => {
+      if (!granted) return refused(`ClipGrail needs Chrome's permission to read ${origins.length === 1 ? 'this site' : 'these sites'}.`);
+      onAllowed?.();
+      // A clip that ended at once, such as one of a file address, has shown its result already.
+      if (lastNoticeAt < asked) showToast(`Clipping ${plural(ids.length, 'page')}…`);
+    },
+    (error: unknown) => refused(errorText(error)),
+  );
+}
+
+function clipSources(entries: SourceEntry[]): void {
+  requestClip(
+    entries.map((e) => e.source.id),
+    entries.map((e) => clipAddressOf(e.source, e.captures.map((c) => c.capture))),
   );
 }
 
@@ -1931,6 +2039,7 @@ function selectTab(name: 'collect' | 'job', focus = false): void {
   $('view-job').hidden = name !== 'job';
   if (focus) tabs[name].focus();
   if (name === 'job') renderJob();
+  else renderJobTab();
   renderBars();
 }
 
@@ -2038,6 +2147,7 @@ function bind(): void {
     if (file) void checkRestoreFile(file).catch((error: unknown) => showRestoreSheet(`Backup rejected: ${errorText(error)}\nCurrent data is unchanged.`, false));
   });
   $('tab-access-button').addEventListener('click', () => void turnOffTabAccess());
+  $('site-access-button').addEventListener('click', () => void turnOffSiteAccess());
   $('record-button').addEventListener('click', () => void (recording?.window_id === windowId ? stopRecording() : startRecording()));
   $('open-in-panel').addEventListener('click', () => void chooseOpenMode('panel'));
   $('open-in-popup').addEventListener('click', () => void chooseOpenMode('popup'));
@@ -2054,6 +2164,7 @@ function bind(): void {
 
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'session' && changes[NOTICE_KEY]) handleNotice(changes[NOTICE_KEY].newValue as Notice | undefined);
+    if (area === 'session' && changes[REVIEW_KEY]?.newValue) handleReview(changes[REVIEW_KEY].newValue);
     if (area === 'session' && changes[RECORDING_KEY]) {
       const value: unknown = changes[RECORDING_KEY].newValue;
       const before = recording;
@@ -2109,6 +2220,7 @@ async function init(): Promise<void> {
     const stored = await browser.storage.session.get(NOTICE_KEY);
     const notice = stored[NOTICE_KEY] as Notice | undefined;
     if (notice && Date.now() - notice.at < 10_000) handleNotice(notice);
+    handleReview((await browser.storage.session.get(REVIEW_KEY))[REVIEW_KEY]);
   } catch (error) {
     showToast(`ClipGrail could not load its data: ${errorText(error)}`, { level: 'error' });
   }

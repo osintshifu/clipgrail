@@ -1,4 +1,6 @@
-import { INBOX_SESSION_ID } from './model';
+import { INBOX_SESSION_ID, sourceLabel } from './model';
+import type { ClipTarget } from './clip-address';
+import { clipAddressOf } from './clip-address';
 import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, PageCode, Removal, RemovalAction, RemovedSource, Session, Snapshot, SnapshotMeta, Source } from './model';
 import { capturedTitle } from './selection';
 import { withoutCredentials } from './url';
@@ -616,6 +618,20 @@ export interface SavedPage {
   saved: SavedCapture;
   capture: Capture;
   source: Source;
+}
+
+/** Where to open each of these sources to clip it, in the given order; a source deleted meanwhile is left out. */
+export function clipTargets(db: IDBDatabase, sourceIds: string[]): Promise<ClipTarget[]> {
+  return inTransaction(db, ['sources', 'captures'], 'readonly', async (tx) => {
+    const targets: ClipTarget[] = [];
+    for (const id of sourceIds) {
+      const source = (await result(tx.objectStore('sources').get(id))) as Source | undefined;
+      if (!source) continue;
+      const captures = (await result(tx.objectStore('captures').index('source').getAll(id))) as Capture[];
+      targets.push({ source_id: id, label: sourceLabel(source), session_id: source.session_id, dedup_url: source.dedup_url, url: clipAddressOf(source, captures) });
+    }
+    return targets;
+  });
 }
 
 /** The saved captures that still exist, in the given order, with their sources, in one consistent read. */

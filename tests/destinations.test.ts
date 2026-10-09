@@ -20,7 +20,7 @@ function env(overrides: Partial<DeliveryEnvironment> = {}): DeliveryEnvironment 
 describe('deliverJob', () => {
   it('copies the exact job before opening a chat site, without prefill', async () => {
     const e = env();
-    expect(await deliverJob('claude', job, e)).toEqual({ ok: true, message: 'Research Job copied. Paste it into the chat.' });
+    expect(await deliverJob('claude', job, e)).toEqual({ ok: true, message: 'Job copied. Paste it into the chat.' });
     expect(e.calls).toEqual([`copy:${job.text}`, 'open:https://claude.ai/new']);
     expect(Object.values(DESTINATIONS).some((d) => d.supports_prefill)).toBe(false);
   });

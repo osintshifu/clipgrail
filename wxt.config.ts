@@ -20,10 +20,16 @@ export default defineConfig({
       'storage',
       // Keeps research data in IndexedDB out of quota limits and storage eviction.
       'unlimitedStorage',
+      // A hidden page that copies a job for Open in from the page menu: the background has no clipboard.
+      'offscreen',
     ],
     // Asked for the first time the user saves tabs (tabs) or records (tabs and webNavigation): the addresses and
     // titles of the tabs, and how each page was reached, so a recorded page's "found on" is never guessed.
-    optional_permissions: ['tabs', 'webNavigation'],
+    // clipboardWrite is asked for the first time Open in is used from the page menu, to copy the job there.
+    optional_permissions: ['tabs', 'webNavigation', 'clipboardWrite'],
+    // Asked for when the user clips sources saved as a URL only, for those sites alone: their pages open in a
+    // background tab and are read there.
+    optional_host_permissions: ['*://*/*'],
     // Research data is kept in the regular profile, so ClipGrail stays out of Incognito windows instead of keeping what is done there.
     incognito: 'not_allowed',
     action: { default_title: 'Open ClipGrail' },

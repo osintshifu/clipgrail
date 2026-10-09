@@ -1,5 +1,5 @@
 import type { CaptureEntry, DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
-import type { Capture, CaptureNavigation, DeclaredField, OkSnapshotMeta, Removal, RemovalAction, SnapshotMeta, TrackerKind, TrackerPlace } from './model';
+import type { Capture, CaptureNavigation, DeclaredField, OkSnapshotMeta, PagePlace, PageValueKind, Removal, RemovalAction, SnapshotMeta, TrackerKind, TrackerPlace } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
 import { FRAME_UNESTABLISHED_NOTE, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
@@ -12,7 +12,7 @@ type SourceEntry = FullSourceEntry<SnapshotMeta>;
 export const STATUS_LABELS: Record<SourceStatus, string> = {
   ok: 'Text saved',
   partial: 'Partial text',
-  pending: 'Address only',
+  pending: 'URL only',
   failed: 'Capture failed',
   none: 'Selections only',
 };
@@ -122,8 +122,8 @@ export function statusSentence(entry: SourceEntry): string {
   }
   if (choice.status === 'pending') {
     return choice.entry?.capture.kind === 'tab'
-      ? 'The tab address was saved without reading the page, so there is no text yet. Open the page and clip it to save its text.'
-      : 'The link was saved without opening the page, so there is no text yet. Open the page and clip it to save its text.';
+      ? 'The tab address was saved without reading the page, so there is no text yet. Clip page saves its text.'
+      : 'The link was saved without opening the page, so there is no text yet. Clip page saves its text.';
   }
   if (failed) return `Capture ${fmtTime(failed.captured_at)} failed: ${describeFailure(failed)}. No text was saved; the address is kept.`;
   const selections = selectionCount(entry);
@@ -146,7 +146,7 @@ export function captureLine(capture: Capture, snapshot: SnapshotMeta | undefined
   }
   if (snapshot?.status === 'failed') return `Failed: ${describeFailure(snapshot)}. ${snapshot.error_message}`;
   if (snapshot?.status === 'pending') {
-    return capture.kind === 'tab' ? 'Address only (tab saved, not read)' : 'Address only (link saved, not opened)';
+    return capture.kind === 'tab' ? 'URL only (tab saved, not read)' : 'URL only (link saved, not opened)';
   }
   return '';
 }
@@ -327,8 +327,27 @@ export const PLACE_WORDS: Record<TrackerPlace, string> = {
   amp_tag: 'AMP analytics tag',
 };
 
+export const VALUE_LABELS: Record<PageValueKind, string> = {
+  email: 'Email address',
+  phone: 'Phone number',
+  x: 'X account',
+  telegram: 'Telegram link',
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  tiktok: 'TikTok',
+  github: 'GitHub',
+  discord: 'Discord invite',
+  reddit: 'Reddit',
+  bitcoin: 'Bitcoin address',
+  ethereum: 'Ethereum address',
+  iban: 'IBAN',
+};
+export const PAGE_PLACE_WORDS: Record<PagePlace, string> = { link: 'link', page_text: 'page text', schema_org: 'schema.org' };
+
 export const PAGE_CODE_NOTE =
-  "Read from the page code when the page was clipped; not part of the saved text or its SHA-256. A tracker that loads only after cookie consent, or runs on the website's server, is not seen: no tracker listed does not mean the page does not track.";
+  "Read from the page when it was clipped: its code, its links and the text it shows; not part of the saved text or its SHA-256. A tracker that loads only after cookie consent, or runs on the website's server, is not seen: no tracker listed does not mean the page does not track.";
 
 export interface PageCodeRow {
   label: string;
@@ -344,6 +363,9 @@ export interface PageCodeView {
   declared: PageCodeRow[];
   /** Null when the page code was not read for the capture. */
   trackers: PageCodeRow[] | null;
+  /** Contacts, accounts and payment addresses in the page's links and text; null when they were not read for the capture. */
+  values: PageCodeRow[] | null;
+  valuesTitle: string;
   note: string;
 }
 
@@ -359,6 +381,8 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
       declaredTitle: 'Declared by the page',
       declared: code.declared.map((d) => ({ label: DECLARED_LABELS[d.field], value: d.value, from: d.from.join(', '), mono: false })),
       trackers: code.trackers.map((t) => ({ label: TRACKER_LABELS[t.kind], value: t.id, from: t.where.map((w) => PLACE_WORDS[w]).join(', '), mono: true })),
+      values: code.values?.map((v) => ({ label: VALUE_LABELS[v.kind], value: v.value, from: v.where.map((w) => PAGE_PLACE_WORDS[w]).join(', '), mono: false })) ?? null,
+      valuesTitle: code.values_cut ? `Contacts and addresses in the page: the first ${code.values?.length}` : 'Contacts and addresses in the page',
       note: PAGE_CODE_NOTE,
     };
   }
@@ -375,6 +399,8 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
     declaredTitle: 'Read with the text by Readability',
     declared,
     trackers: null,
+    values: null,
+    valuesTitle: '',
     note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
   };
 }
@@ -392,7 +418,7 @@ export function pageCodeCapture(entry: SourceEntry): { capture: Capture; snapsho
 export function pageCodeText(capture: Capture): string {
   const code = capture.page_code;
   if (!code) return '';
-  return [...code.declared.map((d) => d.value), ...code.trackers.map((t) => t.id)].join(' · ');
+  return [...code.declared.map((d) => d.value), ...code.trackers.map((t) => t.id), ...(code.values ?? []).map((v) => v.value)].join(' · ');
 }
 
 // ---------- Deleting data ----------

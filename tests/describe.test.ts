@@ -31,15 +31,15 @@ describe('source status texts', () => {
     expect(sources.map((s) => STATUS_LABELS[chooseSnapshot(s).status])).toEqual([
       'Text saved',
       'Partial text',
-      'Address only',
+      'URL only',
       'Capture failed',
       'Selections only',
-      'Address only',
+      'URL only',
     ]);
     expect(sources.map(sourceMeta)).toEqual(['10 chars', '8 of 20 chars', '', 'HTTP 404', '1 selection', '']);
     const sentences = sources.map(statusSentence);
     expect(sentences[1]).toMatch(/^Partial text: cut at capture to 8 of 20 characters\. Saved /);
-    expect(sentences[2]).toBe('The link was saved without opening the page, so there is no text yet. Open the page and clip it to save its text.');
+    expect(sentences[2]).toBe('The link was saved without opening the page, so there is no text yet. Clip page saves its text.');
     expect(sentences[3]).toMatch(/failed: HTTP 404\. No text was saved; the address is kept\.$/);
     expect(sentences[4]).toBe('No page text. Only 1 selection was clipped from this page.');
     expect(sentences[5]).toMatch(/^The tab address was saved without reading the page/);
@@ -107,7 +107,7 @@ describe('text comparisons', () => {
 });
 
 describe('page code in details', () => {
-  it('shows the values and trackers a capture read with where each came from, and what Readability read when the page code was not read', async () => {
+  it('shows the values, trackers, contacts and addresses a capture read with where each came from, and what Readability read when the page code was not read', async () => {
     const db = await freshDb();
     const url = 'https://example.com/notice';
     await commitCapture(db, await pageDraft(url, 'Clipped before page code was read.', '2026-10-09T10:00:00.000Z'));
@@ -117,6 +117,8 @@ describe('page code in details', () => {
       declaredTitle: 'Read with the text by Readability',
       declared: [],
       trackers: null,
+      values: null,
+      valuesTitle: '',
       note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
     });
 
@@ -125,6 +127,7 @@ describe('page code in details', () => {
       page_code: {
         declared: [{ field: 'published', value: '2026-10-09T09:12:00+02:00', from: ['article:published_time', 'schema.org datePublished'] }],
         trackers: [{ kind: 'ga4', id: 'G-7QX2KF31PL', where: ['script_address', 'inline_script'] }],
+        values: [{ kind: 'email', value: 'press@example.com', where: ['link', 'page_text'] }],
       },
     });
     await commitCapture(db, await selectionDraft(url, 'Clipped', '2026-10-09T12:00:00.000Z'));
@@ -136,6 +139,8 @@ describe('page code in details', () => {
       declaredTitle: 'Declared by the page',
       declared: [{ label: 'Published', value: '2026-10-09T09:12:00+02:00', from: 'article:published_time, schema.org datePublished', mono: false }],
       trackers: [{ label: 'Google Analytics 4', value: 'G-7QX2KF31PL', from: 'script address, inline script', mono: true }],
+      values: [{ label: 'Email address', value: 'press@example.com', from: 'link, page text', mono: false }],
+      valuesTitle: 'Contacts and addresses in the page',
       note: PAGE_CODE_NOTE,
     });
   });

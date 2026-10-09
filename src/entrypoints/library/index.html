@@ -26,10 +26,11 @@
         <div class="list-head">
           <button id="show-sessions" class="icon-btn" type="button" title="Show sessions" aria-label="Show sessions" aria-controls="nav" hidden><span data-icon="sidebar-simple"></span></button>
           <h2 id="list-title"></h2>
+          <span id="result-count" class="count" role="status"></span>
           <div id="mode-switch" class="mode-switch" role="group" aria-label="Show">
             <button id="mode-sources" type="button" aria-pressed="true">Sources</button>
             <button id="mode-timeline" type="button" aria-pressed="false" title="Every capture and recorded visit of this session in time order">Timeline</button>
-            <button id="mode-pivots" type="button" aria-pressed="false" title="Trackers, what pages declare and addresses in saved text, with the sources each is in">Pivots</button>
+            <button id="mode-pivots" type="button" aria-pressed="false" title="Trackers, what pages declare, and contacts, accounts and payment addresses, with the sources each is in">Pivots</button>
           </div>
         </div>
         <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search text, notes, title or address" aria-label="Search text, notes, title or address" title="All words must match: title, address, label, notes, selections and saved text. Use quotes for a phrase; site:example.org, after:2026-10-01 and before:2026-10-31 narrow the results." autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
@@ -38,7 +39,7 @@
             <option value="any">All statuses</option>
             <option value="ok">Text saved</option>
             <option value="partial">Partial text</option>
-            <option value="pending">Address only</option>
+            <option value="pending">URL only</option>
             <option value="failed">Capture failed</option>
             <option value="none">Selections only</option>
           </select>
@@ -46,22 +47,24 @@
           <button id="important-filter" class="btn-sm" type="button" aria-pressed="false" title="Show only sources marked important"><span data-icon="star"></span>Important</button>
           <select id="pivot-kind" aria-label="Kind" hidden></select>
           <button id="shared-only" class="btn-sm" type="button" aria-pressed="true" title="Show only values found in two or more sources" hidden>Shared only</button>
+          <button id="copy-pivots" class="btn-sm" type="button" title="Copy the values shown as a table: kind, value, sources and sites, separated by tabs" hidden><span data-icon="copy"></span>Copy list</button>
           <button id="pivot-filter" class="btn-sm filter-on" type="button" hidden></button>
           <select id="log-session" aria-label="Session" hidden></select>
           <button id="clear-log" class="btn-sm" type="button" aria-haspopup="dialog" hidden>Clear log…</button>
           <button id="clear-filters" class="link" type="button" hidden>Clear filters</button>
-          <span id="result-count" class="count" role="status"></span>
         </div>
         <div id="selection-bar" class="selection-bar" hidden>
           <input id="select-all" type="checkbox" title="Select all shown sources" aria-label="Select all shown sources" />
           <b id="selection-count" role="status"></b>
           <span class="grow"></span>
-          <button id="delete-selected" class="btn-sm delete" type="button" aria-haspopup="dialog"><span data-icon="trash"></span>Delete…</button>
+          <button id="clip-selected" class="btn-sm" type="button" title="Open the selected pages saved as a URL only in background tabs and save their text" hidden></button>
+          <button id="delete-selected" class="btn-sm delete icon-only" type="button" aria-haspopup="dialog" title="Delete selected sources" aria-label="Delete selected sources"><span data-icon="trash"></span></button>
           <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection"><span data-icon="x"></span></button>
         </div>
       </div>
       <ul id="rows" class="rows" aria-labelledby="list-title"></ul>
       <div id="list-empty" class="empty" hidden></div>
+      <p id="list-note" class="list-note" hidden></p>
     </section>
 
     <section id="reader-col" class="col reader-col" aria-label="Source">

@@ -80,10 +80,42 @@ export interface Tracker {
   where: TrackerPlace[];
 }
 
-/** Read from the page code when a page or a selection was clipped. Not part of the saved text or its SHA-256. */
+/** Contacts, accounts and payment addresses a page gives: in the address of a link, in the text it shows or in its schema.org data. */
+export type PageValueKind =
+  | 'email'
+  | 'phone'
+  | 'x'
+  | 'telegram'
+  | 'facebook'
+  | 'instagram'
+  | 'linkedin'
+  | 'youtube'
+  | 'tiktok'
+  | 'github'
+  | 'discord'
+  | 'reddit'
+  | 'bitcoin'
+  | 'ethereum'
+  | 'iban';
+
+/** Where in the page a value was found: the address of a link, the text the page shows, or its schema.org data. */
+export type PagePlace = 'link' | 'page_text' | 'schema_org';
+
+export interface PageValue {
+  kind: PageValueKind;
+  /** One form for the same value however the page writes it, such as an address in lower case or a profile without https://. */
+  value: string;
+  where: PagePlace[];
+}
+
+/** Read from the page when a page or a selection was clipped. Not part of the saved text or its SHA-256. */
 export interface PageCode {
   declared: DeclaredValue[];
   trackers: Tracker[];
+  /** Read from the page's links, visible text and schema.org data; absent on captures made before ClipGrail read them. */
+  values?: PageValue[];
+  /** Set when the page had more values than a capture keeps. */
+  values_cut?: true;
 }
 
 /** Text the user selected on a page. */

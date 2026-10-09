@@ -26,6 +26,7 @@
             <button id="restore-button" role="menuitem" type="button"><span data-icon="upload-simple"></span>Restore from backup…</button>
             <button id="excluded-sites-button" role="menuitem" type="button">Sites not recorded…</button>
             <button id="tab-access-button" role="menuitem" type="button" hidden>Turn off tab access</button>
+            <button id="site-access-button" role="menuitem" type="button" hidden>Turn off site access</button>
             <div class="menu-sep" role="separator"></div>
             <div role="group" aria-labelledby="open-in-title">
               <p id="open-in-title" class="menu-heading section-title">Toolbar button opens</p>
@@ -39,7 +40,7 @@
       </div>
       <div class="tabs" role="tablist" aria-label="Workspaces">
         <button id="tab-collect" role="tab" type="button" aria-selected="true" aria-controls="view-collect">Clips</button>
-        <button id="tab-job" role="tab" type="button" aria-selected="false" aria-controls="view-job" tabindex="-1">Research Job</button>
+        <button id="tab-job" role="tab" type="button" aria-selected="false" aria-controls="view-job" tabindex="-1">Create job<span id="job-count" class="tab-count" aria-hidden="true" hidden></span><span id="job-next" class="tab-next" aria-hidden="true" hidden>→</span></button>
       </div>
     </header>
     <input id="restore-file" type="file" accept=".json,application/json" hidden />
@@ -66,7 +67,7 @@
 
       <section id="view-job" class="view" role="tabpanel" aria-labelledby="tab-job" hidden>
         <div class="stage-row">
-          <div class="seg" role="tablist" aria-label="Research Job stage">
+          <div class="seg" role="tablist" aria-label="Job stage">
             <button id="stage-prepare" role="tab" type="button" aria-selected="true" aria-controls="prepare">Prompt &amp; sources</button>
             <button id="stage-result" role="tab" type="button" aria-selected="false" aria-controls="result" tabindex="-1">Result</button>
           </div>
@@ -134,7 +135,7 @@
             <span>Prompt, settings or sources changed since this was generated. Copy and export use the generated text, so generate again first.</span>
             <button id="generate-again" type="button">Generate again</button>
           </div>
-          <pre id="job-preview" class="job-preview" tabindex="0" aria-label="Research Job preview"></pre>
+          <pre id="job-preview" class="job-preview" tabindex="0" aria-label="Job preview"></pre>
           <p id="delivery-status" class="delivery" role="status" hidden></p>
         </div>
       </section>
@@ -153,18 +154,18 @@
       </div>
       <div id="bar-prepare" class="action-bar column" hidden>
         <p id="generate-hint" class="small" hidden></p>
-        <button id="generate" class="primary" type="button">Generate Research Job</button>
+        <button id="generate" class="primary" type="button">Generate job</button>
       </div>
       <div id="bar-result" class="action-bar result-bar" hidden>
         <div class="result-main">
-          <button id="copy-job" class="primary grow" type="button"><span data-icon="copy"></span>Copy Research Job</button>
+          <button id="copy-job" class="primary grow" type="button"><span data-icon="copy"></span>Copy Markdown</button>
           <button id="export-button" type="button" aria-haspopup="dialog">Export<span data-icon="caret-down"></span></button>
         </div>
-        <div class="open-in" role="group" aria-label="Copy the Research Job and open a chat service">
-          <button class="service" type="button" data-destination="chatgpt" title="Copy the Research Job and open ChatGPT"><span data-brand="chatgpt"></span>ChatGPT</button>
-          <button class="service" type="button" data-destination="claude" title="Copy the Research Job and open Claude"><span data-brand="claude"></span>Claude</button>
-          <button class="service" type="button" data-destination="gemini" title="Copy the Research Job and open Gemini"><span data-brand="gemini"></span>Gemini</button>
-          <button class="service" type="button" data-destination="perplexity" title="Copy the Research Job and open Perplexity"><span data-brand="perplexity"></span>Perplexity</button>
+        <div class="open-in" role="group" aria-label="Copy the job and open a chat service">
+          <button class="service" type="button" data-destination="chatgpt" title="Copy the job and open ChatGPT"><span data-brand="chatgpt"></span>ChatGPT</button>
+          <button class="service" type="button" data-destination="claude" title="Copy the job and open Claude"><span data-brand="claude"></span>Claude</button>
+          <button class="service" type="button" data-destination="gemini" title="Copy the job and open Gemini"><span data-brand="gemini"></span>Gemini</button>
+          <button class="service" type="button" data-destination="perplexity" title="Copy the job and open Perplexity"><span data-brand="perplexity"></span>Perplexity</button>
         </div>
       </div>
     </footer>

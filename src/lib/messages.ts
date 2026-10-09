@@ -38,6 +38,61 @@ export function isClipRequest(value: unknown): value is ClipRequest {
   );
 }
 
+/**
+ * Clips sources saved as a URL only, once Chrome allows their sites: each page opens in a background tab of the
+ * window and its text goes to its source. Sent before Chrome asks, because the toolbar popup that asks closes when
+ * Chrome shows its prompt; the result comes as a notice. After a recording, the pages left unchecked are removed first.
+ */
+export interface ClipSourcesRequest {
+  type: 'clip-sources';
+  sourceIds: string[];
+  windowId: number;
+  /** The site patterns Chrome is asked for. */
+  origins: string[];
+  remove?: SavedCapture[];
+}
+
+/** Withdraws the clip request of a window whose sites Chrome was not allowed to read. */
+export interface ClipCancelRequest {
+  type: 'clip-sources-cancel';
+  windowId: number;
+}
+
+const isSavedCapture = (v: unknown) => !!v && typeof (v as SavedCapture).capture_id === 'string' && typeof (v as SavedCapture).session_id === 'string';
+
+export function isClipSourcesRequest(value: unknown): value is ClipSourcesRequest {
+  const v = value as Partial<ClipSourcesRequest> | null;
+  return (
+    !!v &&
+    v.type === 'clip-sources' &&
+    Array.isArray(v.sourceIds) &&
+    v.sourceIds.length > 0 &&
+    v.sourceIds.length <= 1000 &&
+    v.sourceIds.every((id) => typeof id === 'string') &&
+    typeof v.windowId === 'number' &&
+    Array.isArray(v.origins) &&
+    v.origins.length > 0 &&
+    v.origins.every((o) => typeof o === 'string' && /^\*:\/\/[^/]+\/\*$/.test(o)) &&
+    (v.remove === undefined || (Array.isArray(v.remove) && v.remove.every(isSavedCapture)))
+  );
+}
+
+export function isClipCancelRequest(value: unknown): value is ClipCancelRequest {
+  const v = value as Partial<ClipCancelRequest> | null;
+  return !!v && v.type === 'clip-sources-cancel' && typeof v.windowId === 'number';
+}
+
+/** From the background to its hidden clipboard page: copy this text. */
+export interface OffscreenCopy {
+  type: 'offscreen-copy';
+  text: string;
+}
+
+export function isOffscreenCopy(value: unknown): value is OffscreenCopy {
+  const v = value as Partial<OffscreenCopy> | null;
+  return !!v && v.type === 'offscreen-copy' && typeof v.text === 'string';
+}
+
 /** Starts or stops recording the pages opened in a window. */
 export interface RecordRequest {
   type: 'record';

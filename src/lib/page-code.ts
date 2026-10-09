@@ -1,12 +1,14 @@
 /**
  * What a page's code says about it: values the page declares about itself
- * and the IDs of trackers in it. Read in the page when it is clipped; the page
- * is never modified. Everything read is untrusted page content, cleaned and
- * cut to size before it is stored.
+ * and the IDs of trackers in it, and the contacts, accounts and payment
+ * addresses in its links, visible text and schema.org data. Read in the page when it is
+ * clipped; the page is never modified. Everything read is untrusted page
+ * content, cleaned and cut to size before it is stored.
  */
-import type { DeclaredField, DeclaredValue, PageCode, Tracker, TrackerKind, TrackerPlace } from './model';
+import type { DeclaredField, DeclaredValue, PageCode, PagePlace, PageValue, PageValueKind, Tracker, TrackerKind, TrackerPlace } from './model';
 import { countCharacters, truncateToCharacters } from './text';
 import { isCapturableUrl } from './url';
+import { findValues } from './values';
 
 export const DECLARED_FIELDS: readonly DeclaredField[] = ['site_name', 'author', 'publisher', 'published', 'type', 'x_account', 'canonical', 'generator'];
 /** The tags a declared value can come from. */
@@ -27,6 +29,25 @@ export const DECLARED_TAGS = [
 ] as const;
 export const TRACKER_KINDS: readonly TrackerKind[] = ['ga4', 'google_tag', 'ua', 'gtm', 'meta_pixel', 'adsense'];
 export const TRACKER_PLACES: readonly TrackerPlace[] = ['script_address', 'inline_script', 'noscript', 'ad_tag', 'image', 'amp_tag'];
+/** The kinds of values in a page, in the order its details list them. */
+export const PAGE_VALUE_KINDS: readonly PageValueKind[] = [
+  'email',
+  'phone',
+  'x',
+  'telegram',
+  'facebook',
+  'instagram',
+  'linkedin',
+  'youtube',
+  'tiktok',
+  'github',
+  'discord',
+  'reddit',
+  'bitcoin',
+  'ethereum',
+  'iban',
+];
+export const PAGE_PLACES: readonly PagePlace[] = ['link', 'page_text', 'schema_org'];
 
 /** Limits, in code points and entries: a page cannot make a capture large. */
 const MAX_VALUE = 300;
@@ -38,6 +59,10 @@ const MAX_NOSCRIPT_TEXT = 500_000;
 const MAX_ADDRESS = 10_000;
 const MAX_STRUCTURED_DATA = 500_000;
 const MAX_STRUCTURED_NODES = 200;
+/** Values kept from one page, links read and visible text searched for values. */
+export const MAX_PAGE_VALUES = 100;
+const MAX_LINKS = 20_000;
+const MAX_PAGE_TEXT = 2_000_000;
 
 /** IDs as the trackers issue them. A GA4 ID mixes letters and digits, so words such as "G-SECTIONS" are not taken for one. */
 const TRACKER_IDS: Record<TrackerKind, RegExp> = {
@@ -82,12 +107,192 @@ export function readPageCode(doc: Document): PageCode & { page_url: string } {
   } catch {
     // A page that breaks reading trackers still has its declared values read.
   }
+  let data: StructuredData = { roots: [], nodes: [], byId: new Map() };
   try {
-    pageCode.declared = readDeclared(doc);
+    data = structuredData(doc);
+  } catch {
+    // Values the page shows are read without its structured data.
+  }
+  try {
+    pageCode.declared = readDeclared(doc, data);
   } catch {
     // Declared values stay empty.
   }
+  try {
+    Object.assign(pageCode, readValues(doc, data));
+  } catch {
+    // The values are left out, as on a capture made before they were read.
+  }
   return { ...pageCode, page_url: doc.URL };
+}
+
+/** The values in the page's links, the text it shows and its schema.org data, each once, by kind; at most MAX_PAGE_VALUES. */
+function readValues(doc: Document, data: StructuredData): Pick<PageCode, 'values' | 'values_cut'> {
+  const found = new Map<string, PageValue>();
+  let cut = false;
+  const add = (kind: PageValueKind, value: string, where: PagePlace) => {
+    const key = `${kind} ${kind === 'x' ? value.toLowerCase() : value}`;
+    const known = found.get(key);
+    if (known) {
+      if (!known.where.includes(where)) known.where.push(where);
+    } else if (found.size < MAX_PAGE_VALUES) {
+      found.set(key, { kind, value, where: [where] });
+    } else {
+      cut = true;
+    }
+  };
+  const links = doc.links;
+  for (let i = 0; i < Math.min(links.length, MAX_LINKS); i++) {
+    const value = linkValue(links[i]!.href.slice(0, MAX_ADDRESS));
+    if (value) add(value[0], value[1], 'link');
+  }
+  // innerText is the text the page shows, without hidden parts, scripts or styles.
+  for (const v of findValues((doc.body?.innerText ?? '').slice(0, MAX_PAGE_TEXT))) add(v.kind, v.value, 'page_text');
+  // An organization or a person in schema.org gives its email, telephone and its accounts elsewhere (sameAs), also in a contact point.
+  let budget = MAX_STRUCTURED_NODES * 10;
+  const visit = (value: unknown, depth: number) => {
+    if (budget-- <= 0 || depth > 8) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (!isNode(value)) return;
+    for (const [key, item] of Object.entries(value)) {
+      const texts = [item].flat().filter((t): t is string => typeof t === 'string').map((t) => t.slice(0, MAX_ADDRESS));
+      if (key === 'email') {
+        for (const text of texts) {
+          const email = findValues(text.replace(/^mailto:/i, '')).find((v) => v.kind === 'email');
+          if (email) add('email', email.value, 'schema_org');
+        }
+      } else if (key === 'telephone') {
+        for (const text of texts) {
+          const phone = phoneValue(text);
+          if (phone) add('phone', phone, 'schema_org');
+        }
+      } else if (key === 'sameAs') {
+        for (const text of texts) {
+          const account = /^https?:/i.test(text) ? linkValue(text) : null;
+          if (account) add(account[0], account[1], 'schema_org');
+        }
+      } else {
+        visit(item, depth + 1);
+      }
+    }
+  };
+  visit(data.roots, 0);
+  const values = [...found.values()].sort((a, b) => PAGE_VALUE_KINDS.indexOf(a.kind) - PAGE_VALUE_KINDS.indexOf(b.kind));
+  return cut ? { values, values_cut: true } : { values };
+}
+
+type LinkValue = [PageValueKind, string];
+
+const decoded = (text: string) => {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+};
+
+/** The email address of a mailto: link, the number of a tel: link, or the account a web link leads to. */
+function linkValue(href: string): LinkValue | null {
+  const scheme = /^([a-z][a-z\d+.-]*):/i.exec(href)?.[1]?.toLowerCase();
+  if (scheme === 'mailto') {
+    const email = findValues(decoded(href.slice(7).split('?')[0]!)).find((v) => v.kind === 'email');
+    return email ? ['email', email.value] : null;
+  }
+  if (scheme === 'tel') {
+    const phone = phoneValue(decoded(href.slice(4)));
+    return phone ? ['phone', phone] : null;
+  }
+  if (scheme !== 'http' && scheme !== 'https') return null;
+  try {
+    return accountOf(new URL(href));
+  } catch {
+    return null;
+  }
+}
+
+/** A number as + and digits, without what separates them; null for a short code or anything that is not a number. */
+function phoneValue(raw: string): string | null {
+  const number = raw.split(/[;,?]/)[0]!.replace(/[\s()./\u2010-\u2015-]/g, '');
+  return /^\+?\d{6,15}$/.test(number) ? number : null;
+}
+
+/** Paths of the sites that are pages of the site itself, not accounts. */
+const X_PATHS = new Set(['about', 'account', 'compose', 'download', 'explore', 'hashtag', 'home', 'i', 'intent', 'jobs', 'login', 'logout', 'messages', 'notifications', 'privacy', 'rules', 'search', 'settings', 'share', 'signup', 'tos', 'widgets']);
+const FACEBOOK_PATHS = new Set(['bookmarks', 'business', 'campaign', 'careers', 'dialog', 'events', 'friends', 'fundraisers', 'gaming', 'groups', 'hashtag', 'latest', 'legal', 'login', 'marketplace', 'media', 'messages', 'notes', 'notifications', 'pages', 'people', 'photo', 'photos', 'plugins', 'policies', 'policy', 'privacy', 'recover', 'reels', 'search', 'settings', 'share', 'sharer', 'signup', 'stories', 'terms', 'video', 'videos', 'watch']);
+const INSTAGRAM_PATHS = new Set(['about', 'accounts', 'api', 'challenge', 'developer', 'direct', 'directory', 'emails', 'explore', 'legal', 'locations', 'oauth', 'p', 'press', 'privacy', 'reel', 'reels', 'static', 'stories', 'terms', 'topics', 'tv', 'web']);
+const GITHUB_PATHS = new Set(['about', 'accessibility', 'account', 'apps', 'blog', 'business', 'codespaces', 'collections', 'contact', 'copilot', 'customer-stories', 'dashboard', 'education', 'enterprise', 'events', 'explore', 'features', 'git-guides', 'home', 'issues', 'join', 'login', 'logout', 'marketplace', 'mcp', 'mobile', 'models', 'new', 'nonprofit', 'notifications', 'orgs', 'organizations', 'partners', 'premium-support', 'pricing', 'pulls', 'readme', 'resources', 'search', 'security', 'sessions', 'settings', 'signup', 'site', 'sitemap', 'solutions', 'spark', 'sponsors', 'stars', 'team', 'topics', 'trending', 'trust-center', 'watching', 'why-github']);
+
+/**
+ * The account a link leads to, as the site's address without https:// and in lower case where case does not
+ * matter. Only a link to the account itself counts: a post, a video or a share button is not an account.
+ */
+function accountOf(url: URL): LinkValue | null {
+  const host = url.hostname.toLowerCase().replace(/^(?:www|m|mobile|web)\./, '');
+  const parts = url.pathname.split('/').filter(Boolean);
+  const [first = '', second = ''] = parts;
+  const lower = first.toLowerCase();
+  if (host === 'x.com' || host === 'twitter.com') {
+    // Follow buttons name the account in the address.
+    const name = parts.length === 2 && lower === 'intent' && /^(?:follow|user)$/i.test(second) ? (url.searchParams.get('screen_name') ?? '') : parts.length === 1 ? first : '';
+    return /^\w{1,15}$/.test(name) && !X_PATHS.has(name.toLowerCase()) ? ['x', `@${name}`] : null;
+  }
+  if (host === 't.me' || host === 'telegram.me') {
+    const found = findValues(`t.me${url.pathname}`)[0];
+    return found?.kind === 'telegram' && found.index === 0 ? ['telegram', found.value] : null;
+  }
+  if (host === 'facebook.com' || host === 'fb.com') {
+    const id = lower === 'profile.php' ? url.searchParams.get('id') : (lower === 'people' || lower === 'pages') && parts.length === 3 ? parts[2]! : null;
+    if (id !== null) return /^\d{5,20}$/.test(id) ? ['facebook', `facebook.com/profile.php?id=${id}`] : null;
+    if (lower === 'groups' && parts.length === 2 && /^[\w.-]{2,100}$/.test(second)) return ['facebook', `facebook.com/groups/${second.toLowerCase()}`];
+    return parts.length === 1 && /^[a-z\d.]{5,50}$/i.test(first) && !FACEBOOK_PATHS.has(lower) && !lower.endsWith('.php') ? ['facebook', `facebook.com/${lower}`] : null;
+  }
+  if (host === 'instagram.com') {
+    return parts.length === 1 && /^(?!\.)[\w.]{1,30}(?<!\.)$/.test(first) && !INSTAGRAM_PATHS.has(lower) ? ['instagram', `instagram.com/${lower}`] : null;
+  }
+  if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
+    const slug = decoded(second).toLowerCase();
+    return parts.length === 2 && ['in', 'company', 'school', 'showcase'].includes(lower) && /^[^\s/?#]{2,100}$/u.test(slug) ? ['linkedin', `linkedin.com/${lower}/${slug}`] : null;
+  }
+  if (host === 'youtube.com') {
+    // The tabs of a channel, such as /@name/videos, are the channel too.
+    if (/^@[\w.-]{3,30}$/.test(first)) return ['youtube', `youtube.com/${lower}`];
+    if (lower === 'channel' && /^UC[\w-]{22}$/.test(second)) return ['youtube', `youtube.com/channel/${second}`];
+    return (lower === 'c' || lower === 'user') && /^[\w.-]{1,100}$/.test(second) ? ['youtube', `youtube.com/${lower}/${second.toLowerCase()}`] : null;
+  }
+  if (host === 'tiktok.com') return parts.length === 1 && /^@[\w.]{2,24}$/.test(first) ? ['tiktok', `tiktok.com/${lower}`] : null;
+  if (host === 'github.com') {
+    return parts.length === 1 && /^[a-z\d](?:[a-z\d-]{0,38})$/i.test(first) && !GITHUB_PATHS.has(lower) ? ['github', `github.com/${lower}`] : null;
+  }
+  if (host === 'discord.gg' || ((host === 'discord.com' || host === 'discordapp.com') && lower === 'invite')) {
+    // Invite codes are case-sensitive.
+    const code = host === 'discord.gg' ? (parts.length === 1 ? first : '') : parts.length === 2 ? second : '';
+    return /^[\w-]{2,32}$/.test(code) ? ['discord', `discord.gg/${code}`] : null;
+  }
+  if (host === 'reddit.com' || host.endsWith('.reddit.com')) {
+    if (parts.length !== 2 || !/^[\w-]{2,21}$/.test(second)) return null;
+    if (lower === 'r') return ['reddit', `reddit.com/r/${second.toLowerCase()}`];
+    return lower === 'user' || lower === 'u' ? ['reddit', `reddit.com/user/${second.toLowerCase()}`] : null;
+  }
+  return null;
+}
+
+/** A stored value that reads back as itself: a value of a text found in it, a number, or an account its link leads to. */
+function valueChecks(kind: PageValueKind, value: string): boolean {
+  if (kind === 'phone') return phoneValue(value) === value;
+  if (kind === 'x') return /^@\w{1,15}$/.test(value) && !X_PATHS.has(value.slice(1).toLowerCase());
+  if (kind === 'email' || kind === 'bitcoin' || kind === 'ethereum' || kind === 'iban') {
+    const found = findValues(value);
+    return found.length === 1 && found[0]!.kind === kind && found[0]!.value === value;
+  }
+  try {
+    const account = accountOf(new URL(`https://${value}`));
+    return account?.[0] === kind && account[1] === value;
+  } catch {
+    return false;
+  }
 }
 
 function readTrackers(doc: Document): Tracker[] {
@@ -136,7 +341,7 @@ function readTrackers(doc: Document): Tracker[] {
   return [...found.values()];
 }
 
-function readDeclared(doc: Document): DeclaredValue[] {
+function readDeclared(doc: Document, data: StructuredData): DeclaredValue[] {
   const declared: DeclaredValue[] = [];
   const put = (field: DeclaredField, raw: unknown, from: (typeof DECLARED_TAGS)[number]) => {
     const value = field === 'canonical' ? canonicalValue(raw) : clean(raw);
@@ -164,7 +369,7 @@ function readDeclared(doc: Document): DeclaredValue[] {
   // An empty href would resolve to the page's own address, which the page did not declare.
   const canonical = doc.querySelector<HTMLLinkElement>('link[rel~="canonical" i][href]');
   if (canonical?.getAttribute('href')?.trim()) put('canonical', canonical.href, 'link rel=canonical');
-  const { nodes, byId } = structuredData(doc);
+  const { nodes, byId } = data;
   for (const node of nodes) {
     // What the page is about, not breadcrumbs or images around it; the type of the website or the page as a container is not news.
     if (!('headline' in node || 'author' in node || 'publisher' in node || 'datePublished' in node)) continue;
@@ -185,8 +390,16 @@ type Node = Record<string, unknown>;
 const isContainer = (type: unknown) => type === 'WebSite' || (typeof type === 'string' && /Page$/.test(type));
 const isNode = (value: unknown): value is Node => !!value && typeof value === 'object' && !Array.isArray(value);
 
+interface StructuredData {
+  /** Each JSON-LD script as parsed. */
+  roots: unknown[];
+  nodes: Node[];
+  byId: Map<string, Node>;
+}
+
 /** The schema.org objects in the page's JSON-LD, with @graph lists and main entities opened, and the objects by @id for references. */
-function structuredData(doc: Document): { nodes: Node[]; byId: Map<string, Node> } {
+function structuredData(doc: Document): StructuredData {
+  const roots: unknown[] = [];
   const nodes: Node[] = [];
   const byId = new Map<string, Node>();
   const visit = (value: unknown, depth: number) => {
@@ -205,18 +418,22 @@ function structuredData(doc: Document): { nodes: Node[]; byId: Map<string, Node>
     const text = script.textContent ?? '';
     if (text.length > budget) continue;
     budget -= text.length;
+    let root: unknown;
     try {
-      visit(JSON.parse(text), 0);
+      root = JSON.parse(text);
     } catch {
       try {
         // Pages often leave line breaks and tabs inside strings, which JSON does not allow; as spaces they read the same.
-        visit(JSON.parse(Array.from(text, (c) => (c.charCodeAt(0) < 0x20 ? ' ' : c)).join('')), 0);
+        root = JSON.parse(Array.from(text, (c) => (c.charCodeAt(0) < 0x20 ? ' ' : c)).join(''));
       } catch {
         // Broken structured data is skipped.
+        continue;
       }
     }
+    roots.push(root);
+    visit(root, 0);
   }
-  return { nodes, byId };
+  return { roots, nodes, byId };
 }
 
 /** The name of a schema.org person or organization, also one given by an @id reference or as plain text. */
@@ -245,7 +462,21 @@ export function cleanPageCode(value: unknown): PageCode | null {
     if (!tagList(t.where, TRACKER_PLACES)) return null;
     trackers.push({ kind: t.kind as TrackerKind, id: t.id, where: [...(t.where as TrackerPlace[])] });
   }
-  return { declared, trackers };
+  const code: PageCode = { declared, trackers };
+  if (value.values !== undefined) {
+    if (!Array.isArray(value.values) || value.values.length > MAX_PAGE_VALUES) return null;
+    code.values = [];
+    for (const v of value.values) {
+      if (!isNode(v) || !PAGE_VALUE_KINDS.includes(v.kind as PageValueKind) || typeof v.value !== 'string' || !valueChecks(v.kind as PageValueKind, v.value)) return null;
+      if (!tagList(v.where, PAGE_PLACES)) return null;
+      code.values.push({ kind: v.kind as PageValueKind, value: v.value, where: [...(v.where as PagePlace[])] });
+    }
+  }
+  if (value.values_cut !== undefined) {
+    if (value.values_cut !== true || !code.values) return null;
+    code.values_cut = true;
+  }
+  return code;
 }
 
 /** A list of one or more different words from `allowed`. */

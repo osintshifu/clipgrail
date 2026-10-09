@@ -377,6 +377,17 @@ export function buildResearchJob({ view, settings, id, createdAt }: BuildJobInpu
   };
 }
 
+/**
+ * A job of one source of the session, for Open in from the page menu: with the session's prompt and settings, and
+ * either the source's text in full or only the one selection just clipped.
+ */
+export function oneSourceJob(view: SessionView, settings: JobSettings, clipped: { source_id: string; capture_id: string }, mode: ContextMode, id: string, createdAt: string): ResearchJob {
+  const entry = view.sources.find((s) => s.source.id === clipped.source_id);
+  if (!entry) throw new Error('the clipped source was not found');
+  const only = mode === 'selections' ? { ...entry, captures: entry.captures.filter((c) => c.capture.id === clipped.capture_id) } : entry;
+  return buildResearchJob({ view: { ...view, sources: [only] }, settings: { ...settings, context_mode: mode, excluded_source_ids: [] }, id, createdAt });
+}
+
 /** True when the current prompt, settings or session data would produce a different job. */
 export function isJobOutdated(job: ResearchJob, current: ResearchJob): boolean {
   return (

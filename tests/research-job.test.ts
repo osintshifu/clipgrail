@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { commitCapture, createSession, loadSessionView, saveJob, latestJob, updateCaptureNote, updateSessionText, updateSourceNote } from '../src/lib/db';
 import type { JobSettings } from '../src/lib/research-job';
-import { DEFAULT_JOB_SETTINGS, buildResearchJob, fenced, isJobOutdated, researchJobToJson } from '../src/lib/research-job';
+import { DEFAULT_JOB_SETTINGS, buildResearchJob, fenced, isJobOutdated, oneSourceJob, researchJobToJson } from '../src/lib/research-job';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { FRAME_UNESTABLISHED_NOTE } from '../src/lib/selection';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
@@ -175,5 +175,23 @@ describe('generated jobs', () => {
     const job = buildResearchJob({ view: await loadSessionView(db, INBOX_SESSION_ID), settings: settings({ context_mode: 'selections' }), id: 'j', createdAt: 'now' });
     expect(job.text.split(FRAME_UNESTABLISHED_NOTE)).toHaveLength(2);
     expect(job.sources.map((s) => s.selections[0]!.frame_source_unestablished)).toEqual([true, false]);
+  });
+});
+
+describe('a job of one source for Open in from the page menu', () => {
+  it('has only that source, with its full text or only the selection just clipped, and the session prompt', async () => {
+    const db = await freshDb();
+    await updateSessionText(db, INBOX_SESSION_ID, { prompt: 'Who runs this port?' });
+    await commitCapture(db, await pageDraft('https://other.example.org/', 'Another source.', '2026-10-09T09:00:00.000Z'));
+    await commitCapture(db, await selectionDraft('https://port.example.org/41', 'An earlier selection.', '2026-10-09T09:30:00.000Z'));
+    const page = await commitCapture(db, await pageDraft('https://port.example.org/41', 'Berths 4 to 8 are closed.', '2026-10-09T10:00:00.000Z'));
+    const selection = await commitCapture(db, await selectionDraft('https://port.example.org/41', 'Berths 4 to 8', '2026-10-09T10:01:00.000Z'));
+    const view = await loadSessionView(db, INBOX_SESSION_ID);
+    const settings = { ...DEFAULT_JOB_SETTINGS, context_mode: 'links' as const, excluded_source_ids: [page.source.id] };
+
+    const full = oneSourceJob(view, settings, { source_id: page.source.id, capture_id: page.capture.id }, 'full', 'j1', '2026-10-09T10:02:00.000Z');
+    expect([full.sources.map((s) => s.label), full.prompt, full.text.includes('Berths 4 to 8 are closed.'), full.text.includes('Another source.')]).toEqual([['S2'], 'Who runs this port?', true, false]);
+    const only = oneSourceJob(view, settings, { source_id: selection.source.id, capture_id: selection.capture.id }, 'selections', 'j2', '2026-10-09T10:02:00.000Z');
+    expect([only.text.includes('Berths 4 to 8'), only.text.includes('An earlier selection.'), only.text.includes('Berths 4 to 8 are closed.')]).toEqual([true, false, false]);
   });
 });

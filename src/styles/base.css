@@ -142,6 +142,17 @@ button.close {
   border: 0; background: none; color: var(--muted); padding: 0; width: 26px; height: 26px; border-radius: var(--r-sm);
 }
 button.close:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+/* A value's copy button follows its text and shows on hover, on keyboard focus and once it has copied. */
+dd.copyable { display: flex; align-items: flex-start; gap: 4px; }
+dd.copyable > .dd-text { flex: 0 1 auto; min-width: 0; }
+button.copy-value {
+  flex: none; width: 22px; height: 22px; margin: -2px 0; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--muted); opacity: 0;
+}
+dd.copyable:hover > .copy-value, button.copy-value:focus-visible, button.copy-value.copied { opacity: 1; }
+button.copy-value:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+button.copy-value .ic { width: 14px; height: 14px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.page-code .section-head .section-title { margin-top: 0; }
 a { color: var(--accent); text-underline-offset: 2px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

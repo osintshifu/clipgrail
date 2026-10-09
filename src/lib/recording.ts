@@ -18,6 +18,9 @@ export interface Recording {
   failed: number;
 }
 
+/** A review after Stop from the page menu, for the panel of the recorded window to show. */
+export const REVIEW_KEY = 'recordingReview';
+
 export const RECORDING_KEY = 'recording';
 
 export function isRecording(value: unknown): value is Recording {

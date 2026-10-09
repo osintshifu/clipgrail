@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { browser } from 'wxt/browser';
-import { captureLink, capturePage, captureSelection } from '../src/lib/capture';
-import { loadSessionView, readAllData } from '../src/lib/db';
+import { captureAddress, captureLink, capturePage, captureSelection, clipSummary } from '../src/lib/capture';
+import { clipTargets, loadSessionView, readAllData } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { extraction, freshDb } from './helpers';
 
@@ -60,12 +60,12 @@ describe('addresses with a user name and password', () => {
 });
 
 describe('saving a link without opening it', () => {
-  it('says Address only for a new source and which capture it is for a source the session has', async () => {
+  it('says URL only for a new source and which capture it is for a source the session has', async () => {
     const db = await freshDb();
     const tab = { id: 7, url: 'https://news.example.com/a', title: 'News' };
     scriptReturns('Report');
     const link = await captureLink(db, tab, INBOX_SESSION_ID, { url: 'https://other.example.org/report', pageUrl: tab.url });
-    expect(link.message).toBe('Saved S1 as a link, not opened · Address only');
+    expect(link.message).toBe('Saved S1 as a link, not opened · URL only');
 
     scriptReturns(extraction('News text', { page_url: tab.url }));
     await capturePage(db, tab, INBOX_SESSION_ID);
@@ -148,3 +148,40 @@ describe('page code of a capture', () => {
   });
 });
 
+
+describe('clipping a source saved as a URL only', () => {
+  it('reads its page in a background tab, saves the text to that source with the address the page moved to, and always closes the tab', async () => {
+    const db = await freshDb();
+    vi.spyOn(browser.scripting, 'executeScript').mockRejectedValue(new Error('Cannot access contents of url'));
+    const link = await captureLink(db, undefined, INBOX_SESSION_ID, { url: 'https://port.example.org/notices/41' });
+    const other = await captureLink(db, undefined, INBOX_SESSION_ID, { url: 'https://harbour.example.net/strike' });
+    if (!link.saved || !other.saved) throw new Error('links not saved');
+    const [target, second] = await clipTargets(db, [link.result.source.id, other.result.source.id]);
+    expect(target).toMatchObject({ label: 'S1', url: 'https://port.example.org/notices/41', session_id: INBOX_SESSION_ID });
+
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({ id: 41 } as never);
+    const remove = vi.spyOn(browser.tabs, 'remove').mockResolvedValue(undefined as never);
+    const moved = { id: 41, status: 'complete', url: 'https://www.port.example.org/notices/41', title: 'Night closures' };
+    vi.spyOn(browser.tabs, 'get').mockResolvedValue(moved as never);
+    scriptReturns(extraction('Berths 4 to 8 are closed at night.', { page_url: moved.url }));
+    const clipped = await captureAddress(db, target!, 3);
+    expect(create).toHaveBeenCalledWith({ url: target!.url, active: false, windowId: 3 });
+    expect(remove).toHaveBeenCalledWith(41);
+    if (!clipped.saved) throw new Error(clipped.message);
+    expect([clipped.result.source.id, clipped.result.capture.original_url, clipped.result.snapshot?.status]).toEqual([link.result.source.id, moved.url, 'ok']);
+
+    // An address of a file is not opened: most files would start a download.
+    create.mockClear();
+    expect(await captureAddress(db, { ...second!, url: 'https://harbour.example.net/files/strike-notice.ZIP' }, 3)).toMatchObject({ saved: false, reason: 'not_a_page' });
+    expect(create).not.toHaveBeenCalled();
+    // Chrome gives no address for a page on a site ClipGrail may not read: nothing is saved, and the tab still closes.
+    vi.spyOn(browser.tabs, 'get').mockResolvedValue({ id: 41, status: 'complete' } as never);
+    remove.mockClear();
+    const refused = await captureAddress(db, second!, 3);
+    expect(refused).toMatchObject({ saved: false, reason: 'no_site_access' });
+    expect(remove).toHaveBeenCalledWith(41);
+    expect(clipSummary([{ target: target!, outcome: clipped }, { target: second!, outcome: refused }])).toBe(
+      'Clipped 1 of 2 pages. S2: ClipGrail may not read harbour.example.net, so nothing was saved. Allow the site when Chrome asks; a page that moves to another site needs that site too.',
+    );
+  });
+});

@@ -47,10 +47,10 @@ describe('pivots', () => {
       ]],
       ['gtm GTM-W8R3KD', 'GTM-W8R3KD', 'blog.example.org union.example.com', 2, ['blog.example.org/a inline script', 'www.union.example.com/b inline script']],
       ['author anna nowak', 'Anna Nowák', 'blog.example.org union.example.com', 2, ['blog.example.org/a meta author', 'www.union.example.com/b meta author']],
-      ['x_account harbourwatch', '@HarbourWatch', 'blog.example.org union.example.com', 2, ['blog.example.org/a twitter:site', 'www.union.example.com/b twitter:site']],
+      ['x harbourwatch', '@HarbourWatch', 'blog.example.org union.example.com', 2, ['blog.example.org/a twitter:site', 'www.union.example.com/b twitter:site']],
       ['gtm GTM-5JX9ZQ', 'GTM-5JX9ZQ', 'port.example.org', 1, ['port.example.org/41 inline script', 'port.example.org/42 inline script']],
       ['author port desk', 'Port desk', 'port.example.org', 1, ['port.example.org/41 meta author', 'port.example.org/42 meta author']],
-      ['x_account port', '@port', 'port.example.org', 1, ['port.example.org/41 twitter:site', 'port.example.org/42 twitter:site']],
+      ['x port', '@port', 'port.example.org', 1, ['port.example.org/41 twitter:site', 'port.example.org/42 twitter:site']],
       ['iban DE89 3704 0044 0532 0130 00', 'DE89 3704 0044 0532 0130 00', 'port.example.org', 1, ['port.example.org/42 Selection']],
     ]);
     // A source's use opens its newest capture with the value, also when only an earlier text has it, and a value in a text keeps the passage around it.
@@ -69,5 +69,32 @@ describe('pivots', () => {
     expect(filtered({ query: 'x.com/harbourwatch' })).toEqual(['@HarbourWatch']);
     expect(filtered({ shared: false, query: 'de89370400440532013000' })).toEqual(['DE89 3704 0044 0532 0130 00']);
     expect(filtered({ query: '"x account" harbour' })).toEqual(['@HarbourWatch']);
+  });
+
+  it('joins a value read from the links or text of a page to the same value in saved text and to the X account another page declares', async () => {
+    const db = await freshDb();
+    await commitCapture(db, {
+      ...(await pageDraft('https://b.example.net/statement', 'Statement.', '2026-10-01T10:00:00.000Z')),
+      page_code: { declared: [{ field: 'x_account', value: '@HarbourWatch', from: ['twitter:site'] }], trackers: [], values: [{ kind: 'email', value: 'tips@harbour.example.org', where: ['page_text'] }] },
+    });
+    await commitCapture(db, {
+      ...(await pageDraft('https://a.example.org/', 'Write to tips@harbour.example.org.', '2026-10-02T10:00:00.000Z')),
+      page_code: {
+        declared: [],
+        trackers: [],
+        values: [
+          { kind: 'email', value: 'tips@harbour.example.org', where: ['link', 'page_text'] },
+          { kind: 'x', value: '@harbourwatch', where: ['link'] },
+        ],
+      },
+    });
+    const entries = libraryRows(await loadLibrary(db)).map((row) => row.entry);
+    const finds = new Map<string, TextFind[]>();
+    await visitSnapshotTexts(db, entries.flatMap(textIdsOf), (id, text) => !!finds.set(id, textFinds(text)));
+    // A value also in the saved text opens there, with the passage around it.
+    expect(collectPivots(entries, (id) => finds.get(id)).map((p) => [p.key, p.value, p.uses.map((u) => `${u.entry.source.dedup_url} ${u.where} ${!!u.snippet}`)])).toEqual([
+      ['email tips@harbour.example.org', 'tips@harbour.example.org', ['https://b.example.net/statement Page text false', 'https://a.example.org/ Saved text true']],
+      ['x harbourwatch', '@HarbourWatch', ['https://b.example.net/statement twitter:site false', 'https://a.example.org/ Page link false']],
+    ]);
   });
 });

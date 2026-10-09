@@ -23,6 +23,8 @@ const fake = vi.hoisted(() => ({
   /** Tabs the panel opened, and the error Chrome gives instead when set. */
   created: [] as unknown[],
   createError: null as Error | null,
+  /** What the panel asked Chrome to allow. */
+  requests: [] as unknown[],
 }));
 const tabEvent = vi.hoisted(() => ({ addListener: () => undefined }));
 
@@ -66,8 +68,9 @@ vi.mock('wxt/browser', () => ({
       onDetached: tabEvent,
     },
     permissions: {
-      request: async () => fake.tabsPermission,
+      request: async (request: unknown) => (fake.requests.push(request), fake.tabsPermission),
       contains: async () => fake.tabsPermission,
+      getAll: async () => ({ permissions: [], origins: [] }),
       remove: async () => !(fake.tabsPermission = false),
     },
   },
@@ -122,7 +125,7 @@ describe('side panel', () => {
     $('detail-tab-details').click();
     expect(Array.from(document.querySelectorAll('#detail-section .page-code > :not(dl)'), (e) => e.textContent)).toEqual([
       `Capture 2 · ${fmtTime('2026-10-05T10:01:00.000Z')}`,
-      'Declared by the page',
+      'Declared by the pageCopy all',
       'Trackers in the page code',
       'None found.',
       PAGE_CODE_NOTE,
@@ -170,7 +173,7 @@ describe('side panel', () => {
     // A note changed elsewhere (another window): Copy re-reads the data and refuses the outdated job.
     await updateCaptureNote(db, b.capture.id, 'Changed in another window');
     copy.click();
-    await vi.waitFor(() => expect($('delivery-status').textContent).toBe('Settings changed. Generate a new Research Job.'));
+    await vi.waitFor(() => expect($('delivery-status').textContent).toBe('Settings changed. Generate a new job.'));
     expect(fake.copied).toHaveLength(0);
     expect(copy.disabled).toBe(true);
     expect($('job-stale').hidden).toBe(false);
@@ -268,7 +271,7 @@ describe('side panel', () => {
     fake.local[settingsKey] = { ...(fake.local[settingsKey] as object), include_notes: false };
     $('copy-job').click();
     await vi.waitFor(() => expect($('delivery-status').hidden).toBe(false));
-    expect($('delivery-status').textContent).toBe('Settings changed. Generate a new Research Job.');
+    expect($('delivery-status').textContent).toBe('Settings changed. Generate a new job.');
     expect(fake.copied).toHaveLength(copied);
     expect($<HTMLTextAreaElement>('prompt').value).toBe('Prompt from another window');
     expect($<HTMLInputElement>('inc-notes').checked).toBe(false);
@@ -406,7 +409,7 @@ describe('side panel', () => {
       `S${visit!.source.number}Night closuresport.example.org`,
       `S${next!.source.number}Cookie settingsexample.com · from port.example.org`,
     ]);
-    const remove = document.querySelector<HTMLButtonElement>('.review-actions .primary')!;
+    const remove = Array.from(document.querySelectorAll<HTMLButtonElement>('.review-actions button')).find((b) => b.textContent?.startsWith('Remove'))!;
     expect(remove.disabled).toBe(true);
 
     // The keyboard moves down the list, opens a page to look at it and unchecks it.
@@ -440,6 +443,32 @@ describe('side panel', () => {
     expect((await loadRemovals(db))[0]).toMatchObject({ action: 'review', sources: [{ number: next!.source.number, title: null, url: null }] });
     // The visit to a page the session already had stays in its timeline.
     expect(sources.find((s) => s.source.id === again!.source.id)?.visits.map((v) => v.id)).toEqual([again!.capture.id]);
+  });
+
+  it('clips the pages checked in the review after a recording and removes the unchecked ones', async () => {
+    const db = await openDb();
+    const a = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://docs.example.net/a', title: 'Notice A', found_on: null, at: '2026-10-08T09:00:00.000Z' });
+    const b = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://www.example.org/b', title: 'Notice B', found_on: null, at: '2026-10-08T09:01:00.000Z' });
+    const saved = [a, b].map((r) => ({ capture_id: r!.capture.id, session_id: r!.capture.session_id }));
+    backgroundStores('recording', { window_id: 1, started_at: '2026-10-08T08:59:00.000Z', captures: saved, failed: 0 });
+    fake.response = { captures: saved, visits: [], failed: 0 };
+    $('record-button').click();
+    // The title stays from the review before, so the new review is known by its pages.
+    await vi.waitFor(() => expect($('sheet-body').querySelector('.review-list')?.textContent).toContain('Notice A'));
+    backgroundStores('recording', undefined);
+    const clip = Array.from(document.querySelectorAll<HTMLButtonElement>('.review-actions button')).find((button) => button.textContent?.startsWith('Clip'))!;
+    expect(clip.textContent).toBe('Clip 2 pages');
+    document.querySelectorAll<HTMLInputElement>('.review-list input')[1]!.click();
+    expect(clip.textContent).toBe('Clip 1 page');
+    // The background is asked to clip the checked page and remove the unchecked one; Chrome is asked for the checked page's site only.
+    fake.response = { queued: true };
+    clip.click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Clipping 1 page…'));
+    expect([fake.messages.at(-1), fake.requests.at(-1)]).toEqual([
+      { type: 'clip-sources', sourceIds: [a!.source.id], windowId: 1, origins: ['*://*.docs.example.net/*'], remove: [saved[1]] },
+      { origins: ['*://*.docs.example.net/*'] },
+    ]);
+    expect($('sheet-layer').hidden).toBe(true);
   });
 
   it('keeps the sites not recorded from pasted addresses and refuses a line that is not a site', async () => {
@@ -492,8 +521,8 @@ describe('side panel', () => {
     await pickSession('Counts');
     $('tab-job').click();
     $('mode-full').click();
-    await vi.waitFor(() => expect($('summary').textContent).toContain('Text saved 1 · Address only 1 · Capture failed 1'));
-    expect($('summary').textContent).toContain('Missing text: S2 (Address only) · S3 (Capture failed)');
+    await vi.waitFor(() => expect($('summary').textContent).toContain('Text saved 1 · URL only 1 · Capture failed 1'));
+    expect($('summary').textContent).toContain('Missing text: S2 (URL only) · S3 (Capture failed)');
   });
 
   it('says when Chrome does not open the library', async () => {
