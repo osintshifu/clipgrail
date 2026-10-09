@@ -71,6 +71,19 @@ export function isCapturableUrl(url: string): boolean {
   }
 }
 
+/** The address without a user name and password written into it (https://name:password@host/); any other address is returned unchanged. */
+export function withoutCredentials(input: string): string {
+  try {
+    const url = new URL(input);
+    if (!url.username && !url.password) return input;
+    url.username = '';
+    url.password = '';
+    return url.href;
+  } catch {
+    return input;
+  }
+}
+
 /**
  * Returns the URL used to deduplicate sources, or null for non-http(s) URLs.
  *

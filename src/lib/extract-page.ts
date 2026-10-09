@@ -24,9 +24,66 @@ function withinLimit(value: string | null, max: number): string | null {
   return value !== null && countCharacters(value) <= max ? value : null;
 }
 
+/** Readability reads these itself: JSON-LD in a script and meta tags give the byline and the date. */
+const LEFT_TO_READABILITY = new Set(['script', 'style', 'noscript', 'template', 'link', 'meta', 'title']);
+/** What a hidden part of the page still gives Readability. */
+const METADATA = 'script[type="application/ld+json" i], meta';
+
+/** Collects the text written directly in an element, not in its children. */
+function ownTextOf(element: Element, into: Node[]): void {
+  for (const child of Array.from(element.childNodes)) if (child.nodeType === Node.TEXT_NODE) into.push(child);
+}
+
+/** Moves the walker past the children of its current element: to its next sibling or the next sibling of an ancestor. */
+function pastChildren(walker: TreeWalker): Node | null {
+  let next = walker.nextSibling();
+  while (!next && walker.parentNode()) next = walker.nextSibling();
+  return next;
+}
+
+/**
+ * Removes from the copy what the page does not show, so Readability leaves it
+ * out as it leaves out elements hidden by an inline style: elements without a
+ * box (display: none, the content of a closed <details>), keeping their JSON-LD
+ * and meta tags; the text written directly in a closed <details>; and the text
+ * of elements with visibility: hidden, whose children can show themselves
+ * again. The copy has the structure of the page, and no script of the page
+ * runs during the walk.
+ */
+function dropUnrendered(live: HTMLElement, copy: HTMLElement): void {
+  const view = live.ownerDocument.defaultView;
+  if (typeof live.checkVisibility !== 'function' || !view) return;
+  const pageWalk = live.ownerDocument.createTreeWalker(live, NodeFilter.SHOW_ELEMENT);
+  const copyWalk = copy.ownerDocument.createTreeWalker(copy, NodeFilter.SHOW_ELEMENT);
+  const unrendered: Element[] = [];
+  const invisibleText: Node[] = [];
+  let shown = pageWalk.nextNode() as Element | null;
+  let copied = copyWalk.nextNode() as Element | null;
+  while (shown && copied) {
+    if (!LEFT_TO_READABILITY.has(shown.localName) && !shown.checkVisibility({ visibilityProperty: true })) {
+      const style = view.getComputedStyle(shown);
+      // An element with display: contents has no box of its own, but it and its children are shown.
+      if (!shown.checkVisibility() && style.display !== 'contents') {
+        unrendered.push(copied);
+        shown = pastChildren(pageWalk) as Element | null;
+        copied = pastChildren(copyWalk) as Element | null;
+        continue;
+      }
+      if (style.visibility !== 'visible') ownTextOf(copied, invisibleText);
+    } else if (shown.localName === 'details' && !(shown as HTMLDetailsElement).open) {
+      // A closed <details> shows only its summary: its other elements have no box and are dropped above.
+      ownTextOf(copied, invisibleText);
+    }
+    shown = pageWalk.nextNode() as Element | null;
+    copied = copyWalk.nextNode() as Element | null;
+  }
+  for (const element of unrendered) element.replaceWith(...Array.from(element.querySelectorAll(METADATA)));
+  for (const text of invisibleText) text.parentNode?.removeChild(text);
+}
+
 /**
  * Runs inside the captured page (isolated world). Reads the page; never modifies it.
- * Readability works on a clone of the document.
+ * Readability works on a clone of the document, without the text the page hides.
  */
 export function extractPage(doc: Document, httpStatus: number | null): PageExtraction {
   const pageUrl = doc.URL;
@@ -56,6 +113,8 @@ export function extractPage(doc: Document, httpStatus: number | null): PageExtra
     } else {
       try {
         const clone = doc.cloneNode(true) as Document;
+        // Over the limit Readability stops, and the page text that follows already leaves hidden text out.
+        if (doc.body && clone.body && doc.getElementsByTagName('*').length <= MAX_READABILITY_ELEMENTS) dropUnrendered(doc.body, clone.body);
         const article = new Readability<Node>(clone, {
           maxElemsToParse: MAX_READABILITY_ELEMENTS,
           serializer: (node) => node,

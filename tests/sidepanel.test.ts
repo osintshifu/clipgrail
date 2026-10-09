@@ -8,7 +8,7 @@ import { PAGE_CODE_NOTE, fmtMegabytes, fmtTime } from '../src/lib/describe';
 import { commitCapture, createSession, listSessions, loadRemovals, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { recordVisit } from '../src/lib/recording';
-import { pageDraft } from './helpers';
+import { failedDraft, linkDraft, pageDraft } from './helpers';
 
 type StorageListener = (changes: Record<string, { newValue?: unknown }>, area: string) => void;
 const fake = vi.hoisted(() => ({
@@ -20,8 +20,9 @@ const fake = vi.hoisted(() => ({
   messages: [] as unknown[],
   response: undefined as unknown,
   tabs: [] as Array<{ index: number; highlighted: boolean; url?: string; title?: string }>,
-  /** Tabs the panel opened. */
+  /** Tabs the panel opened, and the error Chrome gives instead when set. */
   created: [] as unknown[],
+  createError: null as Error | null,
 }));
 const tabEvent = vi.hoisted(() => ({ addListener: () => undefined }));
 
@@ -53,7 +54,10 @@ vi.mock('wxt/browser', () => ({
       },
     },
     tabs: {
-      create: async (properties: unknown) => void fake.created.push(properties),
+      create: async (properties: unknown) => {
+        if (fake.createError) throw fake.createError;
+        fake.created.push(properties);
+      },
       query: async (query: { highlighted?: boolean }) => fake.tabs.filter((t) => !query.highlighted || t.highlighted),
       onCreated: tabEvent,
       onRemoved: tabEvent,
@@ -476,5 +480,27 @@ describe('side panel', () => {
     $('toast-undo').click();
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recorded pages removed. Earlier captures are kept.'));
     expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
+  });
+
+  it('counts the selected sources by status before a Research Job is generated, and says why text is missing', async () => {
+    const db = await openDb();
+    const at = '2026-10-09T10:00:00.000Z';
+    const session = await createSession(db, 'Counts');
+    await commitCapture(db, await pageDraft('https://example.com/ok', 'Saved text', at, session.id));
+    await commitCapture(db, linkDraft('https://example.com/link', at, 'https://example.com/ok', session.id));
+    await commitCapture(db, failedDraft('https://example.com/failed', at, session.id));
+    await pickSession('Counts');
+    $('tab-job').click();
+    $('mode-full').click();
+    await vi.waitFor(() => expect($('summary').textContent).toContain('Text saved 1 · Address only 1 · Capture failed 1'));
+    expect($('summary').textContent).toContain('Missing text: S2 (Address only) · S3 (Capture failed)');
+  });
+
+  it('says when Chrome does not open the library', async () => {
+    fake.createError = new Error('Tabs cannot be edited right now (user may be dragging a tab).');
+    $('library-button').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Library not opened: Tabs cannot be edited right now (user may be dragging a tab).'));
+    expect($('toast').classList.contains('error')).toBe(true);
+    fake.createError = null;
   });
 });

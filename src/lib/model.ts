@@ -115,7 +115,7 @@ export interface Capture {
   kind: CaptureKind;
   /** When the user started the capture. Browsing provenance. */
   captured_at: string;
-  /** URL exactly as Chrome reported it (tab URL, or link target). Browsing provenance; exports use dedup_url. */
+  /** URL as Chrome reported it (tab URL, or link target), without a user name and password. Browsing provenance; exports use dedup_url. */
   original_url: string;
   /** Tab title at capture time (page, selection and tab captures); empty for links saved without opening. */
   tab_title: string;

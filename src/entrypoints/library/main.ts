@@ -1243,7 +1243,7 @@ function viewCapture(captureId: string, focus = true): void {
   if (comparing?.viewed !== captureId) setComparing(null);
   viewedCaptureId = captureId;
   renderReader();
-  if (focus) document.querySelector<HTMLButtonElement>(`.ver[data-id="${captureId}"]`)?.focus();
+  if (focus) document.querySelector<HTMLButtonElement>(`.ver[data-id="${CSS.escape(captureId)}"]`)?.focus();
 }
 
 async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
@@ -1999,7 +1999,7 @@ async function reload(): Promise<void> {
   if (focus) {
     const where = focus.inRows ? '#rows' : '#reader';
     const event = focus.capture ? document.querySelector<HTMLElement>(`${where} [data-capture="${CSS.escape(focus.capture)}"]`) : null;
-    (event ?? document.querySelector<HTMLElement>(`${where} [data-id="${focus.id}"]`))?.focus({ preventScroll: true });
+    (event ?? document.querySelector<HTMLElement>(`${where} [data-id="${CSS.escape(focus.id)}"]`))?.focus({ preventScroll: true });
   }
 }
 

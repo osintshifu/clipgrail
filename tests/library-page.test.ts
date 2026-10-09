@@ -530,4 +530,19 @@ describe('organizing in the library', () => {
     await vi.waitFor(() => expect($('library-notice').textContent).toBe('Deletion log cleared.'));
     expect([$('result-count').textContent, $<HTMLButtonElement>('clear-log').disabled]).toEqual(['0 entries', true]);
   });
+
+  it('keeps focus on a version whose ID would break a CSS selector, as one from an edited backup can', async () => {
+    const db = await openDb();
+    const ids = vi.spyOn(crypto, 'randomUUID');
+    for (const id of ['odd-source', 'c"1', 'odd-snapshot-1', 'c\\2', 'odd-snapshot-2']) ids.mockReturnValueOnce(id as `${string}-${string}-${string}-${string}-${string}`);
+    await commitCapture(db, await pageDraft('https://odd.example.org/a', 'First text.', '2026-10-06T10:00:00.000Z'));
+    await commitCapture(db, await pageDraft('https://odd.example.org/a', 'Second text.', '2026-10-06T11:00:00.000Z'));
+    ids.mockRestore();
+    fake.refresh();
+    location.hash = '#view=all&source=odd-source';
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Second text.'));
+    versions()[1]!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('First text.'));
+    expect((document.activeElement as HTMLElement).dataset.id).toBe('c"1');
+  });
 });

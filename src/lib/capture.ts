@@ -22,6 +22,8 @@ export type NotSavedReason =
   | 'empty_selection'
   | 'unsupported_link'
   | 'page_changed'
+  | 'error_page'
+  | 'frame_error_page'
   | 'storage_error';
 
 export type CaptureOutcome =
@@ -45,7 +47,7 @@ export function classifyScriptError(error: unknown): ScriptErrorKind {
   if (/Cannot access a chrome|extensions gallery cannot be scripted|chrome-extension:\/\/|chrome-error|devtools:/i.test(message)) {
     return 'blocked_page';
   }
-  if (/No tab with id|No frame with id|frame was removed|tab was closed/i.test(message)) return 'tab_gone';
+  if (/No tab with id|No frame with id|frame with ID \d+ was removed|frame was removed|tab was closed/i.test(message)) return 'tab_gone';
   return 'other';
 }
 
@@ -69,6 +71,8 @@ async function notSaved(reason: NotSavedReason, detail?: string): Promise<Captur
     empty_selection: 'Nothing is selected on this page.',
     unsupported_link: 'Only http and https links can be saved.',
     page_changed: 'The page changed while it was being clipped, so nothing was saved. Clip it again.',
+    error_page: "This tab shows the browser's error page, not the page, so there is no selection to clip. Nothing was saved. Clip page saves the address as Capture failed.",
+    frame_error_page: "This embedded frame shows the browser's error page, not its page, so there is no selection to clip. Nothing was saved.",
     storage_error: `Capture not saved: the browser refused to store it${detail ? ` (${detail})` : ''}. Existing data is unchanged.`,
   };
   return { saved: false, reason, message: messages[reason] };
@@ -98,7 +102,8 @@ function savedMessage(result: CommitResult): string {
   const label = sourceLabel(result.source);
   const where = result.isNewSource ? 'new source' : `capture ${result.captureCount} of this source`;
   const snapshot = result.snapshot;
-  if (result.capture.kind === 'link') return `Saved ${label} as a link, not opened · Pending`;
+  // A link to a page the session already has adds a capture; the source may have its text.
+  if (result.capture.kind === 'link') return `Saved ${label} as a link, not opened · ${result.isNewSource ? 'Address only' : where}`;
   if (result.capture.kind === 'selection') {
     const partial = result.capture.fragment?.truncated ? ' · partial: cut at the length limit' : '';
     const frame = result.capture.frame;
@@ -255,6 +260,8 @@ export async function captureSelection(
   } catch (error) {
     const kind = classifyScriptError(error);
     if (kind === 'tab_gone') return notSaved('tab_gone');
+    // Chrome's copy of the selection on its error page is the browser's message, not text of the source.
+    if (kind === 'page_unavailable') return notSaved(frameId === 0 ? 'error_page' : 'frame_error_page');
     if (!options.menuSelectionText) return notSaved(kind === 'blocked_page' ? 'blocked_page' : 'no_access');
   }
   if (!text.trim() && options.menuSelectionText) {

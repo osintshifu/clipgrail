@@ -108,6 +108,11 @@ import {
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** Opens the library in a tab; Chrome can refuse, for example while a tab is being dragged. */
+function showLibrary(params: Record<string, string>): void {
+  openLibrary(params, windowId).catch((error: unknown) => showToast(`Library not opened: ${errorText(error)}`, { level: 'error' }));
+}
 /**
  * Edits are written on every change, without a delay: IndexedDB runs read-write
  * transactions on the same store in the order they were created and
@@ -747,7 +752,8 @@ function renderCollect(): void {
               h('span', { class: 'src-meta' }, [
                 chip(status),
                 h('span', { class: 'src-host' }, [hostOf(entry.source.dedup_url)]),
-                meta ? h('span', { class: 'nowrap' }, [meta]) : null,
+                // In a narrow panel the line breaks between its parts, never inside one.
+                meta ? h('span', {}, meta.split(' · ').flatMap((part, i) => [i ? ' · ' : null, h('span', { class: 'nowrap' }, [part])])) : null,
               ]),
             ]),
           ],
@@ -799,7 +805,7 @@ function textSection(entry: SourceEntry): Child[] {
         h('span', {}, [`${plural(earlier, 'earlier text version')} kept.`]),
         h(
           'button',
-          { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id }, windowId) } },
+          { class: 'link', attrs: { id: 'open-versions', type: 'button' }, on: { click: () => showLibrary({ view: entry.source.session_id, source: entry.source.id }) } },
           ['Open in library', icon('arrow-up-right')],
         ),
       ]),
@@ -910,7 +916,7 @@ function captureCards(entry: SourceEntry): Child[] {
                     {
                       class: 'link compare-link',
                       attrs: { type: 'button' },
-                      on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id, capture: capture.id, compare: comparison.earlier.id }, windowId) },
+                      on: { click: () => showLibrary({ view: entry.source.session_id, source: entry.source.id, capture: capture.id, compare: comparison.earlier.id }) },
                     },
                     ['Compare in library', icon('arrow-up-right')],
                   ),
@@ -1370,10 +1376,26 @@ function renderJob(): void {
 
   draft = buildResearchJob({ view, settings, id: 'draft', createdAt: '' });
   const stats = draft.stats;
-  const missing = draft.sources.filter((s) => s.material === 'missing').map((s) => s.label);
-  const partial = draft.sources.filter((s) => s.material === 'partial').map((s) => s.label);
+  const jobSources = draft.sources;
+  const statusOrder: SourceStatus[] = ['ok', 'partial', 'pending', 'failed', 'none'];
+  const statusCounts = statusOrder
+    .map((status) => [status, jobSources.filter((s) => s.status === status).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([status, n]) => `${STATUS_LABELS[status]} ${n}`)
+    .join(' · ');
+  const missingSources = jobSources.filter((s) => s.material === 'missing');
+  const partial = jobSources.filter((s) => s.material === 'partial').map((s) => s.label);
   const missingWhat = settings.context_mode === 'selections' ? 'selection' : 'text';
-  const issues = [missing.length ? `Missing ${missingWhat}: ${missing.join(', ')}` : '', partial.length ? `Partial: ${partial.join(', ')}` : '']
+  // Without text, why it is missing tells what to do: clip the page, or try it again.
+  const missing =
+    settings.context_mode === 'full'
+      ? statusOrder
+          .map((status) => missingSources.filter((s) => s.status === status).map((s) => s.label))
+          .map((labels, i) => (labels.length ? `${labels.join(', ')} (${STATUS_LABELS[statusOrder[i]!]})` : ''))
+          .filter(Boolean)
+          .join(' · ')
+      : missingSources.map((s) => s.label).join(', ');
+  const issues = [missing ? `Missing ${missingWhat}: ${missing}` : '', partial.length ? `Partial: ${partial.join(', ')}` : '']
     .filter(Boolean)
     .join(' · ');
   $('summary').replaceChildren(
@@ -1381,6 +1403,7 @@ function renderJob(): void {
       h('b', {}, [`${plural(stats.source_count, 'source')} · ${fmtNumber(stats.character_count)} characters`]),
       h('span', { class: 'muted' }, [` · ~${fmtBytes(stats.utf8_bytes)} UTF-8`]),
     ]),
+    statusCounts ? h('div', { class: 'muted' }, [statusCounts]) : '',
     issues ? h('div', { class: 'issues' }, [issues]) : '',
     !issues && stats.source_count > 0 ? h('div', { class: 'muted' }, ['All selected sources have the requested material.']) : '',
   );
@@ -1919,7 +1942,7 @@ function bind(): void {
   rovingKeys($('tab-collect').parentElement!, (button) => selectTab(button.id === 'tab-collect' ? 'collect' : 'job'));
 
   $('session-button').addEventListener('click', () => void openSessionsSheet());
-  $('library-button').addEventListener('click', () => void openLibrary({ view: activeId }, windowId));
+  $('library-button').addEventListener('click', () => showLibrary({ view: activeId }));
 
   $('clip-page').addEventListener('click', () => void clip('page'));
   $('clip-selection').addEventListener('click', () => void clip('selection'));

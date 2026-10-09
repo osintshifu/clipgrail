@@ -62,7 +62,8 @@ export function fmtMegabytes(bytes: number): string {
 }
 
 export function fmtBytes(bytes: number): string {
-  return bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1)} kB`;
+  // From 999,950 bytes up, kB would round to "1000.0 kB".
+  return bytes < 1000 ? `${bytes} B` : bytes < 999_950 ? `${(bytes / 1000).toFixed(1)} kB` : fmtMegabytes(bytes);
 }
 
 export function hostOf(url: string): string {
@@ -75,6 +76,14 @@ export function hostOf(url: string): string {
 
 const selectionCount = (entry: SourceEntry) => entry.captures.filter((c) => c.capture.kind === 'selection').length;
 
+/** "2 selections", with the ones cut at the length limit: "1 selection, partial", "3 selections, 1 partial". */
+function selectionWords(entry: SourceEntry): string {
+  const selections = entry.captures.filter((c) => c.capture.kind === 'selection');
+  const cut = selections.filter((c) => c.capture.fragment?.truncated).length;
+  const words = plural(selections.length, 'selection');
+  return !cut ? words : cut === selections.length ? `${words}, partial` : `${words}, ${cut} partial`;
+}
+
 /** Short meta line for the source list, for example "573 chars · 2 captures · 1 selection". */
 export function sourceMeta(entry: SourceEntry): string {
   const choice = chooseSnapshot(entry);
@@ -85,11 +94,11 @@ export function sourceMeta(entry: SourceEntry): string {
   if (ok && choice.status === 'ok') main = `${fmtNumber(ok.character_count)} chars`;
   else if (ok) main = `${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} chars`;
   else if (failed) main = describeFailure(failed);
-  else if (choice.status === 'none') main = plural(selections, 'selection');
+  else if (choice.status === 'none') main = selectionWords(entry);
   return [
     main,
     entry.captures.length > 1 ? plural(entry.captures.length, 'capture') : '',
-    choice.status !== 'none' && selections ? plural(selections, 'selection') : '',
+    choice.status !== 'none' && selections ? selectionWords(entry) : '',
     laterFailureOf(entry, choice) ? 'latest attempt failed' : '',
   ]
     .filter(Boolean)

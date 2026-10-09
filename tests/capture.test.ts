@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { browser } from 'wxt/browser';
-import { capturePage, captureSelection } from '../src/lib/capture';
-import { loadSessionView } from '../src/lib/db';
+import { captureLink, capturePage, captureSelection } from '../src/lib/capture';
+import { loadSessionView, readAllData } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { extraction, freshDb } from './helpers';
 
@@ -30,6 +30,62 @@ describe('capture of a page that changes during the capture', () => {
     // The same page with tracking parameters is still the same document.
     scriptReturns(extraction('Page A text', { page_url: 'https://example.com/a?utm_source=x' }));
     expect(await capturePage(db, tab, INBOX_SESSION_ID)).toMatchObject({ saved: true });
+  });
+
+  it('saves nothing when the page went away while it was read', async () => {
+    const db = await freshDb();
+    vi.spyOn(browser.scripting, 'executeScript').mockRejectedValue(new Error('Frame with ID 0 was removed.'));
+    expect(await capturePage(db, { id: 7, url: 'https://example.com/a', title: 'Page A' }, INBOX_SESSION_ID)).toMatchObject({ saved: false, reason: 'tab_gone' });
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources).toHaveLength(0);
+  });
+});
+
+describe('addresses with a user name and password', () => {
+  it('never stores a user name or password written into an address', async () => {
+    const db = await freshDb();
+    const tab = { id: 7, url: 'https://alice:s3cret@intranet.example.com/wiki', title: 'Wiki' };
+    const code = { declared: [{ field: 'canonical', value: 'https://alice:s3cret@intranet.example.com/wiki/main', from: ['link rel=canonical'] }], trackers: [] };
+
+    scriptReturns({ ...extraction('Wiki text', { page_url: tab.url, canonical_url: 'https://alice:s3cret@intranet.example.com/wiki/main' }), page_code: code });
+    const page = await capturePage(db, tab, INBOX_SESSION_ID);
+    expect(page.saved && page.result.capture.original_url).toBe('https://intranet.example.com/wiki');
+    vi.spyOn(browser.scripting, 'executeScript').mockRejectedValue(new Error('Cannot access contents of url'));
+    expect(await captureLink(db, tab, INBOX_SESSION_ID, { url: 'https://bob:t0ken@files.example.org/report.pdf', pageUrl: tab.url })).toMatchObject({ saved: true });
+    vi.restoreAllMocks();
+    scriptReturns({ text: 'Quoted post', url: 'https://carol:pw9@embed.example.org/post' });
+    expect(await captureSelection(db, tab, INBOX_SESSION_ID, { frameId: 3 })).toMatchObject({ saved: true });
+
+    expect(JSON.stringify(await readAllData(db))).not.toMatch(/s3cret|t0ken|pw9|alice|bob|carol/);
+  });
+});
+
+describe('saving a link without opening it', () => {
+  it('says Address only for a new source and which capture it is for a source the session has', async () => {
+    const db = await freshDb();
+    const tab = { id: 7, url: 'https://news.example.com/a', title: 'News' };
+    scriptReturns('Report');
+    const link = await captureLink(db, tab, INBOX_SESSION_ID, { url: 'https://other.example.org/report', pageUrl: tab.url });
+    expect(link.message).toBe('Saved S1 as a link, not opened · Address only');
+
+    scriptReturns(extraction('News text', { page_url: tab.url }));
+    await capturePage(db, tab, INBOX_SESSION_ID);
+    scriptReturns('News');
+    const again = await captureLink(db, tab, INBOX_SESSION_ID, { url: tab.url, pageUrl: 'https://news.example.com/' });
+    expect(again.message).toBe('Saved S2 as a link, not opened · capture 2 of this source');
+  });
+});
+
+describe('selection on an error page the browser shows', () => {
+  it("saves nothing, also not Chrome's copy of its own message, and says why", async () => {
+    const db = await freshDb();
+    const tab = { id: 7, url: 'https://nonexistent.example.invalid/', title: 'nonexistent.example.invalid' };
+    vi.spyOn(browser.scripting, 'executeScript').mockRejectedValue(new Error('Frame with ID 0 is showing error page'));
+    const fromPanel = await captureSelection(db, tab, INBOX_SESSION_ID);
+    expect(fromPanel).toMatchObject({ saved: false, reason: 'error_page' });
+    expect(fromPanel.message).toContain("browser's error page");
+    expect(await captureSelection(db, tab, INBOX_SESSION_ID, { frameId: 0, menuSelectionText: "This site can't be reached" })).toMatchObject({ saved: false, reason: 'error_page' });
+    expect(await captureSelection(db, tab, INBOX_SESSION_ID, { frameId: 4, menuSelectionText: 'refused to connect' })).toMatchObject({ saved: false, reason: 'frame_error_page' });
+    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources).toHaveLength(0);
   });
 });
 

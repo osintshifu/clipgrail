@@ -96,6 +96,7 @@ Copy the job, export it as **Markdown** or **JSON**, or open ChatGPT, Claude, Ge
 - **Local by default:** research data stays in your Chrome profile. No ClipGrail account, backend, telemetry, or cloud sync.
 - **Controlled access:** page text is read after a direct action on that tab. Saving tabs and recording request additional browser permissions.
 - **Your data:** export a JSON backup regularly. Uninstalling the extension removes locally stored research data; restoring a backup replaces existing data.
+- **Privacy policy:** [PRIVACY.md](PRIVACY.md).
 
 ### Limits
 

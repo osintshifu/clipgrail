@@ -30,6 +30,34 @@ describe('extractPage', () => {
     expect(result.http_status).toBe(200);
   });
 
+  it('leaves out text the page hides with its style sheet, and keeps what a hidden part tells about the page', () => {
+    // jsdom has no layout: what Chrome's checkVisibility reports is taken from the computed style.
+    Element.prototype.checkVisibility = function (this: Element, options?: CheckVisibilityOptions) {
+      // An element with display: contents has no box, as in Chrome.
+      if (getComputedStyle(this).display === 'contents') return false;
+      for (let e = this as Element | null; e; e = e.parentElement) if (getComputedStyle(e).display === 'none') return false;
+      return !options?.visibilityProperty || getComputedStyle(this).visibility !== 'hidden';
+    };
+    document.head.innerHTML =
+      '<title>Recount report</title><style>.collapsed { display: none } .ghost { visibility: hidden } .shown { visibility: visible } .wrap { display: contents }</style>';
+    document.body.innerHTML = `<article><h1>Recount report</h1>${Array.from({ length: 8 }, (_, i) => paragraph(i + 1)).join('')}
+      <div class="collapsed"><p>Answer in a collapsed panel that the reader never saw on the page.</p>
+        <script type="application/ld+json">{"@context": "https://schema.org", "@type": "NewsArticle", "datePublished": "2026-01-02"}</script></div>
+      <div class="ghost">Instructions hidden by a style rule, meant for whoever reads the page code.
+        <p class="shown">A paragraph that shows itself inside a hidden block is on the page, so it is saved.</p></div>
+      <div class="wrap"><p>A paragraph inside a wrapper without a box of its own is shown.</p>Text written in that wrapper is shown too.</div>
+      <details><summary>Questions about the recount</summary>The answer in a closed details element, with <a href="/x">a link</a> in it.</details></article>`;
+    const result = extractPage(document, 200);
+    delete (Element.prototype as Partial<Element>).checkVisibility;
+    expect(result).toMatchObject({ ok: true, extraction_method: 'readability', published_time: '2026-01-02' });
+    if (!result.ok) return;
+    expect(result.text).toContain('Paragraph 8 of the article');
+    expect(result.text).toContain('wrapper without a box');
+    expect(result.text).toContain('Text written in that wrapper is shown too.');
+    expect(result.text).toContain('shows itself inside a hidden block');
+    expect(result.text).not.toMatch(/collapsed panel|hidden by a style rule|closed details element/);
+  });
+
   it('reports HTTP errors only from a status the browser reported, never from page wording', () => {
     const notFoundPage = html('<h1>404 Not Found</h1><p>The page you requested does not exist on this server.</p>');
     const withStatus = extractPage(notFoundPage, 404);

@@ -74,7 +74,13 @@ function eventOf(entry: Entry, capture: Capture, snapshot: SnapshotMeta | undefi
     case 'visit':
       return event('Visited again', how);
     case 'selection':
-      return event('Selection saved', capture.fragment ? `${fmtNumber(capture.fragment.character_count)} characters` : '');
+      if (!capture.fragment) return event('Selection saved', '');
+      return event(
+        'Selection saved',
+        capture.fragment.truncated
+          ? `partial, ${fmtNumber(capture.fragment.character_count)} of ${fmtNumber(capture.fragment.original_character_count)} characters`
+          : `${fmtNumber(capture.fragment.character_count)} characters`,
+      );
     case 'link':
       return event('Link saved, not opened', capture.found_on ? `found on ${pageRef(capture.found_on, byAddress)}` : '');
     case 'page':

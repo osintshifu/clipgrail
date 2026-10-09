@@ -85,6 +85,8 @@ const ELEMENT_NODE = 1;
  */
 export function elementToText(root: Node): string {
   let out = '';
+  // The last character written: asking `out` for it would join the whole text built so far on every text node.
+  let last = '';
   let pendingBreak = 0;
   let pendingPrefix = '';
 
@@ -99,6 +101,7 @@ export function elementToText(root: Node): string {
     out += pendingPrefix;
     pendingPrefix = '';
     out += s;
+    last = s.at(-1)!;
   };
 
   const walk = (node: Node, pre: boolean, listDepth: number) => {
@@ -106,7 +109,7 @@ export function elementToText(root: Node): string {
       let value = node.nodeValue ?? '';
       if (!pre) {
         value = value.replace(/[ \t\n\r\f]+/g, ' ');
-        if (pendingBreak || pendingPrefix || out === '' || out.endsWith('\n') || out.endsWith(' ')) {
+        if (pendingBreak || pendingPrefix || last === '' || last === '\n' || last === ' ') {
           value = value.replace(/^ /, '');
         }
       }
@@ -128,6 +131,7 @@ export function elementToText(root: Node): string {
         if (pendingBreak) out += '\n'.repeat(pendingBreak);
         pendingBreak = 0;
         out += '\n';
+        last = '\n';
       }
       return;
     }

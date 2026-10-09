@@ -1,10 +1,11 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { commitCapture, loadSessionView } from '../src/lib/db';
+import { commitCapture, loadLibrary, loadSessionView } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { chooseSnapshot } from '../src/lib/selection';
 import { buildSnapshotDraft } from '../src/lib/snapshot';
-import { PAGE_CODE_NOTE, STATUS_LABELS, comparisonLine, fmtTime, pageCodeCapture, pageCodeView, sourceMeta, statusSentence, textComparisons } from '../src/lib/describe';
+import { PAGE_CODE_NOTE, STATUS_LABELS, comparisonLine, fmtBytes, fmtTime, pageCodeCapture, pageCodeView, sourceMeta, statusSentence, textComparisons } from '../src/lib/describe';
+import { timelineEvents } from '../src/lib/timeline';
 import { extraction, failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 describe('source status texts', () => {
@@ -44,6 +45,24 @@ describe('source status texts', () => {
     expect(sentences[5]).toMatch(/^The tab address was saved without reading the page/);
   });
 
+  it('mark a selection cut at the length limit as partial, without changing the status of the source', async () => {
+    const db = await freshDb();
+    const at = '2026-10-05T10:00:00.000Z';
+    const cut = async (url: string, when = at) => {
+      const draft = await selectionDraft(url, 'Selected words', when);
+      return { ...draft, fragment: { ...draft.fragment!, truncated: true, original_character_count: 1_000_005 } };
+    };
+    await commitCapture(db, await cut('https://example.com/cut', '2026-10-05T09:00:00.000Z'));
+    await commitCapture(db, await pageDraft('https://example.com/full', 'Saved text', at));
+    await commitCapture(db, await cut('https://example.com/full'));
+    await commitCapture(db, await selectionDraft('https://example.com/full', 'More words', at));
+
+    const sources = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    expect(sources.map(sourceMeta)).toEqual(['1 selection, partial', '10 chars · 3 captures · 2 selections, 1 partial']);
+    expect(sources.map((s) => STATUS_LABELS[chooseSnapshot(s).status])).toEqual(['Selections only', 'Text saved']);
+    expect(timelineEvents((await loadLibrary(db)).sources)[0]).toMatchObject({ verb: 'Selection saved', detail: 'partial, 14 of 1,000,005 characters' });
+  });
+
   it('say when the latest attempt failed after the text in use', async () => {
     const db = await freshDb();
     await commitCapture(db, await pageDraft('https://example.com/recount', 'Saved text', '2026-10-05T10:00:00.000Z'));
@@ -53,6 +72,12 @@ describe('source status texts', () => {
     expect(sourceMeta(entry!)).toBe('10 chars · 2 captures · latest attempt failed');
     expect(statusSentence(entry!)).toMatch(/^Readable text saved .* · capture 1 of 2\. Latest attempt (.+) failed: HTTP 404\.$/);
     expect(statusSentence(entry!)).toContain(`Latest attempt ${fmtTime('2026-10-06T12:20:00.000Z')} failed`);
+  });
+});
+
+describe('sizes', () => {
+  it('shows a size from 1 MB up in MB, as the backup sizes are shown', () => {
+    expect([fmtBytes(999), fmtBytes(999_949), fmtBytes(999_950), fmtBytes(9_057_400)]).toEqual(['999 B', '999.9 kB', '1 MB', '9.1 MB']);
   });
 });
 

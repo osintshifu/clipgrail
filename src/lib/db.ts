@@ -1,6 +1,7 @@
 import { INBOX_SESSION_ID } from './model';
 import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, PageCode, Removal, RemovalAction, RemovedSource, Session, Snapshot, SnapshotMeta, Source } from './model';
 import { capturedTitle } from './selection';
+import { withoutCredentials } from './url';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
@@ -421,22 +422,30 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     source_id: source.id,
     kind: draft.kind,
     captured_at: draft.captured_at,
-    original_url: draft.original_url,
+    // A user name and password written into an address are never kept, in any field.
+    original_url: withoutCredentials(draft.original_url),
     tab_title: draft.tab_title,
-    found_on: draft.found_on,
+    found_on: draft.found_on && withoutCredentials(draft.found_on),
     anchor_text: draft.anchor_text,
     fragment: draft.fragment,
-    frame: draft.frame ?? null,
+    frame: draft.frame ? { ...draft.frame, url: draft.frame.url && withoutCredentials(draft.frame.url) } : null,
     navigation: draft.navigation ?? null,
-    page_code: draft.page_code ?? null,
+    page_code: draft.page_code
+      ? { ...draft.page_code, declared: draft.page_code.declared.map((d) => (d.field === 'canonical' ? { ...d, value: withoutCredentials(d.value) } : d)) }
+      : null,
     snapshot_id: snapshotId,
     note: '',
   };
   tx.objectStore('captures').add(capture);
   let snapshot: Snapshot | null = null;
   if (draft.snapshot && snapshotId) {
+    const urls =
+      draft.snapshot.status === 'ok'
+        ? { page_url: withoutCredentials(draft.snapshot.page_url), canonical_url: draft.snapshot.canonical_url && withoutCredentials(draft.snapshot.canonical_url) }
+        : {};
     snapshot = {
       ...draft.snapshot,
+      ...urls,
       id: snapshotId,
       capture_id: captureId,
       source_id: source.id,

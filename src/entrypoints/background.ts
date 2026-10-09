@@ -97,7 +97,7 @@ function trackPanel(windowId: number, open: boolean): void {
     else openPanels.delete(windowId);
     await browser.storage.session.set({ [OPEN_PANELS_KEY]: [...openPanels] });
     if (!open) await applyOpenMode();
-  });
+  }).catch(() => undefined);
 }
 
 function closePanel(windowId: number): void {
@@ -345,11 +345,11 @@ export default defineBackground(() => {
       browser.contextMenus.create({ id: 'open-panel', title: 'Open side panel', contexts: ['action'], visible: false });
       browser.contextMenus.create({ id: 'open-library', title: 'Open library', contexts: ['action'] });
       return applyOpenMode();
-    });
+    }).catch(() => undefined);
   });
-  browser.runtime.onStartup.addListener(() => void applyOpenMode());
+  browser.runtime.onStartup.addListener(() => void applyOpenMode().catch(() => undefined));
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[OPEN_MODE_KEY]) void applyOpenMode();
+    if (area === 'local' && changes[OPEN_MODE_KEY]) void applyOpenMode().catch(() => undefined);
   });
 
   // Toolbar icon in side panel mode (in popup mode Chrome opens the popup instead). As a user action, it grants activeTab for the current tab.
@@ -363,7 +363,9 @@ export default defineBackground(() => {
       return;
     }
     if (info.menuItemId === 'open-library') {
-      void getActiveSessionId().then((view) => openLibrary({ view }, tab?.windowId));
+      void getActiveSessionId()
+        .then((view) => openLibrary({ view }, tab?.windowId))
+        .catch(() => undefined);
       return;
     }
     showResult(tab?.windowId);
