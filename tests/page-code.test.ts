@@ -56,6 +56,36 @@ describe('page code', () => {
     expect(cleanPageCode({ ...code, extra: 'x' })).toEqual({ declared: code.declared, trackers: code.trackers });
   });
 
+  it('reads the forms real pages use, leaves out what the page did not declare, and stays quick on a page built to slow it down', () => {
+    const read = (head: string, body = '') => readPageCode(new DOMParser().parseFromString(`<!doctype html><html><head>${head}</head><body>${body}</body></html>`, 'text/html'));
+    // The Google tag ID, the Meta Pixel configuration script, an AMP page.
+    expect(read(`<script async src="https://www.googletagmanager.com/gtag/js?id=GT-NFBTKH4"></script>
+      <script src="https://connect.facebook.net/signals/config/284019573316622?v=2.9"></script>`).trackers).toEqual([
+      { kind: 'google_tag', id: 'GT-NFBTKH4', where: ['script_address'] },
+      { kind: 'meta_pixel', id: '284019573316622', where: ['script_address'] },
+    ]);
+    expect(read('', `<amp-analytics type="gtag"><script type="application/json">{"vars":{"gtag_id":"G-7QX2KF31PL"}}</script></amp-analytics>
+      <amp-analytics config="https://www.googletagmanager.com/amp.json?id=GTM-5JX9ZQ"></amp-analytics>
+      <amp-pixel src="https://www.facebook.com/tr?id=284019573316622&ev=PageView"></amp-pixel>`).trackers.map((t) => [t.id, t.where])).toEqual([
+      ['G-7QX2KF31PL', ['amp_tag']],
+      ['GTM-5JX9ZQ', ['amp_tag']],
+      ['284019573316622', ['amp_tag']],
+    ]);
+    // Line breaks inside JSON-LD strings; the article as the main entity of a page; the page and site types left out; an empty canonical link.
+    expect(read(`<link rel="canonical" href="">
+      <script type="application/ld+json">{"@type":"WebPage","datePublished":"2026-10-01","mainEntity":{"@type":"NewsArticle","headline":"Line one
+line two","author":"Anna Nowak"}}</script>
+      <script type="application/ld+json">{"@type":"WebSite","publisher":{"@type":"Organization","name":"Harbour Authority Ltd"}}</script>`).declared).toEqual([
+      { field: 'published', value: '2026-10-01', from: ['schema.org datePublished'] },
+      { field: 'type', value: 'NewsArticle', from: ['schema.org'] },
+      { field: 'author', value: 'Anna Nowak', from: ['schema.org author'] },
+      { field: 'publisher', value: 'Harbour Authority Ltd', from: ['schema.org publisher'] },
+    ]);
+    const started = performance.now();
+    read(`<script>var x='${'facebook.com/tr?'.repeat(60_000)}';</script>`);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it('refuses page code that breaks its contract', () => {
     const valid = { declared: [{ field: 'author', value: 'Anna', from: ['meta author'] }], trackers: [{ kind: 'gtm', id: 'GTM-5JX9ZQ', where: ['noscript'] }] };
     const broken: unknown[] = [

@@ -40,7 +40,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | --- | --- |
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
-| **Page code** | Record the trackers in a clipped page (Google Analytics, Tag Manager, Meta Pixel, AdSense) and what it declares about itself, each with where it was found; search finds the pages that share them. |
+| **Page code** | Record the trackers in a clipped page (Google Analytics, Google tag, Tag Manager, Meta Pixel, AdSense) and what it declares about itself, each with where it was found; search finds the pages that share them. |
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes, see which captures saved the same text, and compare two of them word by word. |
 | **Research library** | Organize sources into sessions; follow a session on its timeline, mark important sources, search saved text, notes and selections, and add notes. |
 | **Research Jobs** | Combine a prompt with selected sources referenced as `[S1]`, `[S2]`, and so on. |
@@ -74,7 +74,7 @@ Click **Record** in ClipGrail, browse normally in that Chrome window, then click
 | Action | Saved material |
 | --- | --- |
 | **Clip page** (`Alt+Shift+K`) | Readable article or visible page text, plus capture details and the page code. |
-| **Clip selection** | Selected text linked to its source. |
+| **Clip selection** | Selected text linked to its source, plus the page code. |
 | **Save link** | URL without opening or downloading the destination. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 

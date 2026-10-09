@@ -82,16 +82,17 @@ describe('text comparisons', () => {
 });
 
 describe('page code in details', () => {
-  it('shows the values and trackers a capture read with where each came from, and what Readability read for a page clipped before', async () => {
+  it('shows the values and trackers a capture read with where each came from, and what Readability read when the page code was not read', async () => {
     const db = await freshDb();
     const url = 'https://example.com/notice';
     await commitCapture(db, await pageDraft(url, 'Clipped before page code was read.', '2026-10-09T10:00:00.000Z'));
     const [before] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
     const old = pageCodeCapture(before!)!;
     expect(pageCodeView(old.capture, old.snapshot)).toEqual({
+      declaredTitle: 'Read with the text by Readability',
       declared: [],
       trackers: null,
-      note: 'The page code was not read: this capture was made before ClipGrail read it.',
+      note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
     });
 
     await commitCapture(db, {
@@ -107,6 +108,7 @@ describe('page code in details', () => {
     const shown = pageCodeCapture(entry!)!;
     expect(shown.number).toBe(2);
     expect(pageCodeView(shown.capture, shown.snapshot)).toEqual({
+      declaredTitle: 'Declared by the page',
       declared: [{ label: 'Published', value: '2026-10-09T09:12:00+02:00', from: 'article:published_time, schema.org datePublished', mono: false }],
       trackers: [{ label: 'Google Analytics 4', value: 'G-7QX2KF31PL', from: 'script address, inline script', mono: true }],
       note: PAGE_CODE_NOTE,

@@ -303,6 +303,7 @@ const DECLARED_LABELS: Record<DeclaredField, string> = {
 };
 const TRACKER_LABELS: Record<TrackerKind, string> = {
   ga4: 'Google Analytics 4',
+  google_tag: 'Google tag',
   ua: 'Google Analytics (Universal)',
   gtm: 'Google Tag Manager',
   meta_pixel: 'Meta Pixel',
@@ -314,6 +315,7 @@ const PLACE_WORDS: Record<TrackerPlace, string> = {
   noscript: 'noscript frame',
   ad_tag: 'ad tag',
   image: 'tracking image',
+  amp_tag: 'AMP analytics tag',
 };
 
 export const PAGE_CODE_NOTE =
@@ -328,6 +330,8 @@ export interface PageCodeRow {
 }
 
 export interface PageCodeView {
+  /** "Declared by the page", or for a capture without page code what Readability read with the text, which may come from the visible text. */
+  declaredTitle: string;
   declared: PageCodeRow[];
   /** Null when the page code was not read for the capture. */
   trackers: PageCodeRow[] | null;
@@ -343,6 +347,7 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
   const code = capture.page_code;
   if (code) {
     return {
+      declaredTitle: 'Declared by the page',
       declared: code.declared.map((d) => ({ label: DECLARED_LABELS[d.field], value: d.value, from: d.from.join(', '), mono: false })),
       trackers: code.trackers.map((t) => ({ label: TRACKER_LABELS[t.kind], value: t.id, from: t.where.map((w) => PLACE_WORDS[w]).join(', '), mono: true })),
       note: PAGE_CODE_NOTE,
@@ -356,8 +361,13 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
     ['Published', ok?.published_time],
     ['Canonical', ok?.canonical_url],
   ];
-  const declared = read.flatMap(([label, value]) => (value ? [{ label, value, from: 'read by Readability', mono: false }] : []));
-  return { declared, trackers: null, note: 'The page code was not read: this capture was made before ClipGrail read it.' };
+  const declared = read.flatMap(([label, value]) => (value ? [{ label, value, from: '', mono: false }] : []));
+  return {
+    declaredTitle: 'Read with the text by Readability',
+    declared,
+    trackers: null,
+    note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
+  };
 }
 
 /** The capture whose page code the side panel shows: the newest that read it, else the one with the current text. */
@@ -369,11 +379,11 @@ export function pageCodeCapture(entry: SourceEntry): { capture: Capture; snapsho
   return numbered.find((c) => current && c.snapshot === current) ?? null;
 }
 
-/** The values of a capture's page code as one text, for search. */
+/** The values and tracker IDs of a capture's page code as one text, for search; field names are left out so they are not found. */
 export function pageCodeText(capture: Capture): string {
   const code = capture.page_code;
   if (!code) return '';
-  return [...code.declared.map((d) => `${DECLARED_LABELS[d.field]}: ${d.value}`), ...code.trackers.map((t) => `${TRACKER_LABELS[t.kind]}: ${t.id}`)].join(' · ');
+  return [...code.declared.map((d) => d.value), ...code.trackers.map((t) => t.id)].join(' · ');
 }
 
 // ---------- Deleting data ----------

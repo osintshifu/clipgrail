@@ -128,6 +128,11 @@ describe('library', () => {
       filterRows(rows, { ...all, query: input }, new Map()).map((row) => `${row.host} ${searchSnippet(row, parseSearch(input), undefined)?.where ?? '-'}`);
     expect(search('G-7QX2KF31PL')).toEqual(['b.example.net Page code', 'a.example.org Page code']);
     expect(search('"harbour authority"')).toEqual(['b.example.net Page code', 'a.example.org Page code']);
+    // The names of the fields are not page code; a value stored with separate accents is found like any text.
+    expect(search('publisher')).toEqual([]);
+    await commitCapture(db, { ...(await pageDraft('https://d.example.org/', 'Delta', '2026-10-04T10:00:00.000Z')), page_code: { declared: [{ field: 'site_name', value: 'Źródło Media'.normalize('NFD'), from: ['og:site_name'] }], trackers: [] } });
+    const withAccents = libraryRows(await loadLibrary(db));
+    expect(filterRows(withAccents, { ...all, query: 'zrodlo' }, new Map()).map((row) => row.host)).toEqual(['d.example.org']);
   });
 });
 

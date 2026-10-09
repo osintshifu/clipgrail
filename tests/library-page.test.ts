@@ -376,5 +376,18 @@ describe('organizing in the library', () => {
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Night closures continue.'));
     document.querySelector<HTMLButtonElement>('#rows .src')!.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Harbour cranes were repaired.'));
+
+    // A tracker ID is found in the page code; the source opens with Details showing it.
+    await commitCapture(db, {
+      ...(await pageDraft('https://example.test/search-code', 'Berth notice.', '2026-10-04T10:00:00.000Z', session.id)),
+      page_code: { declared: [], trackers: [{ kind: 'gtm', id: 'GTM-K7Q2P9', where: ['inline_script'] }] },
+    });
+    fake.refresh();
+    search.value = 'gtm-k7q2p9';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(document.querySelector('#rows .src .src-snippet')?.textContent).toBe('Page codeGTM-K7Q2P9'));
+    document.querySelector<HTMLButtonElement>('#rows .src')!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('h3')?.textContent).toBe('Example article'));
+    expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
   });
 });

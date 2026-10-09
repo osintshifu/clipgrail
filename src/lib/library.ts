@@ -118,7 +118,7 @@ function fieldsOf(entry: LibraryEntry): Field[] {
   for (const { capture } of captures) if (capture.note) fields.push(noteField(capture.note, capture.id));
   for (const { capture } of captures) if (capture.fragment) fields.push({ where: 'Selection', ...fragmentText(capture.fragment), capture_id: capture.id });
   for (const { capture } of captures) {
-    const text = pageCodeText(capture);
+    const text = searchable(pageCodeText(capture));
     if (text) fields.push({ where: 'Page code', text, folded: fold(text), capture_id: capture.id });
   }
   return fields;

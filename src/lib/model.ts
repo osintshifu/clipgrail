@@ -69,10 +69,10 @@ export interface DeclaredValue {
   from: string[];
 }
 
-export type TrackerKind = 'ga4' | 'ua' | 'gtm' | 'meta_pixel' | 'adsense';
+export type TrackerKind = 'ga4' | 'google_tag' | 'ua' | 'gtm' | 'meta_pixel' | 'adsense';
 
 /** Where in the page code a tracker ID was found. */
-export type TrackerPlace = 'script_address' | 'inline_script' | 'noscript' | 'ad_tag' | 'image';
+export type TrackerPlace = 'script_address' | 'inline_script' | 'noscript' | 'ad_tag' | 'image' | 'amp_tag';
 
 export interface Tracker {
   kind: TrackerKind;

@@ -329,5 +329,5 @@ fieldset.private legend { padding: 0; margin-bottom: 6px; }
 /* Page code: what the page declared and the trackers in its code, each with where it was read. */
 .page-code { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .page-code .section-title { display: block; margin-top: 6px; }
-.page-code .from { color: var(--faint); }
+.page-code .from { color: var(--muted); }
 .page-code dd .mono { font-family: var(--mono); font-size: 11.5px; }

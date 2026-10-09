@@ -25,21 +25,24 @@ export const DECLARED_TAGS = [
   'schema.org publisher',
   'schema.org datePublished',
 ] as const;
-export const TRACKER_KINDS: readonly TrackerKind[] = ['ga4', 'ua', 'gtm', 'meta_pixel', 'adsense'];
-export const TRACKER_PLACES: readonly TrackerPlace[] = ['script_address', 'inline_script', 'noscript', 'ad_tag', 'image'];
+export const TRACKER_KINDS: readonly TrackerKind[] = ['ga4', 'google_tag', 'ua', 'gtm', 'meta_pixel', 'adsense'];
+export const TRACKER_PLACES: readonly TrackerPlace[] = ['script_address', 'inline_script', 'noscript', 'ad_tag', 'image', 'amp_tag'];
 
 /** Limits, in code points and entries: a page cannot make a capture large. */
 const MAX_VALUE = 300;
 const MAX_CANONICAL = 2_048;
 const MAX_ENTRIES = 40;
-/** Inline scripts and structured data are read up to these sizes, to keep a capture quick on heavy pages. */
+/** Scripts, noscript content, addresses and structured data are read up to these sizes, to keep a capture quick on heavy pages. */
 const MAX_SCRIPT_TEXT = 2_000_000;
+const MAX_NOSCRIPT_TEXT = 500_000;
+const MAX_ADDRESS = 10_000;
 const MAX_STRUCTURED_DATA = 500_000;
 const MAX_STRUCTURED_NODES = 200;
 
 /** IDs as the trackers issue them. A GA4 ID mixes letters and digits, so words such as "G-SECTIONS" are not taken for one. */
 const TRACKER_IDS: Record<TrackerKind, RegExp> = {
   ga4: /^G-(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8,12}$/,
+  google_tag: /^GT-(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,10}$/,
   ua: /^UA-\d{4,10}-\d{1,4}$/,
   gtm: /^GTM-[A-Z0-9]{4,9}$/,
   meta_pixel: /^\d{15,16}$/,
@@ -47,12 +50,20 @@ const TRACKER_IDS: Record<TrackerKind, RegExp> = {
 };
 const TRACKERS_IN_CODE: Array<[TrackerKind, RegExp]> = [
   ['ga4', /(?<![\w-])G-[A-Z0-9]{8,12}(?![\w-])/g],
+  ['google_tag', /(?<![\w-])GT-[A-Z0-9]{6,10}(?![\w-])/g],
   ['ua', /(?<![\w-])UA-\d{4,10}-\d{1,4}(?![\w-])/g],
   ['gtm', /(?<![\w-])GTM-[A-Z0-9]{4,9}(?![\w-])/g],
   ['adsense', /(?<![\w-])ca-pub-\d{16}(?!\d)/g],
 ];
-/** A Meta Pixel ID is a bare number, so it is taken only from fbq('init', …) and the pixel's image address. */
-const META_PIXEL_IN_CODE = [/fbq\(\s*['"]init['"]\s*,\s*['"](\d{15,16})['"]/g, /facebook\.com\/tr\/?\?(?:[^"'\s<>]*&(?:amp;)?)?id=(\d{15,16})(?!\d)/g];
+/**
+ * A Meta Pixel ID is a bare number, so it is taken only from fbq('init', …), the pixel's image address and the
+ * configuration script the pixel loads for itself. Every repeat is bounded, so a page cannot make the search slow.
+ */
+const META_PIXEL_IN_CODE = [
+  /fbq\(\s*['"]init['"]\s*,\s*['"]?(\d{15,16})(?!\d)/g,
+  /facebook\.com\/tr\/?\?(?:[^"'\s<>]{0,500}?&(?:amp;)?)?id=(\d{15,16})(?!\d)/g,
+  /connect\.facebook\.net\/signals\/config\/(\d{15,16})(?!\d)/g,
+];
 
 /** One line of text, cut to the limit; null when nothing is left. */
 function clean(value: unknown, max = MAX_VALUE): string | null {
@@ -92,20 +103,36 @@ function readTrackers(doc: Document): Tracker[] {
     for (const [kind, pattern] of TRACKERS_IN_CODE) for (const m of code.matchAll(pattern)) add(kind, m[0], where);
     for (const pattern of META_PIXEL_IN_CODE) for (const m of code.matchAll(pattern)) add('meta_pixel', m[1]!, where);
   };
-  let budget = MAX_SCRIPT_TEXT;
+  // Each kind of place has its own budget, so a large script cannot hide a pixel image or an ad tag.
+  const budgeted = (max: number, where: TrackerPlace) => {
+    let budget = max;
+    return (code: string) => {
+      if (budget <= 0) return;
+      const part = code.slice(0, budget);
+      budget -= part.length;
+      scan(part, where);
+    };
+  };
+  const inline = budgeted(MAX_SCRIPT_TEXT, 'inline_script');
+  const addresses = budgeted(MAX_SCRIPT_TEXT, 'script_address');
   for (const script of Array.from(doc.scripts)) {
-    if (script.src) {
-      scan(script.src, 'script_address');
-    } else if (budget > 0 && /^$|javascript|ecmascript|module/i.test(script.type)) {
-      const code = (script.textContent ?? '').slice(0, budget);
-      budget -= code.length;
-      scan(code, 'inline_script');
-    }
+    if (script.src) addresses(script.src.slice(0, MAX_ADDRESS));
+    else if (/^$|javascript|ecmascript|module/i.test(script.type)) inline(script.textContent ?? '');
   }
   // A page with scripts keeps noscript content as text, a document read without scripts as elements; innerHTML has both.
-  for (const noscript of Array.from(doc.querySelectorAll('noscript'))) scan(noscript.innerHTML.slice(0, 100_000), 'noscript');
-  for (const ad of Array.from(doc.querySelectorAll('[data-ad-client]'))) scan(ad.getAttribute('data-ad-client') ?? '', 'ad_tag');
-  for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>('img[src*="facebook.com/tr"]'))) scan(img.src, 'image');
+  const noscripts = budgeted(MAX_NOSCRIPT_TEXT, 'noscript');
+  for (const noscript of Array.from(doc.querySelectorAll('noscript'))) noscripts(noscript.innerHTML);
+  const tags = budgeted(MAX_NOSCRIPT_TEXT, 'ad_tag');
+  for (const ad of Array.from(doc.querySelectorAll('[data-ad-client]'))) tags((ad.getAttribute('data-ad-client') ?? '').slice(0, MAX_ADDRESS));
+  const images = budgeted(MAX_NOSCRIPT_TEXT, 'image');
+  for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>('img[src*="facebook.com/tr"]'))) images(img.src.slice(0, MAX_ADDRESS));
+  // AMP pages configure their analytics in amp-analytics (an address or JSON) and send pixels with amp-pixel.
+  const amp = budgeted(MAX_NOSCRIPT_TEXT, 'amp_tag');
+  for (const tag of Array.from(doc.querySelectorAll('amp-analytics'))) {
+    amp((tag.getAttribute('config') ?? '').slice(0, MAX_ADDRESS));
+    for (const config of Array.from(tag.querySelectorAll('script'))) amp(config.textContent ?? '');
+  }
+  for (const pixel of Array.from(doc.querySelectorAll('amp-pixel[src]'))) amp((pixel.getAttribute('src') ?? '').slice(0, MAX_ADDRESS));
   return [...found.values()];
 }
 
@@ -134,13 +161,14 @@ function readDeclared(doc: Document): DeclaredValue[] {
   for (const v of meta('twitter:site')) put('x_account', v, 'twitter:site');
   for (const v of meta('twitter:creator')) put('x_account', v, 'twitter:creator');
   for (const v of meta('generator')) put('generator', v, 'meta generator');
+  // An empty href would resolve to the page's own address, which the page did not declare.
   const canonical = doc.querySelector<HTMLLinkElement>('link[rel~="canonical" i][href]');
-  if (canonical) put('canonical', canonical.href, 'link rel=canonical');
+  if (canonical?.getAttribute('href')?.trim()) put('canonical', canonical.href, 'link rel=canonical');
   const { nodes, byId } = structuredData(doc);
   for (const node of nodes) {
-    // The article itself, not the site, breadcrumbs or images around it.
+    // What the page is about, not breadcrumbs or images around it; the type of the website or the page as a container is not news.
     if (!('headline' in node || 'author' in node || 'publisher' in node || 'datePublished' in node)) continue;
-    for (const type of [node['@type']].flat()) put('type', type, 'schema.org');
+    for (const type of [node['@type']].flat()) if (!isContainer(type)) put('type', type, 'schema.org');
     for (const author of [node.author].flat()) put('author', nameOf(author, byId), 'schema.org author');
     for (const publisher of [node.publisher].flat()) put('publisher', nameOf(publisher, byId), 'schema.org publisher');
     put('published', node.datePublished, 'schema.org datePublished');
@@ -153,9 +181,11 @@ function canonicalValue(raw: unknown): string | null {
 }
 
 type Node = Record<string, unknown>;
+/** WebSite and the WebPage types (CollectionPage, ProfilePage…) hold what a page is about, in mainEntity. */
+const isContainer = (type: unknown) => type === 'WebSite' || (typeof type === 'string' && /Page$/.test(type));
 const isNode = (value: unknown): value is Node => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** The schema.org objects in the page's JSON-LD, with @graph lists opened, and the objects by @id for references. */
+/** The schema.org objects in the page's JSON-LD, with @graph lists and main entities opened, and the objects by @id for references. */
 function structuredData(doc: Document): { nodes: Node[]; byId: Map<string, Node> } {
   const nodes: Node[] = [];
   const byId = new Map<string, Node>();
@@ -167,17 +197,23 @@ function structuredData(doc: Document): { nodes: Node[]; byId: Map<string, Node>
       nodes.push(value);
       if (typeof value['@id'] === 'string') byId.set(value['@id'], value);
       if (value['@graph']) visit(value['@graph'], depth + 1);
+      if (value.mainEntity) visit(value.mainEntity, depth + 1);
     }
   };
   let budget = MAX_STRUCTURED_DATA;
   for (const script of Array.from(doc.querySelectorAll('script[type="application/ld+json" i]'))) {
     const text = script.textContent ?? '';
-    if (text.length > budget) break;
+    if (text.length > budget) continue;
     budget -= text.length;
     try {
       visit(JSON.parse(text), 0);
     } catch {
-      // Broken structured data is skipped.
+      try {
+        // Pages often leave line breaks and tabs inside strings, which JSON does not allow; as spaces they read the same.
+        visit(JSON.parse(Array.from(text, (c) => (c.charCodeAt(0) < 0x20 ? ' ' : c)).join('')), 0);
+      } catch {
+        // Broken structured data is skipped.
+      }
     }
   }
   return { nodes, byId };

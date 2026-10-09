@@ -638,6 +638,8 @@ function openSource(id: string, userAction: boolean): void {
   const row = rows.find((r) => r.entry.source.id === id);
   const found = row && query.terms.length ? searchSnippet(row, query, textSearch.hits) : null;
   if (selectedId !== id || (userAction && found)) viewedCaptureId = found?.capture_id ?? null;
+  // Words found in the page code are in Details, which then opens.
+  if (userAction && found?.where === 'Page code') detailsOpen = true;
   if (selectedId !== id) $('reader-col').scrollTop = 0;
   scrollToMatch = userAction && query.terms.length > 0;
   if (scrollToMatch) setComparing(null);
@@ -721,11 +723,12 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
   if (box.isConnected) highlightMatches();
 }
 
-/** Marks the search words in the texts shown in the reader; after a source is opened from a search, scrolls to the first. */
+/** Marks the search words in the texts and page code values shown in the reader; after a source is opened from a search, scrolls to the first. */
 function highlightMatches(): void {
   const terms = parseSearch(filter.query).terms;
   const ranges: Range[] = [];
-  for (const box of terms.length ? document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy]):not(.diff-box)') : []) {
+  const shown = '#reader .text-box:not([aria-busy]):not(.diff-box), #reader .page-code dd > span:first-child';
+  for (const box of terms.length ? document.querySelectorAll<HTMLElement>(shown) : []) {
     const node = box.firstChild;
     if (!(node instanceof Text)) continue;
     for (const [start, end] of storedRanges(node.data, terms, MAX_HIGHLIGHTS)) {
