@@ -43,11 +43,16 @@ describe('library page', () => {
     const first = await commitCapture(db, await pageDraft('https://docs.example.org/report', 'Version one of the report.', '2026-10-01T10:00:00.000Z'));
     await commitCapture(db, await pageDraft('https://docs.example.org/report', 'Version two of the report.', '2026-10-05T10:00:00.000Z'));
     const link = await commitCapture(db, linkDraft('https://news.example.net/statement', '2026-10-05T11:00:00.000Z', 'https://news.example.net/', strike.id));
+    // A notice that changed in its first and last paragraphs, with four unchanged paragraphs between.
+    const paragraphs = ['Berths 4 to 7 are closed.', 'Tugs are mandatory.', 'Waste reception is suspended.', 'Security level 1.', 'Dues are waived.', 'Questions: channel 12.'];
+    const notice = await commitCapture(db, await pageDraft('https://port.example.org/notice', paragraphs.join('\n\n'), '2026-09-01T12:00:00.000Z'));
+    const changedNotice = paragraphs.map((p, i) => (i === 0 ? 'Berths 4 to 8 are closed.' : i === 5 ? 'Questions: channel 14.' : p)).join('\n\n');
+    const noticeLater = await commitCapture(db, await pageDraft('https://port.example.org/notice', changedNotice, '2026-09-02T12:00:00.000Z'));
     location.hash = `#view=all&source=${first.source.id}`;
     await import('../src/entrypoints/library/main');
 
     await vi.waitFor(() => expect($('reader').querySelector('h3')?.textContent).toBe('Example article'));
-    expect(Array.from(document.querySelectorAll('#rows .sess')).map((e) => e.textContent)).toEqual(['Port strike', 'Inbox']);
+    expect(Array.from(document.querySelectorAll('#rows .sess')).map((e) => e.textContent)).toEqual(['Port strike', 'Inbox', 'Inbox']);
     expect(versions().map((v) => [v.querySelector('.ver-title')?.textContent, v.getAttribute('aria-checked'), !!v.querySelector('.current-tag')])).toEqual([
       ['Capture 2 · Page', 'true', true],
       ['Capture 1 · Page', 'false', false],
@@ -62,6 +67,42 @@ describe('library page', () => {
     expect(versions()[0]!.querySelector('.current-tag')).not.toBeNull();
     $('show-current').click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
+
+    // Comparing the current text with the earlier one marks the changed word; Close shows the text again.
+    const compareWith = $<HTMLSelectElement>('compare-with');
+    compareWith.value = first.capture.id;
+    compareWith.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect($('reader').querySelector('.diff-box')).not.toBeNull());
+    expect($('reader').querySelector('.text-head')?.textContent).toBe('Changes from capture 1 to capture 2 · 1 change · 3 characters added, 3 removed');
+    expect(Array.from(document.querySelectorAll('#reader .chg'), (c) => c.innerHTML)).toEqual(['<del>one</del><ins>two</ins>']);
+    expect(versions()[1]!.querySelector('.compare-tag')).not.toBeNull();
+    $('close-compare').click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
+    expect($<HTMLSelectElement>('compare-with').value).toBe('');
+
+    // The side panel opens a comparison of another source with the address; the address then keeps only the source.
+    location.hash = `#view=all&source=${notice.source.id}&capture=${notice.capture.id}&compare=${noticeLater.capture.id}`;
+    await vi.waitFor(() => expect($('reader').querySelector('.diff-box')).not.toBeNull());
+    expect(location.hash).toBe(`#view=all&source=${notice.source.id}`);
+    expect(versions().map((v) => v.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    // Unchanged paragraphs away from the changes are folded; Previous and Next move between changes and say what changed.
+    const fold = document.querySelector<HTMLButtonElement>('#reader .diff-fold')!;
+    expect([fold.textContent, fold.getAttribute('aria-label')]).toEqual(['2 unchanged paragraphs', 'Show 2 unchanged paragraphs']);
+    $('next-change').click();
+    expect([$('change-count').textContent, document.querySelector('#reader .chg.now')?.textContent]).toEqual(['2 of 2', '1214']);
+    expect($('compare-said').textContent).toBe('Change 2 of 2: removed “12”, added “14”.');
+    $('next-change').click();
+    expect($('change-count').textContent).toBe('1 of 2');
+    $('previous-change').click();
+    expect($('change-count').textContent).toBe('2 of 2');
+    fold.click();
+    await vi.waitFor(() => expect($('reader').querySelector('.diff-fold')).toBeNull());
+    expect($('reader').querySelector('.diff-box')?.textContent).toContain('Waste reception is suspended.');
+    // Leaving the source ends the comparison.
+    document.querySelector<HTMLButtonElement>(`#rows [data-id="${first.source.id}"]`)!.click();
+    document.querySelector<HTMLButtonElement>(`#rows [data-id="${notice.source.id}"]`)!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre.text-box')).not.toBeNull());
+    expect($('reader').querySelector('.diff-box')).toBeNull();
 
     // A source of another session without text: clips go to the active session unless that session is made active.
     (document.querySelector<HTMLButtonElement>(`#rows [data-id="${link.source.id}"]`))!.click();

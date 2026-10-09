@@ -895,7 +895,25 @@ function captureCards(entry: SourceEntry): Child[] {
     return h('div', { class: 'capture-card' }, [
       h('div', { class: 'head' }, [h('span', { class: 'capture-title' }, [head]), h('span', { class: 'muted' }, [fmtTime(capture.captured_at)])]),
       line ? h('div', { class: 'line' }, [line]) : null,
-      comparison ? h('div', { class: 'line' }, [comparisonLine(comparison)]) : null,
+      comparison
+        ? h('div', { class: 'line' }, [
+            comparisonLine(comparison),
+            ...(comparison.same
+              ? []
+              : [
+                  ' · ',
+                  h(
+                    'button',
+                    {
+                      class: 'link compare-link',
+                      attrs: { type: 'button' },
+                      on: { click: () => void openLibrary({ view: entry.source.session_id, source: entry.source.id, capture: capture.id, compare: comparison.earlier.id }, windowId) },
+                    },
+                    ['Compare in library', icon('arrow-up-right')],
+                  ),
+                ]),
+          ])
+        : null,
       capture.fragment ? h('pre', { class: 'text-box excerpt' }, [capture.fragment.text]) : null,
       extra ? h('div', { class: 'line' }, [extra]) : null,
       note,

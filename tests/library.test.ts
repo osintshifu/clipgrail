@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { commitCapture, createSession, loadLibrary, updateSourceNote, visitSnapshotTexts } from '../src/lib/db';
-import { filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../src/lib/library';
+import { compareChoices, filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../src/lib/library';
 import type { LibraryFilter, TextHits } from '../src/lib/library';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { parseSearch, storedRanges, textHit } from '../src/lib/search';
@@ -103,4 +103,17 @@ describe('library', () => {
       [1, 'page', false],
     ]);
   });
+
+  it('offers the other captures with text to compare with, marking one that repeats the viewed text or a newer choice', async () => {
+    const db = await freshDb();
+    const url = 'https://example.com/notice';
+    for (const [text, day] of [['A', 1], ['B', 2], ['A', 3], ['C', 4]] as const) await commitCapture(db, await pageDraft(url, text, `2026-10-0${day}T10:00:00.000Z`));
+    await commitCapture(db, await selectionDraft(url, 'A', '2026-10-05T10:00:00.000Z'));
+    const versions = versionsOf((await loadLibrary(db)).sources[0]!);
+    const choices = (viewed: number) => compareChoices(versions.find((v) => v.number === viewed)!, versions).map((c) => [c.version.number, c.sameAs]);
+    // Newest first, selections left out; capture 1 repeats the text of capture 3.
+    expect(choices(4)).toEqual([[3, null], [2, null], [1, 3]]);
+    expect(choices(3)).toEqual([[4, null], [2, null], [1, 3]]);
+  });
 });
+

@@ -45,6 +45,8 @@ vi.mock('wxt/browser', () => ({
     windows: { getCurrent: async () => ({ id: 1 }) },
     commands: { getAll: async () => [] },
     runtime: {
+      getURL: (path: string) => `chrome-extension://clipgrail${path}`,
+      getContexts: async () => [],
       sendMessage: async (message: unknown) => {
         fake.messages.push(message);
         return fake.response;
@@ -110,6 +112,14 @@ describe('side panel', () => {
     // Two notes edited right after each other are both saved.
     document.querySelector<HTMLButtonElement>('#source-list .src')!.click();
     $('detail-tab-captures').click();
+    // A text that differs from an earlier one opens its comparison in the library.
+    document.querySelector<HTMLButtonElement>('.compare-link')!.click();
+    await vi.waitFor(() =>
+      expect(fake.created.at(-1)).toEqual({
+        url: `chrome-extension://clipgrail/library.html#view=${INBOX_SESSION_ID}&source=${a.source.id}&capture=${b.capture.id}&compare=${a.capture.id}`,
+        windowId: 1,
+      }),
+    );
     type(`note-${a.capture.id}`, 'First note');
     type(`note-${b.capture.id}`, 'Second note');
     await vi.waitFor(async () =>

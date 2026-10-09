@@ -26,7 +26,9 @@ import { $, fill, h } from '../../lib/dom';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
-import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../../lib/library';
+import { compareTexts } from '../../lib/diff';
+import type { DiffPart, TextDiff } from '../../lib/diff';
+import { ALL_SOURCES, SORT_LABELS, compareChoices, filterRows, libraryRows, searchSnippet, textIdsOf, textShaOf, versionsOf } from '../../lib/library';
 import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
 import { inDays, localDay, parseSearch, storedRanges, textHit } from '../../lib/search';
 import type { SearchQuery } from '../../lib/search';
@@ -51,6 +53,17 @@ const filter: LibraryFilter = { view: ALL_SOURCES, query: '', status: 'any', imp
 let mode: 'sources' | 'timeline' = 'sources';
 let selectedId: string | null = null;
 let viewedCaptureId: string | null = null;
+/** While comparing: the source, its viewed capture and the one it is compared with; void once another capture or source is viewed. */
+let comparing: { source: string; viewed: string; other: string } | null = null;
+/** The change moved to with Previous and Next (from 1), and the folded paragraphs opened, in the comparison shown. */
+let changeAt = 1;
+let unfolded = new Set<number>();
+/** The comparison last made, by the snapshot IDs of its texts (null: too different to mark), and why its texts could not be read. */
+let lastDiff: { key: string; diff: TextDiff | null } | null = null;
+let compareError: { key: string; message: string } | null = null;
+/** The comparison whose result was last said to screen readers, and whether one opened from the address is still to be scrolled to. */
+let announcedKey = '';
+let scrollToCompare = false;
 let archivedOpen = false;
 let detailsOpen = false;
 /** Snapshot texts already read. A saved text never changes, so they can be kept. */
@@ -89,6 +102,7 @@ const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : (sessionOf
 const selectedRow = () => rows.find((r) => r.entry.source.id === selectedId);
 
 // ---------- Address: #view=<session ID or all>&mode=timeline&source=<source ID> (identifiers only) ----------
+// The side panel can add capture=<capture ID>&compare=<capture ID> to open a comparison of two saved texts.
 
 function readHash(): void {
   const params = new URLSearchParams(location.hash.slice(1));
@@ -98,6 +112,13 @@ function readHash(): void {
   mode = params.get('mode') === 'timeline' && filter.view !== ALL_SOURCES ? 'timeline' : 'sources';
   const source = params.get('source');
   if (source !== selectedId) viewedCaptureId = null;
+  const capture = params.get('capture');
+  const other = params.get('compare');
+  if (capture) {
+    viewedCaptureId = capture;
+    setComparing(source && other ? { source, viewed: capture, other } : null);
+    scrollToCompare = !!comparing;
+  }
   selectedId = source;
   setReading(!!selectedId);
 }
@@ -617,6 +638,7 @@ function openSource(id: string, userAction: boolean): void {
   if (selectedId !== id || (userAction && found)) viewedCaptureId = found?.capture_id ?? null;
   if (selectedId !== id) $('reader-col').scrollTop = 0;
   scrollToMatch = userAction && query.terms.length > 0;
+  if (scrollToMatch) setComparing(null);
   selectedId = id;
   markSelected();
   writeHash();
@@ -654,7 +676,7 @@ function editNote(kind: 'source' | 'capture', id: string, value: string, label: 
   });
 }
 
-function versionButton(version: Version, checked: boolean, compared: string | undefined): HTMLButtonElement {
+function versionButton(version: Version, checked: boolean, compared: string | undefined, inComparison: boolean): HTMLButtonElement {
   const { capture, snapshot } = version.capture;
   const note = capture.note.trim();
   const meta = [fmtTime(capture.captured_at), captureLine(capture, snapshot), compared ?? '', note ? `note: “${note.length > 80 ? `${note.slice(0, 80)}…` : note}”` : '']
@@ -670,12 +692,16 @@ function versionButton(version: Version, checked: boolean, compared: string | un
     [
       h('span', { class: 'radio', attrs: { 'aria-hidden': 'true' } }),
       h('span', {}, [h('span', { class: 'ver-title' }, [captureHead(capture, version.number - 1)]), h('span', { class: 'ver-meta' }, [meta])]),
-      version.current ? h('span', { class: 'current-tag', attrs: { title: 'Research Jobs use this text' } }, ['Current text']) : h('span'),
+      h('span', { class: 'ver-tags' }, [
+        version.current ? h('span', { class: 'current-tag', attrs: { title: 'Research Jobs use this text' } }, ['Current text']) : null,
+        inComparison ? h('span', { class: 'compare-tag' }, ['Compared']) : null,
+      ]),
     ],
   );
 }
 
 function viewCapture(captureId: string, focus = true): void {
+  if (comparing?.viewed !== captureId) setComparing(null);
   viewedCaptureId = captureId;
   renderReader();
   if (focus) document.querySelector<HTMLButtonElement>(`.ver[data-id="${captureId}"]`)?.focus();
@@ -697,7 +723,7 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
 function highlightMatches(): void {
   const terms = parseSearch(filter.query).terms;
   const ranges: Range[] = [];
-  for (const box of terms.length ? document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy])') : []) {
+  for (const box of terms.length ? document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy]):not(.diff-box)') : []) {
     const node = box.firstChild;
     if (!(node instanceof Text)) continue;
     for (const [start, end] of storedRanges(node.data, terms, MAX_HIGHLIGHTS)) {
@@ -720,22 +746,31 @@ function highlightMatches(): void {
   if (first || !document.querySelector('#reader .text-box[aria-busy]')) scrollToMatch = false;
 }
 
-function viewedSection(viewed: Version, current: Version | undefined, total: number): HTMLElement {
+function viewedSection(viewed: Version, current: Version | undefined, versions: Version[], other: Version | undefined): HTMLElement {
   const { capture, snapshot } = viewed.capture;
   const head = (left: string, right?: string) => h('div', { class: 'text-head' }, [h('span', {}, [left]), right ? h('span', {}, [right]) : null]);
-  const which = `Viewing capture ${viewed.number} of ${total}`;
+  const which = `Viewing capture ${viewed.number} of ${versions.length}`;
   const blocks: Child[] = [];
-  if (snapshot?.status === 'ok') {
+  if (snapshot?.status === 'ok' && other) {
+    const [older, newer] = other.number < viewed.number ? [other, viewed] : [viewed, other];
+    const key = compareKey(older, newer);
+    const diff = diffOf(older, newer, key);
+    const error = diff === undefined && compareError?.key === key ? compareError.message : null;
+    const sums = diff ? ` · ${count(diff.changes, 'change')} · ${count(diff.added, 'character')} added, ${fmtNumber(diff.removed)} removed` : '';
+    const title = `Changes from capture ${older.number} to capture ${newer.number}`;
+    blocks.push(head(`${title}${sums}`));
+    if (!viewed.current && current) blocks.push(earlierBanner(current));
+    const message = compareMessage(older, newer, diff, error);
+    blocks.push(compareBar(viewed, versions, other, diff), ...compareBody(older, newer, diff, message));
+    if ((diff !== undefined || error) && announcedKey !== key) {
+      announcedKey = key;
+      say(message ?? `${title}: ${count(diff!.changes, 'change')}, ${count(diff!.added, 'character')} added, ${fmtNumber(diff!.removed)} removed.`);
+    }
+  } else if (snapshot?.status === 'ok') {
     const method = snapshot.extraction_method === 'readability' ? 'Readability' : 'visible page text';
     blocks.push(head(`${which} · Snapshot · ${fmtTime(snapshot.captured_at)} · ${method}`, `${fmtNumber(snapshot.character_count)} characters`));
-    if (!viewed.current && current) {
-      blocks.push(
-        h('div', { class: 'banner earlier', attrs: { role: 'note' } }, [
-          h('span', {}, [`Earlier version, for reading only. Research Jobs use the current text from capture ${current.number} (${fmtTime(current.capture.capture.captured_at)}).`]),
-          h('button', { attrs: { id: 'show-current', type: 'button' }, on: { click: () => viewCapture(current.capture.capture.id) } }, ['Show current text']),
-        ]),
-      );
-    }
+    if (!viewed.current && current) blocks.push(earlierBanner(current));
+    if (compareChoices(viewed, versions).some((c) => c.sameAs !== viewed.number)) blocks.push(compareBar(viewed, versions, undefined, undefined));
     const loaded = texts.has(snapshot.id);
     const box = h('pre', { class: 'text-box', attrs: { tabindex: '0', 'aria-label': `Saved text of capture ${viewed.number}`, ...(loaded ? {} : { 'aria-busy': 'true' }) } }, [
       texts.get(snapshot.id) ?? 'Loading text…',
@@ -768,6 +803,199 @@ function viewedSection(viewed: Version, current: Version | undefined, total: num
   }
   blocks.push(editNote('capture', capture.id, capture.note, `Capture note · Capture ${viewed.number}`));
   return h('div', { class: 'stack' }, blocks);
+}
+
+function earlierBanner(current: Version): HTMLElement {
+  return h('div', { class: 'banner earlier', attrs: { role: 'note' } }, [
+    h('span', {}, [`Earlier version, for reading only. Research Jobs use the current text from capture ${current.number} (${fmtTime(current.capture.capture.captured_at)}).`]),
+    h('button', { attrs: { id: 'show-current', type: 'button' }, on: { click: () => viewCapture(current.capture.capture.id) } }, ['Show current text']),
+  ]);
+}
+
+// ---------- Comparing two saved texts ----------
+
+/** The capture the viewed one is compared with, if it is being compared and both have saved text. */
+function comparedWith(viewed: Version, versions: Version[]): Version | undefined {
+  if (comparing?.viewed !== viewed.capture.capture.id || textShaOf(viewed) === null) return undefined;
+  return compareChoices(viewed, versions).find((c) => c.version.capture.capture.id === comparing!.other)?.version;
+}
+
+function setComparing(next: typeof comparing): void {
+  comparing = next;
+  changeAt = 1;
+  unfolded = new Set();
+  compareError = null;
+  announcedKey = '';
+}
+
+/** A comparison by the snapshot IDs of its texts, older first. */
+const snapshotIdOf = (v: Version) => (v.capture.snapshot?.status === 'ok' ? v.capture.snapshot.id : '');
+const compareKey = (older: Version, newer: Version) => `${snapshotIdOf(older)} ${snapshotIdOf(newer)}`;
+
+/** The changes from the older text to the newer one; undefined while a text is read. */
+function diffOf(older: Version, newer: Version, key: string): TextDiff | null | undefined {
+  if (lastDiff?.key === key) return lastDiff.diff;
+  const ids = [snapshotIdOf(older), snapshotIdOf(newer)];
+  const [a, b] = ids.map((id) => texts.get(id));
+  if (a === undefined || b === undefined) {
+    if (compareError?.key !== key) void readTexts(ids, key);
+    return undefined;
+  }
+  lastDiff = { key, diff: compareTexts(a, b) };
+  return lastDiff.diff;
+}
+
+/** Tells screen readers what a comparison found, or which change Previous and Next moved to. */
+function say(text: string): void {
+  $('compare-said').textContent = text;
+}
+
+/** The texts being read for a comparison, by its key. */
+let textsReading: string | null = null;
+async function readTexts(ids: string[], key: string): Promise<void> {
+  if (textsReading === key) return;
+  textsReading = key;
+  try {
+    for (const id of ids) {
+      if (texts.has(id)) continue;
+      const text = await loadSnapshotText(db, id);
+      if (text === undefined) throw new Error('A saved text is missing.');
+      texts.set(id, text);
+    }
+  } catch (error) {
+    compareError = { key, message: errorText(error) };
+  }
+  if (textsReading === key) textsReading = null;
+  // Drawing the comparison replaces its controls; the one in use keeps focus.
+  const focused = document.activeElement?.closest('.compare-bar') ? document.activeElement.id : '';
+  renderReader();
+  if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+}
+
+/** Compare with…, and while comparing: Previous, Next and Close. A capture that would repeat another choice is shown but not offered. */
+function compareBar(viewed: Version, versions: Version[], other: Version | undefined, diff: TextDiff | null | undefined): HTMLElement {
+  const select = h(
+    'select',
+    { attrs: { id: 'compare-with', 'aria-label': 'Compare this text with another capture' }, on: { change: () => compareWithCapture(viewed, select.value) } },
+    [
+      h('option', { attrs: { value: '' } }, ['Compare with…']),
+      ...compareChoices(viewed, versions).map(({ version: v, sameAs }) =>
+        h('option', { attrs: { value: v.capture.capture.id, ...(sameAs === null || v === other ? {} : { disabled: '' }) } }, [
+          `Capture ${v.number} · ${sameAs === null ? fmtTime(v.capture.capture.captured_at) : `same text as capture ${sameAs}`}`,
+        ]),
+      ),
+    ],
+  );
+  select.value = other?.capture.capture.id ?? '';
+  if (!other) return h('div', { class: 'compare-bar' }, [h('span', { class: 'grow' }), select]);
+  const total = diff?.changes ?? 0;
+  return h('div', { class: 'compare-bar' }, [
+    select,
+    h('span', { class: 'grow' }),
+    // The buttons wrap to the next line together in a narrow window.
+    h('span', { class: 'compare-nav' }, [
+      total
+        ? h('button', { class: 'btn-sm', attrs: { id: 'previous-change', type: 'button' }, on: { click: () => moveChange(-1, total) } }, ['↑ Previous'])
+        : null,
+      total ? h('span', { class: 'change-count', attrs: { id: 'change-count' } }, [`${changeAt} of ${total}`]) : null,
+      total ? h('button', { class: 'btn-sm', attrs: { id: 'next-change', type: 'button' }, on: { click: () => moveChange(1, total) } }, ['↓ Next']) : null,
+      h('button', { class: 'btn-sm', attrs: { id: 'close-compare', type: 'button' }, on: { click: () => compareWithCapture(viewed, '') } }, [icon('x'), 'Close']),
+    ]),
+  ]);
+}
+
+function compareWithCapture(viewed: Version, otherId: string): void {
+  const { capture } = viewed.capture;
+  setComparing(otherId ? { source: capture.source_id, viewed: capture.id, other: otherId } : null);
+  if (!otherId) say('');
+  renderReader();
+  document.getElementById('compare-with')?.focus();
+}
+
+/** Marks the next or previous change, scrolls to it and says what changed there. */
+function moveChange(step: number, total: number): void {
+  changeAt = ((changeAt - 1 + step + total) % total) + 1;
+  for (const mark of document.querySelectorAll('#reader .chg.now')) mark.classList.remove('now');
+  const mark = document.querySelector(`#reader .chg[data-change="${changeAt}"]`);
+  mark?.classList.add('now');
+  mark?.scrollIntoView({ block: 'center' });
+  $('change-count').textContent = `${changeAt} of ${total}`;
+  const quote = (text: string | undefined) => `“${(text ?? '').trim().slice(0, 120)}”`;
+  const removed = mark?.querySelector('del')?.textContent;
+  const added = mark?.querySelector('ins')?.textContent;
+  say(`Change ${changeAt} of ${total}: ${[removed ? `removed ${quote(removed)}` : '', added ? `added ${quote(added)}` : ''].filter(Boolean).join(', ')}.`);
+}
+
+const okSnapshotOfVersion = (v: Version) => (v.capture.snapshot?.status === 'ok' ? v.capture.snapshot : null);
+
+/** What a comparison shows instead of marked text: an error, too many differences, or none; null when there are changes to mark or texts are read. */
+function compareMessage(older: Version, newer: Version, diff: TextDiff | null | undefined, error: string | null): string | null {
+  if (error) return `The saved texts could not be read: ${error}`;
+  if (diff === null) {
+    const [a, b] = [okSnapshotOfVersion(older)!, okSnapshotOfVersion(newer)!];
+    return `The texts differ in too many places to mark the changes. Capture ${older.number} has ${count(a.character_count, 'character')}, capture ${newer.number} has ${fmtNumber(b.character_count)}.`;
+  }
+  return diff && !diff.changes ? 'The saved texts are the same.' : null;
+}
+
+function compareBody(older: Version, newer: Version, diff: TextDiff | null | undefined, message: string | null): Child[] {
+  if (message) return [h('div', { class: 'no-text' }, [message])];
+  if (!diff) return [h('div', { class: 'text-box', attrs: { 'aria-busy': 'true' } }, ['Loading texts…'])];
+  const [a, b] = [okSnapshotOfVersion(older)!, okSnapshotOfVersion(newer)!];
+  const cut = [[older, a], [newer, b]] as const;
+  return [
+    diffBox(diff, older, newer),
+    h('p', { class: 'diff-legend' }, [
+      h('ins', {}, ['Added']),
+      ` since capture ${older.number} · `,
+      h('del', {}, ['Removed']),
+      ' · Every difference in the saved text is marked, including a date or a counter that changes on every visit.',
+      ...cut
+        .filter(([, s]) => s.truncated)
+        .map(([v, s]) => ` Capture ${v.number} kept only the first ${fmtNumber(s.character_count)} characters of the page; text past that point shows as added or removed even where the page did not change.`),
+    ]),
+  ];
+}
+
+/** Both texts in one: unchanged paragraphs, removed and added words; unchanged paragraphs away from changes are folded. */
+function diffBox(diff: TextDiff, older: Version, newer: Version): HTMLElement {
+  const { blocks } = diff;
+  const shown = blocks.map((b, i) => b.kind === 'changed' || blocks[i - 1]?.kind === 'changed' || blocks[i + 1]?.kind === 'changed' || unfolded.has(i));
+  const children: Child[] = [];
+  let n = 0;
+  for (let i = 0; i < blocks.length; ) {
+    if (i) children.push('\n\n');
+    const block = blocks[i]!;
+    let end = i;
+    while (end < blocks.length && !shown[end]) end++;
+    if (end - i >= 2) {
+      const start = i;
+      children.push(
+        h('button', { class: 'diff-fold', attrs: { type: 'button', 'aria-label': `Show ${count(end - start, 'unchanged paragraph')}` }, on: { click: () => unfold(start, end) } }, [
+          count(end - start, 'unchanged paragraph'),
+        ]),
+      );
+      i = end;
+      continue;
+    }
+    if (block.kind === 'same') children.push(block.text);
+    else children.push(...block.parts.map((part) => ('same' in part ? part.same : changeMark(part, ++n))));
+    i++;
+  }
+  return h('div', { class: 'text-box diff-box', attrs: { tabindex: '0', 'aria-label': `Changes from capture ${older.number} to capture ${newer.number}` } }, children);
+}
+
+function changeMark(part: Exclude<DiffPart, { same: string }>, n: number): HTMLElement {
+  return h('span', { class: `chg${n === changeAt ? ' now' : ''}`, attrs: { 'data-change': String(n) } }, [
+    part.removed ? h('del', {}, [part.removed]) : null,
+    part.added ? h('ins', {}, [part.added]) : null,
+  ]);
+}
+
+function unfold(start: number, end: number): void {
+  for (let i = start; i < end; i++) unfolded.add(i);
+  renderReader();
+  document.querySelector<HTMLElement>('#reader .diff-box')?.focus({ preventScroll: true });
 }
 
 /** Capture goes to the active session, so filling a source of another session needs that session made active first. */
@@ -805,6 +1033,10 @@ function renderReader(): void {
   renderReaderContents();
   restore();
   highlightMatches();
+  if (scrollToCompare && selectedRow()) {
+    scrollToCompare = false;
+    document.querySelector('#reader .compare-bar')?.closest('.stack')?.scrollIntoView({ block: 'start' });
+  }
 }
 
 function renderReaderContents(): void {
@@ -828,10 +1060,12 @@ function renderReaderContents(): void {
     return;
   }
   const { entry, session } = row;
+  if (comparing && comparing.source !== entry.source.id) setComparing(null);
   const versions = versionsOf(entry);
   const current = versions.find((v) => v.current);
   const viewed = versions.find((v) => v.capture.capture.id === viewedCaptureId) ?? current ?? versions[0]!;
   viewedCaptureId = viewed.capture.capture.id;
+  const other = comparedWith(viewed, versions);
   const compared = textComparisons(entry.captures);
   const url = entry.source.dedup_url;
   const group = h(
@@ -839,7 +1073,7 @@ function renderReaderContents(): void {
     { attrs: { role: 'radiogroup', 'aria-label': `Captures of ${row.label}` } },
     versions.map((v) => {
       const comparison = compared.get(v.capture.capture.id);
-      return versionButton(v, v === viewed, comparison && comparisonLine(comparison));
+      return versionButton(v, v === viewed, comparison && comparisonLine(comparison), v === other);
     }),
   );
   group.addEventListener('keydown', (event) => {
@@ -902,7 +1136,7 @@ function renderReaderContents(): void {
       group,
     ]),
     ...pathBlocks(row),
-    viewedSection(viewed, current, versions.length),
+    viewedSection(viewed, current, versions, other),
     details,
   ]);
 }
@@ -1196,6 +1430,8 @@ async function moveSelected(row: LibraryRow, target: Session): Promise<void> {
 async function reload(): Promise<void> {
   const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const focus = active?.dataset.id ? { id: active.dataset.id, capture: active.dataset.capture, inRows: !!active.closest('#rows') } : null;
+  // Reader controls such as Next keep focus by their ID; notes keep it with their caret below.
+  const control = !focus && active?.id && active.closest('#reader') && active.tagName !== 'TEXTAREA' ? active.id : '';
   const restoreNote = keepNoteFocus();
   const scroll = [$('list-col').scrollTop, $('reader-col').scrollTop] as const;
   [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);
@@ -1207,6 +1443,7 @@ async function reload(): Promise<void> {
   $('list-col').scrollTop = scroll[0];
   $('reader-col').scrollTop = scroll[1];
   restoreNote();
+  if (control) document.getElementById(control)?.focus({ preventScroll: true });
   if (focus) {
     const where = focus.inRows ? '#rows' : '#reader';
     const event = focus.capture ? document.querySelector<HTMLElement>(`${where} [data-capture="${CSS.escape(focus.capture)}"]`) : null;
@@ -1282,6 +1519,8 @@ function bind(): void {
   });
   window.addEventListener('hashchange', () => {
     readHash();
+    // A capture and comparison from the side panel are opened once, so the same link works again.
+    writeHash();
     renderNav();
     renderList();
     renderReader();

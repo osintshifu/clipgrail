@@ -216,3 +216,30 @@ export function versionsOf(entry: LibraryEntry): Version[] {
     .map((capture, i) => ({ capture, number: i + 1, current: capture.capture.id === currentId }))
     .reverse();
 }
+
+/** The SHA-256 of a version's saved text, or null when it has none. */
+export function textShaOf(version: Version): string | null {
+  return version.capture.snapshot?.status === 'ok' ? version.capture.snapshot.sha256 : null;
+}
+
+export interface CompareChoice {
+  version: Version;
+  /** The newer capture (or the viewed one) that saved the same text, which this one would repeat. */
+  sameAs: number | null;
+}
+
+/**
+ * The captures the viewed one can be compared with, newest first: the others
+ * with saved text. One with the same text as the viewed capture or a newer
+ * choice is marked, as comparing with it shows nothing new.
+ */
+export function compareChoices(viewed: Version, versions: Version[]): CompareChoice[] {
+  const seen = new Map([[textShaOf(viewed), viewed.number]]);
+  return versions
+    .filter((v) => v !== viewed && textShaOf(v) !== null)
+    .map((version) => {
+      const sameAs = seen.get(textShaOf(version)) ?? null;
+      if (sameAs === null) seen.set(textShaOf(version), version.number);
+      return { version, sameAs };
+    });
+}

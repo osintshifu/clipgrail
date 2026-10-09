@@ -154,6 +154,7 @@ button.back:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .text-cut { font-size: 12px; color: var(--st-partial); font-weight: 600; }
 .versions-hint { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-md); }
 .versions-hint .link { gap: 3px; }
+.compare-link { gap: 3px; }
 .versions-hint .link .ic { width: 12px; height: 12px; }
 .stack { display: flex; flex-direction: column; gap: 6px; }
 .no-text { padding: 20px 12px; text-align: center; color: var(--muted); font-size: 12.5px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); }
