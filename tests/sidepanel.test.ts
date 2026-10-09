@@ -20,6 +20,8 @@ const fake = vi.hoisted(() => ({
   messages: [] as unknown[],
   response: undefined as unknown,
   tabs: [] as Array<{ index: number; highlighted: boolean; url?: string; title?: string }>,
+  /** Tabs the panel opened. */
+  created: [] as unknown[],
 }));
 const tabEvent = vi.hoisted(() => ({ addListener: () => undefined }));
 
@@ -49,7 +51,7 @@ vi.mock('wxt/browser', () => ({
       },
     },
     tabs: {
-      create: async () => ({}),
+      create: async (properties: unknown) => void fake.created.push(properties),
       query: async (query: { highlighted?: boolean }) => fake.tabs.filter((t) => !query.highlighted || t.highlighted),
       onCreated: tabEvent,
       onRemoved: tabEvent,
@@ -327,7 +329,7 @@ describe('side panel', () => {
     expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
   });
 
-  it('records only with Chrome permission, shows what it saved and could not save, and undoes the recorded pages after it stops', async () => {
+  it('records only with Chrome permission, shows what it saved and could not save, and removes the pages unchecked after it stops', async () => {
     fake.tabsPermission = false;
     $('record-button').click();
     await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording not started'));
@@ -346,19 +348,52 @@ describe('side panel', () => {
     const visit = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/closures', title: 'Night closures', found_on: null, at: '2026-10-07T09:00:00.000Z' });
     const saved = [{ capture_id: visit!.capture.id, session_id: visit!.capture.session_id }];
     backgroundStores('recording', { window_id: 1, started_at: '2026-10-07T08:59:00.000Z', captures: saved, failed: 1 });
+    const next = await recordVisit(db, INBOX_SESSION_ID, {
+      url: 'https://www.example.com/cookies',
+      title: 'Cookie settings',
+      found_on: 'https://port.example.org/closures',
+      at: '2026-10-07T09:01:00.000Z',
+    });
+    saved.push({ capture_id: next!.capture.id, session_id: next!.capture.session_id });
     // The button turns into Stop and tells what was saved and what could not be; clicking it again stops.
     expect($('record-button').getAttribute('aria-pressed')).toBe('true');
     expect($('record-button').title).toBe('Recording: 1 page saved, 1 could not be saved. Click to stop.');
 
+    // Stop opens a list of the recorded pages, all kept until unchecked.
     fake.response = { captures: saved, failed: 1 };
     $('record-button').click();
-    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording stopped. 1 page saved; 1 could not be saved.'));
+    await vi.waitFor(() => expect($('sheet-title').textContent).toBe('Review recorded pages'));
     expect(fake.messages.at(-1)).toEqual({ type: 'record', action: 'stop', windowId: 1 });
     backgroundStores('recording', undefined);
     expect($('record-button').getAttribute('aria-pressed')).toBe('false');
-    $('toast-undo').click();
-    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recorded pages removed. Earlier captures are kept.'));
-    expect((await loadSessionView(db, INBOX_SESSION_ID)).sources.some((s) => s.source.id === visit!.source.id)).toBe(false);
+    expect($('sheet-body').querySelector('p')!.textContent).toBe(
+      '2 pages were saved to Inbox as addresses; 1 could not be saved. Uncheck the ones you do not need; they are removed when you click Remove.',
+    );
+    const rows = Array.from(document.querySelectorAll<HTMLLabelElement>('.review-list label'));
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `S${visit!.source.number}Night closuresport.example.org`,
+      `S${next!.source.number}Cookie settingsexample.com · from port.example.org`,
+    ]);
+    const remove = document.querySelector<HTMLButtonElement>('.review-actions .primary')!;
+    expect(remove.disabled).toBe(true);
+
+    // The keyboard moves down the list, opens a page to look at it and unchecks it.
+    const first = rows[0]!.querySelector('input')!;
+    expect(document.activeElement).toBe(first);
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const second = rows[1]!.querySelector('input')!;
+    expect(document.activeElement).toBe(second);
+    second.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true }));
+    expect(fake.created.at(-1)).toEqual({ url: 'https://www.example.com/cookies', windowId: 1 });
+    second.click();
+    expect(rows[1]!.classList.contains('removed')).toBe(true);
+    expect(remove.textContent).toBe('Remove 1 page');
+    remove.click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('1 recorded page removed. 1 kept.'));
+    expect($('sheet-layer').hidden).toBe(true);
+    const ids = (await loadSessionView(db, INBOX_SESSION_ID)).sources.map((s) => s.source.id);
+    expect(ids).toContain(visit!.source.id);
+    expect(ids).not.toContain(next!.source.id);
   });
 
   it('keeps the sites not recorded from pasted addresses and refuses a line that is not a site', async () => {

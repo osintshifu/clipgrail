@@ -15,6 +15,7 @@ import {
   emptyInbox,
   latestJob,
   listSessions,
+  loadSavedPages,
   loadSessionView,
   loadNote,
   moveSource,
@@ -32,7 +33,7 @@ import {
   updateSessionText,
   updateSourceNote,
 } from '../../lib/db';
-import type { SavedCapture, SessionView, SourceEntry } from '../../lib/db';
+import type { SavedCapture, SavedPage, SessionView, SourceEntry } from '../../lib/db';
 import type { DeliveryEnvironment, DestinationId } from '../../lib/destinations';
 import { DESTINATIONS, deliverJob } from '../../lib/destinations';
 import type { ClipRequest, ClipResponse, RecordRequest, RecordResponse } from '../../lib/messages';
@@ -1507,7 +1508,7 @@ function helpSheet(): void {
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
+        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
       ),
       ...item(
         "Can't read this tab?",
@@ -1619,7 +1620,112 @@ async function stopRecording(): Promise<void> {
     showToast(`Recording not stopped: ${response.error}`, { level: 'error' });
     return;
   }
-  showRecordingEnded('Recording stopped.', '', response.captures, response.failed, 'Recording stopped. No new pages.');
+  if (response.captures.length) await reviewRecording(response.captures, response.failed);
+  else showRecordingEnded('Recording stopped.', '', response.captures, response.failed, 'Recording stopped. No new pages.');
+}
+
+/**
+ * After Stop: the pages the recording saved, all kept; the ones the user
+ * unchecks are removed with Remove, under the rules of Undo. Closing the
+ * sheet keeps every page.
+ */
+async function reviewRecording(saved: SavedCapture[], failed: number): Promise<void> {
+  let pages: SavedPage[] = [];
+  try {
+    pages = await loadSavedPages(db, saved);
+  } catch {
+    // The message with Undo below still lets the user remove the recording.
+  }
+  if (!pages.length) {
+    showRecordingEnded('Recording stopped.', '', saved, failed, 'Recording stopped. No new pages.');
+    return;
+  }
+  const n = pages.length;
+  const names = [...new Set(pages.map((page) => page.saved.session_id))].map((id) => sessions.find((s) => s.id === id)?.name ?? 'a session');
+  const where = names.length === 1 ? names[0] : plural(names.length, 'session');
+  const lost = failed ? `; ${failed} could not be saved` : '';
+
+  const rows = pages.map((page) => {
+    const box = h('input', { attrs: { type: 'checkbox' } });
+    box.checked = true;
+    const title = page.capture.tab_title.trim();
+    const host = hostOf(page.source.dedup_url);
+    const meta = page.capture.found_on ? `${host} · from ${hostOf(page.capture.found_on)}` : host;
+    const label = h('label', {}, [
+      box,
+      h('span', { class: 'sid' }, [sourceLabel(page.source)]),
+      h('span', { class: `title${title ? '' : ' untitled'}` }, [title || page.source.dedup_url]),
+      h('span', { class: 'meta' }, [meta]),
+    ]);
+    return { page, box, label };
+  });
+  const all = h('input', { attrs: { type: 'checkbox' } });
+  const remove = h('button', { class: 'primary', attrs: { type: 'button' } });
+  const unchecked = () => rows.filter((row) => !row.box.checked);
+  const update = () => {
+    const count = unchecked().length;
+    for (const row of rows) row.label.classList.toggle('removed', !row.box.checked);
+    all.checked = count === 0;
+    all.indeterminate = count > 0 && count < n;
+    remove.textContent = `Remove ${plural(count, 'page')}`;
+    remove.disabled = count === 0;
+  };
+  all.addEventListener('change', () => {
+    for (const row of rows) row.box.checked = all.checked;
+    update();
+  });
+  for (const row of rows) row.box.addEventListener('change', update);
+
+  const list = h('ul', { class: 'checklist review-list', attrs: { 'aria-label': 'Recorded pages' } }, rows.map((row) => h('li', {}, [row.label])));
+  list.addEventListener('keydown', (event) => {
+    const at = rows.findIndex((row) => row.box === event.target);
+    if (at < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      rows[Math.min(n - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]!.box.focus();
+    } else if (event.key === 'o' || event.key === 'O') {
+      browser.tabs.create({ url: rows[at]!.page.source.dedup_url, windowId }).catch((error: unknown) => sheetError(`Page not opened: ${errorText(error)}`));
+    } else return;
+    event.preventDefault();
+  });
+
+  remove.addEventListener('click', () => {
+    const chosen = unchecked().map((row) => row.page.saved);
+    remove.disabled = true;
+    undoSavedCaptures(db, chosen).then(
+      (result) => {
+        if (sheetKind === 'review-recording') closeSheet();
+        const kept = n - chosen.length + result.kept;
+        const worked = result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '';
+        if (result.removed) showToast(`${plural(result.removed, 'recorded page')} removed. ${kept} kept.${worked ? ` ${worked}` : ''}`);
+        else showToast(worked ? `Nothing removed: ${worked}` : 'Those pages were already removed.');
+        void refreshData();
+      },
+      (error: unknown) => {
+        sheetError(`Pages not removed: ${errorText(error)}`);
+        update();
+      },
+    );
+  });
+  update();
+
+  openSheet(
+    'review-recording',
+    'Review recorded pages',
+    [
+      h('p', {}, [
+        `${plural(n, 'page')} ${n === 1 ? 'was' : 'were'} saved to ${where} as ${n === 1 ? 'an address' : 'addresses'}${lost}. `,
+        n === 1 ? 'Uncheck it if you do not need it; it is removed when you click Remove.' : 'Uncheck the ones you do not need; they are removed when you click Remove.',
+      ]),
+      h('p', { class: 'small' }, ['↑ ↓ move · Space keeps or removes · O opens the page in a new tab']),
+      h('label', { class: 'review-all' }, [all, 'All pages']),
+      list,
+      h('div', { class: 'sheet-actions review-actions' }, [
+        remove,
+        h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Keep all']),
+      ]),
+    ],
+    rows[0]!.box,
+  );
 }
 
 /** The message after this window's recording ends, with Undo for the pages it saved. */

@@ -457,6 +457,26 @@ export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promi
   });
 }
 
+/** A page saved by a recording, as it is stored now. */
+export interface SavedPage {
+  saved: SavedCapture;
+  capture: Capture;
+  source: Source;
+}
+
+/** The saved captures that still exist, in the given order, with their sources, in one consistent read. */
+export function loadSavedPages(db: IDBDatabase, saved: SavedCapture[]): Promise<SavedPage[]> {
+  return inTransaction(db, ['captures', 'sources'], 'readonly', async (tx) => {
+    const pages: SavedPage[] = [];
+    for (const item of saved) {
+      const capture = (await result(tx.objectStore('captures').get(item.capture_id))) as Capture | undefined;
+      const source = capture && ((await result(tx.objectStore('sources').get(capture.source_id))) as Source | undefined);
+      if (capture && source) pages.push({ saved: item, capture, source });
+    }
+    return pages;
+  });
+}
+
 export async function undoCapture(db: IDBDatabase, captureId: string): Promise<UndoResult> {
   const [undone] = await undoCaptures(db, [captureId]);
   return undone!;
