@@ -9,7 +9,7 @@ import type { DeclaredField, Fragment, TrackerKind } from './model';
 import type { LibraryEntry } from './library';
 import { versionsOf } from './library';
 import type { Snippet } from './search';
-import { fold, searchable } from './search';
+import { fold, searchWords, searchable } from './search';
 import { DECLARED_LABELS, PLACE_WORDS, TRACKER_LABELS, hostOf } from './describe';
 import { findValues } from './values';
 import type { TextValueKind } from './values';
@@ -206,7 +206,7 @@ export interface PivotFilter {
 }
 
 export function filterPivots(pivots: Pivot[], filter: PivotFilter): Pivot[] {
-  const terms = Array.from(searchable(filter.query).matchAll(/"([^"]*)"?|(\S+)/g), ([, phrase, word]) => fold((phrase ?? word!).replace(/\s+/g, ' ').trim())).filter(Boolean);
+  const terms = searchWords(filter.query);
   return pivots.filter(
     (p) => (!filter.shared || p.uses.length > 1) && (filter.group === 'all' || PIVOT_KINDS[p.kind].group === filter.group) && terms.every((t) => p.haystack.includes(t)),
   );

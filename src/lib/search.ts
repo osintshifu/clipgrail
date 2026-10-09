@@ -53,6 +53,11 @@ export function parseSearch(input: string): SearchQuery {
   return query;
 }
 
+/** Words and "phrases" of a search of values or log entries, folded, without qualifiers. */
+export function searchWords(input: string): string[] {
+  return Array.from(searchable(input).matchAll(/"([^"]*)"?|(\S+)/g), ([, phrase, word]) => fold((phrase ?? word!).replace(/\s+/g, ' ').trim())).filter(Boolean);
+}
+
 export function onSite(host: string, sites: string[]): boolean {
   return sites.length === 0 || sites.some((site) => isOnSite(host, site));
 }

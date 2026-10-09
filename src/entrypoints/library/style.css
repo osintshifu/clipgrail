@@ -247,6 +247,21 @@ details summary:hover { color: var(--fg); }
 .pv-use-meta, .pv-use .src-snippet { grid-column: 2; }
 .pv-use-meta { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
 .pv-use .src-snippet { color: var(--fg-2); }
+/* Deletion log: an entry per removal, by day, as on the timeline; the open entry lists the labels it retired. */
+.src.dl-row { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 0 8px; align-items: start; }
+.dl-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.dl-verb { font-size: 13px; font-weight: 600; }
+.dl-head .sid { font-size: 10px; padding: 1px 4px; }
+.dl-more, .dl-target, .dl-sess { font-size: 11.5px; color: var(--muted); }
+.dl-sess { margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-what { font-size: 12px; color: var(--muted); line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-what b { color: var(--fg-2); font-weight: 500; }
+.dl-labels { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--surface); }
+.dl-label { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 9px; align-items: baseline; padding: 10px 14px; font-size: 12.5px; }
+.dl-label + .dl-label { border-top: 1px solid var(--line); }
+.dl-title { font-weight: 550; overflow-wrap: anywhere; }
+.dl-url, .dl-meta { grid-column: 2; font-size: 11.5px; color: var(--muted); }
+.dl-url { font-family: var(--mono); overflow-wrap: anywhere; }
 .details dt { color: var(--muted); }
 .details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .details dd.mono { font: 11.5px/1.5 var(--mono); }

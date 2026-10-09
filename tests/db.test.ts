@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import 'fake-indexeddb/auto';
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createBackup, validateBackup } from '../src/lib/backup';
 import {
   commitCapture,
@@ -9,12 +9,14 @@ import {
   countForDeletion,
   countSourcesForDeletion,
   createSession,
+  deleteRemovals,
   deleteSession,
   deleteSource,
   deleteSources,
   emptyInbox,
   listSessions,
   loadLibrary,
+  loadRemovals,
   loadSessionView,
   loadSnapshotText,
   moveSource,
@@ -514,5 +516,66 @@ describe('thumbnails', () => {
     expect(JSON.stringify(data)).not.toContain(image);
     await replaceAllData(db, data);
     expect(await thumbnailIds(db)).toEqual(new Set());
+  });
+});
+
+describe('deletion log', () => {
+  it('notes every label a removal retires, with the title and address only of a deleted source', async () => {
+    // Only the clock is faked, so each removal has its own time.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const db = await freshDb();
+      const strike = await createSession(db, 'Port strike');
+      const old = await createSession(db, 'Old leads');
+      const empty = await createSession(db, 'Empty');
+      const clip = (url: string, session: string, minute: number) => pageDraft(url, `Text of ${url}`, `2026-10-09T10:${String(minute).padStart(2, '0')}:00.000Z`, session);
+      const a = await commitCapture(db, await clip(URL_A, strike.id, 0));
+      await commitCapture(db, await selectionDraft(URL_A, 'Text', '2026-10-09T10:01:00.000Z', strike.id));
+      const b = await commitCapture(db, await clip(URL_B, strike.id, 2));
+      const c = await commitCapture(db, await clip('https://example.com/c', strike.id, 3));
+      const tab = await commitCapture(db, { ...linkDraft('https://example.com/t', '2026-10-09T10:04:00.000Z', URL_A, strike.id), kind: 'tab', anchor_text: null });
+      await commitCapture(db, await clip('https://example.com/c', INBOX_SESSION_ID, 5));
+      const undone = await commitCapture(db, await clip('https://example.com/u', INBOX_SESSION_ID, 6));
+      const lead = await commitCapture(db, await clip('https://example.com/lead', old.id, 7));
+      const view = await loadSessionView(db, strike.id);
+      await saveJob(db, buildResearchJob({ view, settings: DEFAULT_JOB_SETTINGS, id: 'job-1', createdAt: '2026-10-09T10:08:00.000Z' }));
+      const step = async (minute: number, removal: () => Promise<unknown>) => {
+        vi.setSystemTime(new Date(`2026-10-09T11:${String(minute).padStart(2, '0')}:00.000Z`));
+        await removal();
+      };
+      await step(1, () => deleteSource(db, a.source.id));
+      await step(2, () => undoCapture(db, undone.capture.id));
+      await step(3, () => moveSource(db, c.source.id, INBOX_SESSION_ID));
+      await step(4, () => undoSavedCaptures(db, [{ capture_id: tab.capture.id, session_id: strike.id }], 'review'));
+      await step(5, () => deleteSession(db, old.id));
+      await step(6, () => deleteSession(db, empty.id));
+      await step(7, () => emptyInbox(db));
+      await step(8, () => deleteSources(db, [b.source.id]));
+
+      const removals = await loadRemovals(db);
+      const strikeName = { session_id: strike.id, session_name: 'Port strike' };
+      const inboxName = { session_id: INBOX_SESSION_ID, session_name: 'Inbox' };
+      const kept = (url: string) => ({ title: 'Example article', url });
+      expect(removals.map(({ id, ...rest }) => ({ ...rest, id: typeof id }))).toEqual([
+        { id: 'string', removed_at: '2026-10-09T11:08:00.000Z', action: 'delete', sources: [{ ...strikeName, number: 2, ...kept(URL_B), captures: 1 }], jobs: 0, moved_to: null },
+        // The Inbox had the moved source, which joined its S1, and the clip of S2 was undone.
+        { id: 'string', removed_at: '2026-10-09T11:07:00.000Z', action: 'empty_inbox', sources: [{ ...inboxName, number: 1, ...kept('https://example.com/c'), captures: 2 }], jobs: 0, moved_to: null },
+        { id: 'string', removed_at: '2026-10-09T11:05:00.000Z', action: 'delete_session', sources: [{ session_id: old.id, session_name: 'Old leads', number: 1, ...kept('https://example.com/lead'), captures: 1 }], jobs: 0, moved_to: null },
+        { id: 'string', removed_at: '2026-10-09T11:04:00.000Z', action: 'review', sources: [{ ...strikeName, number: 4, title: null, url: null, captures: 1 }], jobs: 0, moved_to: null },
+        { id: 'string', removed_at: '2026-10-09T11:03:00.000Z', action: 'move', sources: [{ ...strikeName, number: 3, title: null, url: null, captures: 1 }], jobs: 0, moved_to: { ...inboxName, number: 1, joined: true } },
+        { id: 'string', removed_at: '2026-10-09T11:02:00.000Z', action: 'undo', sources: [{ ...inboxName, number: 2, title: null, url: null, captures: 1 }], jobs: 0, moved_to: null },
+        { id: 'string', removed_at: '2026-10-09T11:01:00.000Z', action: 'delete', sources: [{ ...strikeName, number: 1, ...kept(URL_A), captures: 2 }], jobs: 1, moved_to: null },
+      ]);
+      expect(lead.source.number).toBe(1);
+
+      // The log is part of the library's data, newest first; entries can be removed one at a time or all at once.
+      expect((await loadLibrary(db)).removals.map((r) => r.id)).toEqual(removals.map((r) => r.id));
+      await deleteRemovals(db, removals[0]!.id);
+      expect((await loadRemovals(db)).map((r) => r.id)).toEqual(removals.slice(1).map((r) => r.id));
+      await deleteRemovals(db);
+      expect(await loadRemovals(db)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

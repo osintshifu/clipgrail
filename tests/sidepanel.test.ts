@@ -5,7 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_BACKUP_BYTES } from '../src/lib/backup';
 import { PAGE_CODE_NOTE, fmtMegabytes, fmtTime } from '../src/lib/describe';
-import { commitCapture, createSession, listSessions, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
+import { commitCapture, createSession, listSessions, loadRemovals, loadSessionView, moveSource, openDb, updateCaptureNote, updateSessionText } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import { recordVisit } from '../src/lib/recording';
 import { pageDraft } from './helpers';
@@ -432,6 +432,8 @@ describe('side panel', () => {
     const sources = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
     expect(sources.find((s) => s.source.id === visit!.source.id)?.source.important).toBe(true);
     expect(sources.some((s) => s.source.id === next!.source.id)).toBe(false);
+    // The deletion log notes the removed page's label only.
+    expect((await loadRemovals(db))[0]).toMatchObject({ action: 'review', sources: [{ number: next!.source.number, title: null, url: null }] });
     // The visit to a page the session already had stays in its timeline.
     expect(sources.find((s) => s.source.id === again!.source.id)?.visits.map((v) => v.id)).toEqual([again!.capture.id]);
   });

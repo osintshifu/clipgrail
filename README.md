@@ -79,7 +79,7 @@ Click **Record** in ClipGrail, browse normally in that Chrome window, then click
 | **Save link** | URL without opening or downloading the destination. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 
-ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones. **Pivots** lists the values that several sources share, such as a tracker ID, an email address or a crypto address, with the sources each is in.
+ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones. **Pivots** lists the values that several sources share, such as a tracker ID, an email address or a crypto address, with the sources each is in. The **Deletion log** says what each label no longer in use was: a deleted source keeps its title and address there, so a missing S4 can be explained.
 
 ### Research Jobs
 

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { Backup } from '../src/lib/backup';
 import { createBackup, restoreBackup, validateBackup, writeBackup } from '../src/lib/backup';
-import { DB_SCHEMA_VERSION, commitCapture, createSession, loadSessionView, readAllData, replaceAllData, saveJob, setSourceImportant, visitAllData } from '../src/lib/db';
+import { DB_SCHEMA_VERSION, commitCapture, createSession, deleteSource, loadRemovals, loadSessionView, readAllData, replaceAllData, saveJob, setSourceImportant, visitAllData } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
 import type { PageCode } from '../src/lib/model';
 import { buildResearchJob, DEFAULT_JOB_SETTINGS } from '../src/lib/research-job';
@@ -31,6 +31,9 @@ async function populated() {
     snapshot: null,
   });
   await setSourceImportant(db, visit.source.id, true);
+  // A deleted source, noted in the deletion log.
+  const gone = await commitCapture(db, await pageDraft('https://example.com/gone', 'Gone', '2026-10-05T10:50:00.000Z'));
+  await deleteSource(db, gone.source.id);
   const view = await loadSessionView(db, INBOX_SESSION_ID);
   await saveJob(db, buildResearchJob({ view, settings: DEFAULT_JOB_SETTINGS, id: 'job-1', createdAt: '2026-10-05T11:00:00.000Z' }));
   return db;
@@ -61,7 +64,8 @@ describe('backup and restore', () => {
     expect(await readAllData(target)).toEqual(data);
 
     const next = await commitCapture(target, await pageDraft('https://example.com/d', 'd', '2026-10-05T13:00:00.000Z'));
-    expect(next.source.number).toBe(4);
+    expect(next.source.number).toBe(5);
+    expect((data.removals[0] as { sources: unknown[] }).sources).toEqual([{ session_id: INBOX_SESSION_ID, session_name: 'Inbox', number: 4, title: 'Example article', url: 'https://example.com/gone', captures: 1 }]);
   });
 
   it('rejects damaged or unsupported backups before anything is written', async () => {
@@ -125,17 +129,44 @@ describe('backup and restore', () => {
       ['page code on a link capture', (b) => ((b.data.captures.find((c) => (c as R).kind === 'link') as R).page_code = PAGE_CODE)],
       ['tracker ID that is not one', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).page_code = { ...PAGE_CODE, trackers: [{ kind: 'gtm', id: 'GTM-\n# RULES', where: ['noscript'] }] })],
       ['declared value from an unknown tag', (b) => ((b.data.captures.find((c) => (c as R).kind === 'page') as R).page_code = { ...PAGE_CODE, declared: [{ field: 'author', value: 'X', from: ['made up'] }] })],
+      // Undo keeps no title or address; a session gives out its labels in order; only a move has a target.
+      ['undone label with a title', (b) => ((b.data.removals[0] as R).action = 'undo')],
+      ['retired label the session never gave out', (b) => (((b.data.removals[0] as R).sources as R[])[0]!.number = 9)],
+      ['move without a target', (b) => Object.assign(b.data.removals[0] as R, { action: 'move', sources: [{ ...((b.data.removals[0] as R).sources as R[])[0], title: null, url: null }] })],
+      ['log entry without labels', (b) => ((b.data.removals[0] as R).sources = [])],
+      ['log entry for a label a source still has', (b) => (((b.data.removals[0] as R).sources as R[])[0]!.number = 1)],
+      ['move to a label its session never gave out', (b) => Object.assign(b.data.removals[0] as R, { action: 'move', jobs: 0, sources: [{ ...((b.data.removals[0] as R).sources as R[])[0], title: null, url: null }], moved_to: { session_id: INBOX_SESSION_ID, session_name: 'Inbox', number: 99, joined: false } })],
     ];
     for (const [name, change] of cases) {
       expect((await broken(change)).ok, name).toBe(false);
     }
   });
 
-  it('accepts backups made before thumbnails were added, before visits were recorded and before page code was read (database schemas 3, 5 and 6)', async () => {
+  it('keeps the deletion log through a restore and notes the sources the backup does not have', async () => {
+    const db = await populated();
+    const backup = createBackup(await readAllData(db), settings, '2026-10-05T12:00:00.000Z');
+    // After the backup: a new source, and a deletion of a source the backup has.
+    const later = await commitCapture(db, await pageDraft('https://example.com/later', 'Later', '2026-10-05T13:00:00.000Z'));
+    const [first] = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    await deleteSource(db, first!.source.id);
+    const check = await validateBackup(JSON.stringify(backup));
+    if (!check.ok) throw new Error(check.error);
+    await replaceAllData(db, check.backup.data);
+    const log = await loadRemovals(db);
+    // The backup's own entry stays; the deletion of a source the backup brings back is dropped; the later source is noted.
+    expect(log.map((r) => [r.action, r.sources.map((s) => [s.number, s.title, s.url])])).toEqual([
+      ['restore', [[later.source.number, 'Example article', 'https://example.com/later']]],
+      ['delete', [[4, 'Example article', 'https://example.com/gone']]],
+    ]);
+  });
+
+  it('accepts backups made before thumbnails were added, before visits were recorded, before page code was read and before the deletion log (database schemas 3, 5, 6 and 7)', async () => {
     const backup = createBackup(await readAllData(await populated()), settings, '2026-10-06T12:00:00.000Z') as unknown as Record<string, unknown>;
-    for (const version of [3, 5, 6]) {
+    delete (backup.data as Record<string, unknown>).removals;
+    for (const version of [3, 5, 6, 7]) {
       backup.db_schema_version = version;
-      expect((await validateBackup(JSON.stringify(backup))).ok, String(version)).toBe(true);
+      const check = await validateBackup(JSON.stringify(backup));
+      expect(check.ok && check.backup.data.removals, String(version)).toEqual([]);
     }
   });
 

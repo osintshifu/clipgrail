@@ -1,5 +1,5 @@
 import type { CaptureEntry, DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
-import type { Capture, CaptureNavigation, DeclaredField, OkSnapshotMeta, SnapshotMeta, TrackerKind, TrackerPlace } from './model';
+import type { Capture, CaptureNavigation, DeclaredField, OkSnapshotMeta, Removal, RemovalAction, SnapshotMeta, TrackerKind, TrackerPlace } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
 import { FRAME_UNESTABLISHED_NOTE, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
@@ -408,7 +408,7 @@ export function sourceDeletionText(label: string, name: string, counts: Deletion
       ? `1 Research Job that includes ${label} is deleted too.`
       : `${counts.jobs} Research Jobs that include ${label} are deleted too.`;
   return {
-    main: [`"${name}" is deleted with ${what}. ${label} is not given to another source.`, counts.jobs ? jobs : ''].filter(Boolean),
+    main: [`"${name}" is deleted with ${what}. ${label} is not given to another source.`, counts.jobs ? jobs : '', 'Its label, title and address stay in the deletion log.'].filter(Boolean),
     small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`],
   };
 }
@@ -426,6 +426,7 @@ export function sourcesDeletionText(labels: string[], sessionCount: number, coun
   const who = sessionCount === 1 ? labelList(labels) : `${plural(labels.length, 'source')} from ${plural(sessionCount, 'session')}`;
   const main = [`${who} are deleted with their ${plural(counts.captures, 'capture')}, saved texts and notes. Their labels are not given to other sources.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job that includes them is deleted too.' : `${counts.jobs} Research Jobs that include them are deleted too.`);
+  main.push('Their labels, titles and addresses stay in the deletion log.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
 }
 
@@ -435,6 +436,7 @@ export function sessionDeletionText(name: string, counts: DeletionCounts, active
       ? [`Session "${name}" is empty. Deleting it removes its prompt and notes.`]
       : [`It is deleted with its ${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')}, their saved texts and notes, and the session prompt.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? 'Its 1 Research Job is deleted too.' : `Its ${counts.jobs} Research Jobs are deleted too.`);
+  if (counts.sources) main.push('The labels, titles and addresses of its sources stay in the deletion log.');
   if (active) main.push('New clips will go to the Inbox.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
 }
@@ -444,7 +446,81 @@ export function inboxEmptyingText(counts: DeletionCounts, nextNumber: number, la
   const main = [`${all}${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')} in the Inbox are deleted with their saved texts and notes.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job is deleted too.' : `${counts.jobs} Research Jobs are deleted too.`);
   main.push(`The Inbox stays. New sources continue from S${nextNumber}.`);
+  if (counts.sources) main.push('The labels, titles and addresses of its sources stay in the deletion log.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
+}
+
+// ---------- Deletion log ----------
+
+const REMOVAL_VERBS: Record<RemovalAction, string> = {
+  delete: 'Deleted',
+  delete_session: 'Session deleted',
+  empty_inbox: 'Inbox emptied',
+  undo: 'Undone',
+  review: 'Removed after recording',
+  move: 'Moved',
+  restore: 'Replaced by a restore',
+};
+
+export const REMOVAL_NOTE =
+  "ClipGrail never gives a label to another source, so a source that is deleted, undone, moved or replaced by a restore leaves a gap in its session's labels. The log keeps the label, title and address of each deleted or replaced source and how many captures it had; its saved texts and notes are gone. A source removed with Undo or after a recording keeps only its label. Removing an entry from the log cannot be undone.";
+
+export interface RemovalView {
+  verb: string;
+  /** For a move: the session and label the source has there. */
+  target: string | null;
+  heading: string;
+  /** What happened, said after the time. */
+  summary: string;
+}
+
+export function removalView(removal: Removal): RemovalView {
+  const { action, sources, jobs, moved_to: to } = removal;
+  const one = sources.length === 1 ? `S${sources[0]!.number}` : null;
+  const captures = plural(sources.reduce((n, s) => n + s.captures, 0), 'capture');
+  const deletedJobs = !jobs ? '' : jobs === 1 ? ` 1 Research Job that included ${one ? 'it' : 'them'} was deleted too.` : ` ${jobs} Research Jobs that included ${one ? 'it' : 'them'} were deleted too.`;
+  // A session's own Research Jobs go with it, whether or not they include these sources.
+  const sessionJobs = !jobs ? '' : jobs === 1 ? ' 1 Research Job was deleted too.' : ` ${jobs} Research Jobs were deleted too.`;
+  const session = sources[0]!.session_name;
+  const views: Record<RemovalAction, () => Omit<RemovalView, 'verb' | 'target'>> = {
+    delete: () => ({ heading: `${one ?? plural(sources.length, 'source')} deleted`, summary: `Deleted with ${captures}, ${one ? 'its' : 'their'} saved texts and notes.${deletedJobs}` }),
+    delete_session: () => ({ heading: `Session "${session}" deleted`, summary: `Deleted with ${plural(sources.length, 'source')} and ${captures}, their saved texts and notes.${sessionJobs}` }),
+    empty_inbox: () => ({ heading: 'Inbox emptied', summary: `${plural(sources.length, 'source')} and ${captures} were deleted with their saved texts and notes.${sessionJobs}` }),
+    undo: () => ({ heading: `${one ?? plural(sources.length, 'source')} undone`, summary: 'Removed with Undo, which keeps no title or address.' }),
+    review: () => ({ heading: `${one ?? plural(sources.length, 'source')} removed after recording`, summary: 'Removed in the review after a recording, which keeps no title or address.' }),
+    move: () => ({
+      heading: `${one} moved to ${to!.session_name}`,
+      summary: to!.joined
+        ? `Moved with ${captures} to ${to!.session_name}, where it joined S${to!.number}, which had the same address.`
+        : `Moved with ${captures} to ${to!.session_name} as S${to!.number}.`,
+    }),
+    restore: () => ({
+      heading: `${one ?? plural(sources.length, 'source')} replaced by a restore`,
+      summary: `Removed when a backup without ${one ? 'it' : 'them'} was restored, with ${captures}, ${one ? 'its' : 'their'} saved texts and notes.`,
+    }),
+  };
+  return { verb: REMOVAL_VERBS[action], target: to ? `${to.session_name} S${to.number}` : null, ...views[action]() };
+}
+
+/** What a search of the log finds in an entry besides its labels, which are matched whole: what happened, sessions, titles and addresses. */
+export function removalText(removal: Removal): string {
+  return [removalView(removal).verb, removal.moved_to?.session_name, ...removal.sources.flatMap((s) => [s.session_name, s.title, s.url])].filter(Boolean).join('\n');
+}
+
+export function removalDeletionText(removal: Removal, lastBackupAt: string | null): DeletionText {
+  const labels = labelList(removal.sources.map((s) => `S${s.number}`));
+  const gap = removal.sources.length === 1 ? `The gap ${labels} left` : 'The gaps their labels left';
+  return {
+    main: [`The entry for ${labels} is deleted with what it keeps. ${gap} will no longer be explained.`],
+    small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`],
+  };
+}
+
+export function logClearingText(entries: number, lastBackupAt: string | null): DeletionText {
+  return {
+    main: [`${entries === 1 ? 'The entry is' : `All ${fmtNumber(entries)} entries are`} deleted with the labels, titles and addresses they keep. Gaps in labels will no longer be explained.`],
+    small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`],
+  };
 }
 
 /** Two lines for the side panel menu: what is stored and roughly how much space it takes. */

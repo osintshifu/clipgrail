@@ -136,14 +136,25 @@ ClipGrail never sends a message for you; you paste and send it yourself. If copy
 
 Deleting cannot be undone. ClipGrail asks first and shows when you last made a backup. Files you exported, text you pasted into a chat and backups you saved are not affected.
 
+### Deletion log
+
+A label is never given to another source, so a session can show S1, S2 and S4 with no S3. **Deletion log**, under the sessions in the library, says what each missing label was:
+
+- A source deleted with **Delete…**, with its session or when the Inbox was emptied keeps its label, session, title, address and how many captures it had, and how many Research Jobs were deleted with it. Its saved texts and notes are gone.
+- A source removed with **Undo**, or in the review after a recording, keeps only its label: recording can save pages you would rather not keep the address of.
+- A source moved to another session keeps its label and the label it has there, with a button that opens it.
+- Restoring a backup keeps the log's entries, and a source the backup does not have is noted with its title and address as replaced by the restore.
+
+The log lists entries by day, newest first. Search finds entries by session, title or address, and a label such as `S3` finds the entries of S3 only, not S30. The session menu keeps the entries of one session. **Remove from log…** in an entry and **Clear log…** delete entries for good; a gap they explained is then no longer explained.
+
 **···** in the side panel shows how much ClipGrail stores and when you last made a backup.
 
 ## Backup and restore
 
 ClipGrail keeps its data only in the current Chrome profile, and uninstalling the extension deletes it. Back up regularly if the research matters.
 
-- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, presets, Research Job settings and the active session. Page pictures are not included in backups, so restored sources have no pictures.
-- **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm. Sessions that still exist keep counting labels from where they are, so a label used after the backup was made is not given to another source.
+- **··· > Back up all data (JSON)** saves sessions, sources, captures, snapshots, notes, Research Jobs, the deletion log, presets, Research Job settings and the active session. Page pictures are not included in backups, so restored sources have no pictures.
+- **··· > Restore from backup…** checks the whole file first: format, version, links between records, and the SHA-256 and character count of every saved text. A damaged or unsupported backup is rejected and your current data stays as it was. A valid backup replaces all current data after you confirm. Sessions that still exist keep counting labels from where they are, so a label used after the backup was made is not given to another source. The deletion log keeps its entries and notes the sources the backup does not have.
 
 Merging a backup with existing data is not supported.
 

@@ -1,10 +1,11 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setSourceImportant, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, deleteRemovals, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setSourceImportant, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import type { DeletionText } from '../../lib/describe';
 import {
+  REMOVAL_NOTE,
   STATUS_LABELS,
   captureDetailRows,
   captureHead,
@@ -14,7 +15,11 @@ import {
   fmtTime,
   hostOf,
   inboxEmptyingText,
+  logClearingText,
   pageCodeView,
+  removalDeletionText,
+  removalText,
+  removalView,
   sessionDeletionText,
   sourceDeletionText,
   sourcesDeletionText,
@@ -34,12 +39,12 @@ import { ALL_SOURCES, SORT_LABELS, compareChoices, filterRows, libraryRows, sear
 import type { LibraryEntry, LibraryFilter, LibraryRow, LibrarySort, TextHits, Version } from '../../lib/library';
 import { PIVOT_GROUPS, PIVOT_KINDS, PIVOT_NOTES, collectPivots, filterPivots, textFinds } from '../../lib/pivots';
 import type { Pivot, PivotFilter, PivotUse, TextFind } from '../../lib/pivots';
-import { fold, inDays, localDay, parseSearch, searchable, storedRanges, textHit } from '../../lib/search';
+import { fold, inDays, localDay, parseSearch, searchWords, searchable, storedRanges, textHit } from '../../lib/search';
 import type { SearchQuery, Snippet } from '../../lib/search';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
 import { arrival, ledTo, sourcesByAddress, timelineEvents } from '../../lib/timeline';
 import type { TimelineEvent } from '../../lib/timeline';
-import type { Session } from '../../lib/model';
+import type { Removal, Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
 import { LIST_WIDTH, NAV_WIDTH, clampWidth, getActiveSessionId, setActiveSessionId, getJobSettings, saveJobSettings, getLibraryLayout, saveLibraryLayout, getLastBackupAt, dropExcludedSources, removeJobSettings } from '../../lib/settings';
@@ -48,7 +53,7 @@ import type { LibraryLayout, WidthRange } from '../../lib/settings';
 import { finishNoteWrites, keepNoteFocus, noteEditor } from '../../lib/note-editor';
 
 let db: IDBDatabase;
-let data: LibraryData = { sessions: [], sources: [] };
+let data: LibraryData = { sessions: [], sources: [], removals: [] };
 let rows: LibraryRow[] = [];
 let shown: LibraryRow[] = [];
 let activeId = INBOX_SESSION_ID;
@@ -64,6 +69,10 @@ let pivots: Pivot[] = [];
 /** Values found in each saved text, by snapshot ID. A saved text never changes, so each is read once. */
 const finds = new Map<string, TextFind[]>();
 let readingFinds = false;
+/** The deletion log is shown as a view of its own, like a session; the entry open in the reader, and the filters of the list. */
+const DELETION_LOG = 'deletion-log';
+let removalId: string | null = null;
+const logFilter = { query: '', session: 'all' };
 let selectedId: string | null = null;
 let viewedCaptureId: string | null = null;
 /** While comparing: the source, its viewed capture and the one it is compared with; void once another capture or source is viewed. */
@@ -109,21 +118,23 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 const count = (n: number, word: string) => `${fmtNumber(n)} ${n === 1 ? word : `${word}s`}`;
 const chip = (status: SourceStatus) => h('span', { class: `chip ${status}` }, [STATUS_LABELS[status]]);
 const sessionOf = (id: string): Session | undefined => data.sessions.find((s) => s.id === id);
+const logShown = () => filter.view === DELETION_LOG;
 /** The timeline is one session's; All sources, also reached when the session shown was deleted, lists sources. */
-const timelineShown = () => mode === 'timeline' && filter.view !== ALL_SOURCES;
-const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : (sessionOf(filter.view)?.name ?? 'All sources'));
+const timelineShown = () => mode === 'timeline' && filter.view !== ALL_SOURCES && !logShown();
+const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : logShown() ? 'Deletion log' : (sessionOf(filter.view)?.name ?? 'All sources'));
 const selectedRow = () => rows.find((r) => r.entry.source.id === selectedId);
 
-// ---------- Address: #view=<session ID or all>&mode=timeline|pivots&source=<source ID> (identifiers only) ----------
+// ---------- Address: #view=<session ID, all or deletion-log>&mode=timeline|pivots&source=<source ID>&entry=<log entry ID> (identifiers only) ----------
 // The side panel can add capture=<capture ID>&compare=<capture ID> to open a comparison of two saved texts.
 
 function readHash(): void {
   const params = new URLSearchParams(location.hash.slice(1));
   const view = params.get('view');
-  filter.view = view && (view === ALL_SOURCES || sessionOf(view)) ? view : ALL_SOURCES;
+  filter.view = view && (view === ALL_SOURCES || view === DELETION_LOG || sessionOf(view)) ? view : ALL_SOURCES;
   // The timeline is one session's; All sources shows the list.
   const wanted = params.get('mode');
   mode = wanted === 'pivots' ? 'pivots' : wanted === 'timeline' && filter.view !== ALL_SOURCES ? 'timeline' : 'sources';
+  removalId = params.get('entry');
   const source = params.get('source');
   if (source !== selectedId) viewedCaptureId = null;
   const capture = params.get('capture');
@@ -134,13 +145,17 @@ function readHash(): void {
     scrollToCompare = !!comparing;
   }
   selectedId = source;
-  setReading(!!selectedId);
+  setReading(filter.view === DELETION_LOG ? !!removalId : !!selectedId);
 }
 
 function writeHash(): void {
   const params = new URLSearchParams({ view: filter.view });
-  if (timelineShown() || mode === 'pivots') params.set('mode', mode);
-  if (selectedId) params.set('source', selectedId);
+  if (logShown()) {
+    if (removalId) params.set('entry', removalId);
+  } else {
+    if (timelineShown() || mode === 'pivots') params.set('mode', mode);
+    if (selectedId) params.set('source', selectedId);
+  }
   history.replaceState(null, '', `#${params.toString()}`);
 }
 
@@ -258,7 +273,7 @@ function renderNav(): void {
   if (archived.some((s) => s.id === filter.view)) archivedOpen = true;
   const item = (key: string, name: string, n: number, session?: Session) => {
     const button = h('button', { class: 'nav-item', attrs: { type: 'button', 'aria-current': String(filter.view === key) }, on: { click: () => setView(key) } }, [
-      icon(key === ALL_SOURCES ? 'stack' : key === INBOX_SESSION_ID ? 'tray' : 'folder-simple'),
+      icon(key === ALL_SOURCES ? 'stack' : key === INBOX_SESSION_ID ? 'tray' : key === DELETION_LOG ? 'clock-counter-clockwise' : 'folder-simple'),
       h('span', { class: 'name', attrs: { title: name } }, [name]),
       session?.id === activeId ? h('span', { class: 'active-tag', attrs: { title: 'Active session: new clips go here' } }, ['Active']) : null,
       h('span', { class: 'count' }, [fmtNumber(n)]),
@@ -288,6 +303,8 @@ function renderNav(): void {
     ...current.map((s) => item(s.id, s.name, counts.get(s.id) ?? 0, s)),
     archived.length ? toggle : null,
     ...(archivedOpen ? archived.map((s) => item(s.id, s.name, counts.get(s.id) ?? 0, s)) : []),
+    h('div', { class: 'nav-group section-title' }, ['Removed']),
+    item(DELETION_LOG, 'Deletion log', data.removals.length),
   ]);
   const option = (s: Session) => h('option', { attrs: { value: s.id } }, [`${s.name}${s.id === activeId ? ' · active' : ''} (${fmtNumber(counts.get(s.id) ?? 0)})`]);
   const select = $<HTMLSelectElement>('view-select');
@@ -295,6 +312,7 @@ function renderNav(): void {
     h('option', { attrs: { value: ALL_SOURCES } }, [`All sources (${fmtNumber(rows.length)})`]),
     ...current.map(option),
     archived.length ? h('optgroup', { attrs: { label: 'Archived' } }, archived.map(option)) : null,
+    h('option', { attrs: { value: DELETION_LOG } }, [`Deletion log (${fmtNumber(data.removals.length)})`]),
   ]);
   select.value = filter.view;
 }
@@ -308,6 +326,7 @@ function setView(view: string): void {
     viewedCaptureId = null;
   }
   setReading(false);
+  showSearch();
   writeHash();
   renderNav();
   renderList();
@@ -438,6 +457,7 @@ function openEvent(sourceId: string, captureId: string, userAction: boolean): vo
 const rowButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'));
 /** The row of the open source; on the timeline the event of the capture being read, else the source's first event; in Pivots the value open or last opened. */
 function selectedButton(): HTMLButtonElement | undefined {
+  if (logShown()) return rowButtons().find((b) => b.dataset.entry === removalId);
   if (mode === 'pivots') return rowButtons().find((b) => b.dataset.pivot === pivotKey);
   const buttons = rowButtons().filter((b) => b.dataset.id === selectedId);
   return buttons.find((b) => b.dataset.capture === viewedCaptureId) ?? buttons[0];
@@ -447,7 +467,8 @@ function selectedButton(): HTMLButtonElement | undefined {
 function markSelected(): void {
   const buttons = rowButtons();
   for (const button of buttons) {
-    const current = button.dataset.pivot !== undefined ? button.dataset.pivot === pivotKey : button.dataset.id === selectedId;
+    const current =
+      button.dataset.entry !== undefined ? button.dataset.entry === removalId : button.dataset.pivot !== undefined ? button.dataset.pivot === pivotKey : button.dataset.id === selectedId;
     button.setAttribute('aria-current', String(current));
   }
   setTabStop(selectedButton() ?? buttons[0]);
@@ -541,7 +562,9 @@ function searchTexts(query: SearchQuery): void {
 /** Puts focus back on the same row, or its checkbox, after the list is drawn again. */
 function keepListFocus(): () => void {
   const active = document.activeElement instanceof HTMLElement && document.activeElement.closest('#rows') ? document.activeElement : null;
-  const selector = active?.dataset.pivot !== undefined
+  const selector = active?.dataset.entry !== undefined
+    ? `.src[data-entry="${CSS.escape(active.dataset.entry)}"]`
+    : active?.dataset.pivot !== undefined
     ? `.src[data-pivot="${CSS.escape(active.dataset.pivot)}"]`
     : active?.dataset.capture
     ? `.src[data-capture="${CSS.escape(active.dataset.capture)}"]`
@@ -556,21 +579,26 @@ function keepListFocus(): () => void {
 }
 
 function renderList(): void {
-  const pivotsShown = mode === 'pivots';
+  const logList = logShown();
+  const pivotsShown = mode === 'pivots' && !logList;
   const timeline = timelineShown();
   $('list-title').textContent = viewName();
   // Pivots are found in all sources too; the timeline is one session's.
+  $('mode-switch').hidden = logList;
   $('mode-timeline').hidden = filter.view === ALL_SOURCES;
   $('mode-sources').setAttribute('aria-pressed', String(!timeline && !pivotsShown));
   $('mode-timeline').setAttribute('aria-pressed', String(timeline));
   $('mode-pivots').setAttribute('aria-pressed', String(pivotsShown));
-  for (const id of ['status-filter', 'important-filter']) $(id).hidden = pivotsShown;
-  $('sort').hidden = timeline || pivotsShown;
+  for (const id of ['status-filter', 'important-filter']) $(id).hidden = pivotsShown || logList;
+  $('sort').hidden = timeline || pivotsShown || logList;
   $('pivot-kind').hidden = !pivotsShown;
   $('shared-only').hidden = !pivotsShown;
-  setSearchLabels(pivotsShown);
-  $('rows').classList.toggle('timeline', timeline);
-  if (pivotsShown) renderPivotList();
+  $('log-session').hidden = !logList;
+  $('clear-log').hidden = !logList;
+  setSearchLabels(logList ? 'log' : pivotsShown ? 'values' : 'sources');
+  $('rows').classList.toggle('timeline', timeline || logList);
+  if (logList) renderLogList();
+  else if (pivotsShown) renderPivotList();
   else renderSourceList(timeline);
   markSelected();
   renderSelection();
@@ -644,18 +672,21 @@ function renderSourceList(timeline: boolean): void {
   }
 }
 
-/** The search field searches sources, or in Pivots the values. */
-const SOURCE_SEARCH = { placeholder: $<HTMLInputElement>('search').placeholder, title: $<HTMLInputElement>('search').title };
-const VALUE_SEARCH = { placeholder: 'Search values', title: 'All words must be in the value or its kind. Use quotes for a phrase.' };
+/** The search field searches sources, in Pivots the values, and in the deletion log its entries. */
+const SEARCH_LABELS = {
+  sources: { placeholder: $<HTMLInputElement>('search').placeholder, title: $<HTMLInputElement>('search').title },
+  values: { placeholder: 'Search values', title: 'All words must be in the value or its kind. Use quotes for a phrase.' },
+  log: { placeholder: 'Search labels, titles and addresses', title: 'All words must be in the entry: labels such as S3, sessions, titles and addresses. Use quotes for a phrase.' },
+};
 
-/** Shows the search of the list shown: of values in Pivots, else of sources. */
+/** Shows the search of the list shown: of log entries, of values in Pivots, else of sources. */
 function showSearch(): void {
-  $<HTMLInputElement>('search').value = mode === 'pivots' ? pivotFilter.query : filter.query;
+  $<HTMLInputElement>('search').value = logShown() ? logFilter.query : mode === 'pivots' ? pivotFilter.query : filter.query;
 }
 
-function setSearchLabels(values: boolean): void {
+function setSearchLabels(list: keyof typeof SEARCH_LABELS): void {
   const search = $<HTMLInputElement>('search');
-  const labels = values ? VALUE_SEARCH : SOURCE_SEARCH;
+  const labels = SEARCH_LABELS[list];
   search.placeholder = labels.placeholder;
   search.title = labels.title;
   search.setAttribute('aria-label', labels.placeholder);
@@ -676,7 +707,10 @@ function setMode(next: typeof mode): void {
 
 function clearFilters(): void {
   clearPicked();
-  if (mode === 'pivots') {
+  if (logShown()) {
+    logFilter.query = '';
+    logFilter.session = 'all';
+  } else if (mode === 'pivots') {
     pivotFilter.query = '';
     pivotFilter.group = 'all';
   } else {
@@ -932,6 +966,223 @@ function showPivotSources(pivot: Pivot): void {
   if (first && wide.matches) openSource(first.entry.source.id, false);
   else setReading(false);
   rowButtons()[0]?.focus();
+}
+
+// ---------- Deletion log: what each retired label was ----------
+
+/** A session of the log by its name now, or once deleted by the name the log has. */
+const logSessionName = (id: string, then: string) => sessionOf(id)?.name ?? then;
+const removalSessions = (removal: Removal) => [...new Map(removal.sources.map((s) => [s.session_id, logSessionName(s.session_id, s.session_name)])).values()];
+
+/** Folded text of each entry for the search of the log: with the sessions' names now, and for a move the title and address of the source it went to. */
+const removalHaystacks = new WeakMap<Removal, string>();
+function removalHaystack(removal: Removal): string {
+  let text = removalHaystacks.get(removal);
+  if (text === undefined) {
+    const target = movedTo(removal);
+    const now = [...removalSessions(removal), target?.title, target?.entry.source.dedup_url];
+    removalHaystacks.set(removal, (text = fold(searchable([removalText(removal), ...now].filter(Boolean).join('\n')))));
+  }
+  return text;
+}
+
+/** A search word such as "s3" finds the entries of that label, not S30 or an address with "s3" in it. */
+const LABEL_WORD = /^s[1-9]\d*$/;
+function logMatches(removal: Removal, terms: string[]): boolean {
+  const labels = new Set([...removal.sources.map((s) => `s${s.number}`), ...(removal.moved_to ? [`s${removal.moved_to.number}`] : [])]);
+  return terms.every((t) => (LABEL_WORD.test(t) ? labels.has(t) : removalHaystack(removal).includes(t)));
+}
+
+const entryCount = (n: number) => `${fmtNumber(n)} ${n === 1 ? 'entry' : 'entries'}`;
+
+function renderLogList(): void {
+  shown = [];
+  $('pivot-filter').hidden = true;
+  const all = data.removals;
+  // Sessions the log names, by their name now or, once deleted, as the log has it.
+  const names = new Map<string, string>();
+  for (const removal of all) for (const s of removal.sources) if (!names.has(s.session_id)) names.set(s.session_id, sessionOf(s.session_id)?.name ?? s.session_name);
+  if (!names.has(logFilter.session)) logFilter.session = 'all';
+  const select = $<HTMLSelectElement>('log-session');
+  fill(select, [h('option', { attrs: { value: 'all' } }, ['All sessions']), ...[...names].map(([id, name]) => h('option', { attrs: { value: id } }, [name]))]);
+  select.value = logFilter.session;
+  const terms = searchWords(logFilter.query);
+  const listed = all.filter((r) => (logFilter.session === 'all' || r.sources.some((s) => s.session_id === logFilter.session)) && logMatches(r, terms));
+  const narrowed = logFilter.query.trim() !== '' || logFilter.session !== 'all';
+  $('clear-filters').hidden = !narrowed;
+  $('search').classList.toggle('filter-on', logFilter.query.trim() !== '');
+  select.classList.toggle('filter-on', logFilter.session !== 'all');
+  $<HTMLButtonElement>('clear-log').disabled = !all.length;
+  $('result-count').textContent = narrowed ? `${fmtNumber(listed.length)} of ${entryCount(all.length)}` : entryCount(all.length);
+  const items: HTMLLIElement[] = [];
+  let day = '';
+  for (const removal of listed) {
+    const next = localDay(removal.removed_at);
+    if (next !== day) {
+      day = next;
+      const weekday = new Date(removal.removed_at).toLocaleDateString('en-US', { weekday: 'long' });
+      items.push(h('li', { class: 'tl-day' }, [`${day} · ${weekday}`]));
+    }
+    items.push(removalItem(removal));
+  }
+  $('rows').replaceChildren(...items);
+  const empty = $('list-empty');
+  empty.hidden = listed.length > 0;
+  if (!listed.length) {
+    fill(empty, [
+      all.length
+        ? h('p', {}, ['No entries match the search and session.'])
+        : h('p', {}, ["Nothing removed yet. When you delete a source, undo a clip or move a source to another session, its label is noted here, so a gap in a session's labels can be explained."]),
+      all.length ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
+    ]);
+  }
+}
+
+/** The source a moved label went to, if it is still there. */
+function movedTo(removal: Removal): LibraryRow | undefined {
+  const to = removal.moved_to;
+  return to ? rows.find((r) => r.session.id === to.session_id && r.entry.source.number === to.number) : undefined;
+}
+
+function removalItem(removal: Removal): HTMLLIElement {
+  const view = removalView(removal);
+  const time = fmtTime(removal.removed_at).slice(11);
+  const sessions = removalSessions(removal);
+  const labels = removal.sources.map((s) => `S${s.number}`);
+  const deleted = removal.sources.find((s) => s.url);
+  const target = movedTo(removal);
+  const what: Child[] = deleted
+    ? [h('b', {}, [deleted.title ?? deleted.url!]), removal.sources.length > 1 ? ` and ${fmtNumber(removal.sources.length - 1)} more` : '', ` · ${hostOf(deleted.url!)}`]
+    : target
+      ? [h('b', {}, [target.title ?? target.entry.source.dedup_url]), ` · ${hostOf(target.entry.source.dedup_url)}`]
+      : [removal.moved_to ? `No longer in ${logSessionName(removal.moved_to.session_id, removal.moved_to.session_name)}` : 'No title or address kept'];
+  const spoken = `${labels.slice(0, 6).join(', ')}${labels.length > 6 ? ` and ${fmtNumber(labels.length - 6)} more` : ''}`;
+  const whatText = what.map((part) => (typeof part === 'string' ? part : part ? part.textContent : '')).join('');
+  return h('li', {}, [
+    h(
+      'button',
+      {
+        class: 'src dl-row',
+        attrs: {
+          type: 'button',
+          tabindex: '-1',
+          'data-entry': removal.id,
+          'aria-current': String(removal.id === removalId),
+          'aria-label': `${time}, ${view.verb} ${spoken}${view.target ? ` to ${view.target}` : ''}, ${sessions.join(', ')}: ${whatText}`,
+        },
+        on: { click: () => openRemoval(removal.id, true) },
+      },
+      [
+        h('span', { class: 'tl-time' }, [time]),
+        h('span', { class: 'tl-body' }, [
+          h('span', { class: 'dl-head' }, [
+            h('span', { class: 'dl-verb' }, [view.verb]),
+            ...labels.slice(0, 6).map((label) => h('span', { class: 'sid' }, [label])),
+            labels.length > 6 ? h('span', { class: 'dl-more' }, [`+${fmtNumber(labels.length - 6)}`]) : null,
+            view.target ? h('span', { class: 'dl-target' }, [`→ ${view.target}`]) : null,
+            h('span', { class: 'dl-sess' }, [sessions.length > 1 ? count(sessions.length, 'session') : sessions[0]!]),
+          ]),
+          h('span', { class: 'dl-what' }, what),
+        ]),
+      ],
+    ),
+  ]);
+}
+
+/** Shows an entry of the deletion log in the reader. */
+function openRemoval(id: string, userAction: boolean): void {
+  const narrow = userAction && !wide.matches;
+  if (narrow) setReading(true);
+  removalId = id;
+  $('reader-col').scrollTop = 0;
+  markSelected();
+  writeHash();
+  renderReader();
+  if (narrow) $('back-button').focus();
+}
+
+function renderRemoval(reader: HTMLElement): void {
+  const removal = data.removals.find((r) => r.id === removalId);
+  if (!removal) {
+    const message = removalId ? 'This entry is no longer in the deletion log.' : 'Select an entry to see what was removed.';
+    reader.replaceChildren(h('div', { class: 'empty' }, [h('p', {}, [message])]));
+    return;
+  }
+  const view = removalView(removal);
+  const sessions = removalSessions(removal);
+  const target = movedTo(removal);
+  fill(reader, [
+    h('div', { class: 'crumb' }, [
+      h('span', {}, ['Deletion log']),
+      h('span', {}, ['·']),
+      h('span', {}, [sessions.join(', ')]),
+      h('button', { class: 'btn-sm delete reader-actions', attrs: { id: 'remove-entry', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmRemoveEntry(removal) } }, [
+        icon('trash'),
+        'Remove from log…',
+      ]),
+    ]),
+    h('h3', {}, [view.heading]),
+    h('div', { class: 'status-line' }, [
+      h('span', {}, [`${fmtTime(removal.removed_at)} · ${view.summary}${removal.moved_to && !target ? ` S${removal.moved_to.number} is no longer in ${removal.moved_to.session_name}.` : ''}`]),
+    ]),
+    target
+      ? h('div', {}, [
+          h(
+            'button',
+            {
+              class: 'btn-sm',
+              attrs: { id: 'open-moved', type: 'button' },
+              on: { click: () => openMovedSource(target) },
+            },
+            [`Open ${target.label} in ${target.session.name}`],
+          ),
+        ])
+      : null,
+    h(
+      'div',
+      { class: 'dl-labels' },
+      removal.sources.map((s) =>
+        h('div', { class: 'dl-label' }, [
+          h('span', { class: 'sid' }, [`S${s.number}`]),
+          // A moved source is still in the library: its title there.
+          h('span', { class: `dl-title${s.title || target ? '' : ' untitled'}` }, [
+            s.title ?? (s.url ? '(title not captured)' : target ? (target.title ?? target.entry.source.dedup_url) : 'Title and address not kept'),
+          ]),
+          s.url ? h('span', { class: 'dl-url' }, [s.url]) : null,
+          h('span', { class: 'dl-meta' }, [[count(s.captures, 'capture'), sessions.length > 1 ? logSessionName(s.session_id, s.session_name) : null].filter(Boolean).join(' · ')]),
+        ]),
+      ),
+    ),
+    h('p', { class: 'small' }, [REMOVAL_NOTE]),
+  ]);
+}
+
+/** Opens the source a moved label went to, in its session's list of sources with no filter that could hide it. */
+function openMovedSource(target: LibraryRow): void {
+  if (mode === 'pivots') mode = 'sources';
+  Object.assign(filter, { query: '', status: 'any', important: false, pivot: null });
+  $<HTMLSelectElement>('status-filter').value = 'any';
+  setView(target.session.id);
+  openSource(target.entry.source.id, true);
+  if (wide.matches) selectedButton()?.focus();
+}
+
+async function confirmRemoveEntry(removal: Removal): Promise<void> {
+  const text = removalDeletionText(removal, await getLastBackupAt());
+  openDeletion('Remove this entry from the deletion log?', text, 'Remove entry', () => runDeletion(async () => {
+    await deleteRemovals(db, removal.id);
+    removalId = null;
+    return 'Entry removed from the deletion log.';
+  }, 'Entry not removed', 'Entry removed; refresh failed'), $('remove-entry'));
+}
+
+async function confirmClearLog(): Promise<void> {
+  const text = logClearingText(data.removals.length, await getLastBackupAt());
+  openDeletion('Clear the deletion log?', text, 'Clear log', () => runDeletion(async () => {
+    await deleteRemovals(db);
+    removalId = null;
+    return 'Deletion log cleared.';
+  }, 'Log not cleared', 'Log cleared; refresh failed'), $('clear-log'));
 }
 
 // ---------- The open source ----------
@@ -1339,6 +1590,7 @@ function renderReaderContents(): void {
   $('narrow-session-actions').hidden = !actionSession;
   expandButton.hidden = !row;
   applyLayout();
+  if (logShown()) return renderRemoval(reader);
   if (!row && !selectedId && mode === 'pivots') return renderPivot(reader);
   if (!row) {
     reader.replaceChildren(
@@ -1734,7 +1986,7 @@ async function reload(): Promise<void> {
   const scroll = [$('list-col').scrollTop, $('reader-col').scrollTop] as const;
   [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);
   rows = libraryRows(data);
-  if (filter.view !== ALL_SOURCES && !sessionOf(filter.view)) filter.view = ALL_SOURCES;
+  if (filter.view !== ALL_SOURCES && !logShown() && !sessionOf(filter.view)) filter.view = ALL_SOURCES;
   renderNav();
   renderList();
   renderReader();
@@ -1742,8 +1994,8 @@ async function reload(): Promise<void> {
   $('reader-col').scrollTop = scroll[1];
   restoreNote();
   if (control) document.getElementById(control)?.focus({ preventScroll: true });
-  // A value of Pivots keeps focus by its key.
-  if (active?.dataset.pivot !== undefined) restoreRow();
+  // A value of Pivots and an entry of the deletion log keep focus by their keys.
+  if (active?.dataset.pivot !== undefined || active?.dataset.entry !== undefined) restoreRow();
   if (focus) {
     const where = focus.inRows ? '#rows' : '#reader';
     const event = focus.capture ? document.querySelector<HTMLElement>(`${where} [data-capture="${CSS.escape(focus.capture)}"]`) : null;
@@ -1760,7 +2012,8 @@ function bind(): void {
     searchTimer = setTimeout(() => {
       clearPicked();
       const value = (event.target as HTMLInputElement).value;
-      if (mode === 'pivots') pivotFilter.query = value;
+      if (logShown()) logFilter.query = value;
+      else if (mode === 'pivots') pivotFilter.query = value;
       else filter.query = value;
       renderList();
       highlightMatches();
@@ -1794,6 +2047,12 @@ function bind(): void {
     pivotFilter.shared = !pivotFilter.shared;
     renderList();
   });
+  const logSession = $<HTMLSelectElement>('log-session');
+  logSession.addEventListener('change', () => {
+    logFilter.session = logSession.value;
+    renderList();
+  });
+  $('clear-log').addEventListener('click', () => void confirmClearLog());
   $('pivot-filter').addEventListener('click', () => {
     clearPicked();
     filter.pivot = null;
@@ -1834,6 +2093,7 @@ function bind(): void {
     setTabStop(button);
     button.focus();
     if (!wide.matches) return;
+    if (button.dataset.entry !== undefined) return openRemoval(button.dataset.entry, false);
     if (button.dataset.pivot !== undefined) openPivot(button.dataset.pivot, false);
     if (!button.dataset.id) return;
     if (button.dataset.capture) openEvent(button.dataset.id, button.dataset.capture, false);
@@ -1865,7 +2125,9 @@ function bind(): void {
     document.querySelectorAll('[aria-haspopup][aria-expanded="true"]').forEach((b) => b.removeAttribute('aria-expanded'));
     if (replacingMenu) return void (replacingMenu = false);
     document.querySelectorAll<HTMLElement>('.note-editor').forEach((e) => { e.inert = false; });
-    if (restoreDialogFocus) (dialogOpener?.isConnected ? dialogOpener : document.getElementById('move-source') ?? $('search')).focus({ preventScroll: true });
+    // An opener the action removed or disabled, such as Clear log on an empty log, cannot take focus back.
+    const opener = dialogOpener?.isConnected && !(dialogOpener as HTMLButtonElement).disabled ? dialogOpener : null;
+    if (restoreDialogFocus) (opener ?? document.getElementById('move-source') ?? $('search')).focus({ preventScroll: true });
     restoreDialogFocus = true;
   });
   // A session menu closes on a press anywhere else (its own ··· button toggles it instead).

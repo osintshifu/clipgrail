@@ -461,4 +461,73 @@ describe('organizing in the library', () => {
     await vi.waitFor(() => expect($('reader').querySelector('h3')?.textContent).toBe('Example article'));
     expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
   });
+
+  it('notes a deleted source in the deletion log, shows what its label was, and removes entries from the log', async () => {
+    // The search of the test before is still on.
+    $('clear-filters').click();
+    const { db, session, capture } = await openExample('Gaps');
+    const second = await commitCapture(db, await pageDraft('https://example.test/gaps-second', 'Second.', '2026-10-09T10:00:00.000Z', session.id));
+    fake.refresh();
+    await vi.waitFor(() => expect(document.querySelector(`#rows [data-id="${second.source.id}"]`)).not.toBeNull());
+    $('delete-source').click();
+    await vi.waitFor(() => expect($('library-dialog').textContent).toContain('Its label, title and address stay in the deletion log.'));
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('S1 deleted.'));
+    // S2 moves to the Inbox.
+    document.querySelector<HTMLButtonElement>(`#rows [data-id="${second.source.id}"]`)!.click();
+    $('move-source').click();
+    document.querySelector<HTMLButtonElement>('#library-dialog [data-target="inbox"]')!.click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toMatch(/^Moved S2 to Inbox as S\d+\.$/));
+
+    // The log lists the removals; the session filter keeps the entries of one session.
+    Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((n) => n.textContent?.startsWith('Deletion log'))!.click();
+    expect([$('list-title').textContent, location.hash, $('mode-switch').hidden]).toEqual(['Deletion log', '#view=deletion-log', true]);
+    const sessionFilter = $<HTMLSelectElement>('log-session');
+    sessionFilter.value = session.id;
+    sessionFilter.dispatchEvent(new Event('change'));
+    const entries = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .dl-row'));
+    const inboxLabel = `S${(await loadSessionView(db, 'inbox')).sources.find((s) => s.source.dedup_url === second.source.dedup_url)!.source.number}`;
+    expect(entries().map((e) => e.querySelector('.tl-body')?.textContent)).toEqual([
+      `MovedS2→ Inbox ${inboxLabel}GapsExample article · example.test`,
+      'DeletedS1GapsExample article · example.test',
+    ]);
+    expect($('result-count').textContent).toMatch(/^2 of \d+ entries$/);
+    // A moved source opens from its entry.
+    entries()[0]!.click();
+    expect($('reader').querySelector('.status-line')?.textContent).toMatch(/Moved with 1 capture to Inbox as S\d+\.$/);
+    $('open-moved').click();
+    expect([$('list-title').textContent, location.hash]).toEqual(['Inbox', `#view=inbox&source=${second.source.id}`]);
+    Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((n) => n.textContent?.startsWith('Deletion log'))!.click();
+    sessionFilter.value = session.id;
+    sessionFilter.dispatchEvent(new Event('change'));
+    entries()[1]!.click();
+    expect([$('reader').querySelector('h3')?.textContent, $('reader').querySelector('.dl-url')?.textContent]).toEqual(['S1 deleted', capture.source.dedup_url]);
+    expect(location.hash).toMatch(/^#view=deletion-log&entry=/);
+    // The search finds entries by a whole label, by title or by address.
+    const search = $<HTMLInputElement>('search');
+    const finds = async (words: string, verbs: string[]) => {
+      search.value = words;
+      search.dispatchEvent(new Event('input'));
+      await vi.waitFor(() => expect(entries().map((e) => e.querySelector('.dl-verb')?.textContent)).toEqual(verbs));
+    };
+    await finds('s1', ['Deleted']);
+    await finds('"example article" gaps-second', ['Moved']);
+    search.value = 'no such page';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect($('list-empty').textContent).toBe('No entries match the search and session.Clear filters'));
+    $('clear-filters').click();
+    expect(sessionFilter.value).toBe('all');
+
+    // One entry is removed after confirmation; Clear log removes the rest.
+    $('remove-entry').click();
+    await vi.waitFor(() => expect($('library-dialog').querySelector('h2')!.textContent).toBe('Remove this entry from the deletion log?'));
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Entry removed from the deletion log.'));
+    expect(entries().filter((e) => e.textContent?.includes('Gaps')).map((e) => e.querySelector('.dl-verb')?.textContent)).toEqual(['Moved']);
+    $('clear-log').click();
+    await vi.waitFor(() => expect($('library-dialog').querySelector('h2')!.textContent).toBe('Clear the deletion log?'));
+    $('confirm-delete').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Deletion log cleared.'));
+    expect([$('result-count').textContent, $<HTMLButtonElement>('clear-log').disabled]).toEqual(['0 entries', true]);
+  });
 });

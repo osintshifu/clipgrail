@@ -1,18 +1,21 @@
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, PageCode, Session, Snapshot, SnapshotMeta, Source } from './model';
+import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, PageCode, Removal, RemovalAction, RemovedSource, Session, Snapshot, SnapshotMeta, Source } from './model';
+import { capturedTitle } from './selection';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 7;
+export const DB_SCHEMA_VERSION = 8;
 /** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
-export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
+export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs', 'removals'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
 /** Texts of successful snapshots, one record per snapshot, kept apart so lists and the library read without them. */
 const TEXT_STORE = 'snapshot_texts';
 /** Small images of the clipped pages, one per capture. Not part of backups. */
 const THUMB_STORE = 'thumbnails';
 const CAPTURE_STORES = ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE, THUMB_STORE] as const;
+/** The deletion log: one record per removal that retired labels. */
+const REMOVALS = 'removals';
 
 interface SnapshotText {
   snapshot_id: string;
@@ -116,6 +119,10 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
       if (event.oldVersion >= 1 && event.oldVersion < 7) {
         // v7: page and selection captures keep the page code read when they were clipped. Earlier captures have none.
         defaults.captures.page_code = null;
+      }
+      if (event.oldVersion < 8) {
+        // v8: the deletion log, an entry for each removal that retired labels.
+        db.createObjectStore('removals', { keyPath: 'id' });
       }
       for (const [store, fields] of Object.entries(defaults)) {
         if (Object.keys(fields).length && request.transaction) backfill(request.transaction.objectStore(store), fields);
@@ -443,6 +450,50 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
   return { source, capture, snapshot, isNewSource, captureCount: all.filter((c) => c.kind !== 'visit').length };
 }
 
+// The deletion log
+
+/** Visits are returns to a page, not captures the user saved. */
+const savedCount = (captures: Capture[]) => captures.filter((c) => c.kind !== 'visit').length;
+
+/**
+ * What the deletion log keeps of a source whose label is retired, read before
+ * it goes: its label and session, how many captures it had and, for a deleted
+ * source (`withPage`), its title and address.
+ */
+async function removedSource(tx: IDBTransaction, source: Source, captures: Capture[], withPage: boolean): Promise<RemovedSource> {
+  const session = await getSession(tx, source.session_id);
+  let title: string | null = null;
+  if (withPage) {
+    const saved = captures.filter((c) => c.kind !== 'visit').sort((a, b) => a.captured_at.localeCompare(b.captured_at));
+    const snapshots = await Promise.all(saved.map((c) => (c.snapshot_id ? (result(tx.objectStore('snapshots').get(c.snapshot_id)) as Promise<SnapshotMeta | undefined>) : undefined)));
+    title = capturedTitle({ source, captures: saved.map((capture, i) => ({ capture, snapshot: snapshots[i] })), visits: [] });
+  }
+  return { session_id: source.session_id, session_name: session.name, number: source.number, title, url: withPage ? source.dedup_url : null, captures: savedCount(captures) };
+}
+
+/** Notes a removal in the deletion log, in the transaction that removes; nothing when it retired no label. */
+function logRemoval(tx: IDBTransaction, action: RemovalAction, sources: RemovedSource[], jobs = 0, movedTo: Removal['moved_to'] = null): void {
+  if (!sources.length) return;
+  const removal: Removal = { id: crypto.randomUUID(), removed_at: new Date().toISOString(), action, sources, jobs, moved_to: movedTo };
+  tx.objectStore(REMOVALS).add(removal);
+}
+
+/** The deletion log, newest first. */
+export function loadRemovals(db: IDBDatabase): Promise<Removal[]> {
+  return inTransaction(db, [REMOVALS], 'readonly', async (tx) => {
+    const removals = (await result(tx.objectStore(REMOVALS).getAll())) as Removal[];
+    return removals.sort((a, b) => b.removed_at.localeCompare(a.removed_at));
+  });
+}
+
+/** Deletes one entry of the deletion log, or with no ID all of them. */
+export function deleteRemovals(db: IDBDatabase, id?: string): Promise<void> {
+  return inTransaction(db, [REMOVALS], 'readwrite', async (tx) => {
+    if (id === undefined) tx.objectStore(REMOVALS).clear();
+    else tx.objectStore(REMOVALS).delete(id);
+  });
+}
+
 export interface UndoResult {
   /** False when the capture no longer exists (already undone). */
   removed: boolean;
@@ -473,14 +524,33 @@ async function removeCapture(tx: IDBTransaction, capture: Capture): Promise<Capt
   return links;
 }
 
+/**
+ * Removes a capture as removeCapture does and, when its source goes with it,
+ * returns what the deletion log keeps of the source: its label only.
+ */
+async function undoOne(tx: IDBTransaction, capture: Capture): Promise<{ remaining: Capture[]; removed: RemovedSource | null }> {
+  const source = (await result(tx.objectStore('sources').get(capture.source_id))) as Source | undefined;
+  const before = source ? await removedSource(tx, source, await capturesOf(tx, [source.id]), false) : null;
+  const remaining = await removeCapture(tx, capture);
+  return { remaining, removed: remaining.length === 0 ? before : null };
+}
+
 /** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
 export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<UndoResult[]> {
-  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
+  return inTransaction(db, ['sessions', 'captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources', REMOVALS], 'readwrite', async (tx) => {
     const results: UndoResult[] = [];
+    const retired: RemovedSource[] = [];
     for (const captureId of captureIds) {
       const capture = (await result(tx.objectStore('captures').get(captureId))) as Capture | undefined;
-      results.push(capture ? { removed: true, sourceRemoved: (await removeCapture(tx, capture)).length === 0 } : { removed: false, sourceRemoved: false });
+      if (!capture) {
+        results.push({ removed: false, sourceRemoved: false });
+        continue;
+      }
+      const { removed } = await undoOne(tx, capture);
+      if (removed) retired.push(removed);
+      results.push({ removed: true, sourceRemoved: !!removed });
     }
+    logRemoval(tx, 'undo', retired);
     return results;
   });
 }
@@ -499,11 +569,16 @@ export interface SavedCapture {
  * with other captures saved since, such as a clip of the page. Visits are
  * removed and not counted: they are not pages.
  */
-export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promise<{ removed: number; kept: number; stayed: number }> {
-  return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
+export function undoSavedCaptures(
+  db: IDBDatabase,
+  saved: SavedCapture[],
+  action: Extract<RemovalAction, 'undo' | 'review'> = 'undo',
+): Promise<{ removed: number; kept: number; stayed: number }> {
+  return inTransaction(db, ['sessions', 'captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources', REMOVALS], 'readwrite', async (tx) => {
     let removed = 0;
     let kept = 0;
     let stayed = 0;
+    const retired: RemovedSource[] = [];
     for (const { capture_id, session_id } of saved) {
       const capture = (await result(tx.objectStore('captures').get(capture_id))) as Capture | undefined;
       if (!capture) continue;
@@ -516,10 +591,13 @@ export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promi
         kept += 1;
         continue;
       }
+      const undone = await undoOne(tx, capture);
+      if (undone.removed) retired.push(undone.removed);
       // Kept by a capture saved since, such as a clip; a link saved before does not count, the recorded page is gone.
-      if ((await removeCapture(tx, capture)).some((c) => c.kind !== 'link')) stayed += 1;
+      if (undone.remaining.some((c) => c.kind !== 'link')) stayed += 1;
       removed += 1;
     }
+    logRemoval(tx, action, retired);
     return { removed, kept, stayed };
   });
 }
@@ -569,12 +647,13 @@ function joinNotes(...notes: string[]): string {
  * S-number stays retired in the original session.
  */
 export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: string): Promise<MoveResult> {
-  return inTransaction(db, CAPTURE_STORES, 'readwrite', async (tx) => {
+  return inTransaction(db, [...CAPTURE_STORES, REMOVALS], 'readwrite', async (tx) => {
     const sources = tx.objectStore('sources');
     const source = (await result(sources.get(sourceId))) as Source | undefined;
     if (!source) throw new Error('This source no longer exists.');
     if (source.session_id === targetSessionId) throw new Error('The source is already in this session.');
     const target = await getSession(tx, targetSessionId);
+    const retired = await removedSource(tx, source, await capturesOf(tx, [source.id]), false);
     const existing = (await result(sources.index('session_dedup_url').get([target.id, source.dedup_url]))) as
       | Source
       | undefined;
@@ -598,6 +677,7 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
       const snapshot = (await result(snapshots.get(capture.snapshot_id))) as SnapshotMeta | undefined;
       if (snapshot) snapshots.put({ ...snapshot, source_id: moved.id, session_id: target.id });
     }
+    logRemoval(tx, 'move', [retired], 0, { session_id: target.id, session_name: target.name, number: moved.number, joined: !!existing });
     return { source: moved, joined: !!existing };
   });
 }
@@ -648,9 +728,6 @@ function jobsIncluding(tx: IDBTransaction, sources: Source[], captures: Capture[
   });
 }
 
-/** Captures other than visits: what the user saved. */
-const savedCount = (captures: Capture[]) => captures.filter((c) => c.kind !== 'visit').length;
-
 /** All captures of these sources. */
 async function capturesOf(tx: IDBTransaction, sourceIds: string[]): Promise<Capture[]> {
   const index = tx.objectStore('captures').index('source');
@@ -675,7 +752,7 @@ function deleteCaptures(tx: IDBTransaction, captures: Capture[]): void {
  * S-number is unchanged, so the source's label is never given to another source.
  */
 export function deleteSource(db: IDBDatabase, sourceId: string): Promise<DeletionCounts> {
-  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs', REMOVALS], 'readwrite', async (tx) => {
     const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
     if (!source) throw new Error('This source no longer exists.');
     return removeSources(tx, [source]);
@@ -684,16 +761,19 @@ export function deleteSource(db: IDBDatabase, sourceId: string): Promise<Deletio
 
 /** Deletes several sources in one transaction, as deleteSource does; sources already gone are skipped. */
 export function deleteSources(db: IDBDatabase, sourceIds: string[]): Promise<DeletionCounts> {
-  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs', REMOVALS], 'readwrite', async (tx) => {
     const found = await Promise.all([...new Set(sourceIds)].map((id) => result(tx.objectStore('sources').get(id)) as Promise<Source | undefined>));
     return removeSources(tx, found.filter((source): source is Source => !!source));
   });
 }
 
+/** Deletes the sources, notes them in the deletion log, and returns what went. */
 async function removeSources(tx: IDBTransaction, sources: Source[]): Promise<DeletionCounts> {
   const ids = sources.map((source) => source.id);
   const captures = await capturesOf(tx, ids);
   const jobs = await jobsIncluding(tx, sources, captures);
+  const retired = await Promise.all(sources.map((source) => removedSource(tx, source, captures.filter((c) => c.source_id === source.id), true)));
+  logRemoval(tx, 'delete', retired, jobs.length);
   deleteCaptures(tx, captures);
   for (const job of jobs) tx.objectStore('jobs').delete(job.id);
   for (const id of ids) tx.objectStore('sources').delete(id);
@@ -701,16 +781,18 @@ async function removeSources(tx: IDBTransaction, sources: Source[]): Promise<Del
 }
 
 /** A session's sources and captures, and the Research Jobs that deleting them removes: its own and any other that includes one of its sources. */
-async function sessionContents(tx: IDBTransaction, sessionId: string): Promise<{ sourceIds: string[]; captures: Capture[]; jobIds: Set<string> }> {
+async function sessionContents(tx: IDBTransaction, sessionId: string): Promise<{ sources: Source[]; sourceIds: string[]; captures: Capture[]; jobIds: Set<string> }> {
   const sources = (await result(tx.objectStore('sources').index('session').getAll(sessionId))) as Source[];
   const captures = (await result(tx.objectStore('captures').index('session').getAll(sessionId))) as Capture[];
   const jobs = [...(await sessionJobs(tx, sessionId)), ...(await jobsIncluding(tx, sources, captures))];
-  return { sourceIds: sources.map((source) => source.id), captures, jobIds: new Set(jobs.map((job) => job.id)) };
+  return { sources, sourceIds: sources.map((source) => source.id), captures, jobIds: new Set(jobs.map((job) => job.id)) };
 }
 
-/** Deletes every source, capture, snapshot, text and Research Job of a session; the session record stays. */
-async function clearSession(tx: IDBTransaction, sessionId: string): Promise<DeletionCounts> {
-  const { sourceIds, captures, jobIds } = await sessionContents(tx, sessionId);
+/** Deletes every source, capture, snapshot, text and Research Job of a session, noted in the deletion log; the session record stays. */
+async function clearSession(tx: IDBTransaction, sessionId: string, action: Extract<RemovalAction, 'delete_session' | 'empty_inbox'>): Promise<DeletionCounts> {
+  const { sources, sourceIds, captures, jobIds } = await sessionContents(tx, sessionId);
+  const retired = await Promise.all(sources.map((source) => removedSource(tx, source, captures.filter((c) => c.source_id === source.id), true)));
+  logRemoval(tx, action, retired.sort((a, b) => a.number - b.number), jobIds.size);
   deleteCaptures(tx, captures);
   for (const id of sourceIds) tx.objectStore('sources').delete(id);
   for (const id of jobIds) tx.objectStore('jobs').delete(id);
@@ -720,9 +802,9 @@ async function clearSession(tx: IDBTransaction, sessionId: string): Promise<Dele
 /** Deletes a session with everything in it, including its Research Jobs. The Inbox can only be emptied. */
 export function deleteSession(db: IDBDatabase, sessionId: string): Promise<DeletionCounts> {
   if (sessionId === INBOX_SESSION_ID) return Promise.reject(new Error('The Inbox cannot be deleted. Empty it instead.'));
-  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', async (tx) => {
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs', REMOVALS], 'readwrite', async (tx) => {
     await getSession(tx, sessionId);
-    const removed = await clearSession(tx, sessionId);
+    const removed = await clearSession(tx, sessionId, 'delete_session');
     tx.objectStore('sessions').delete(sessionId);
     return removed;
   });
@@ -730,7 +812,7 @@ export function deleteSession(db: IDBDatabase, sessionId: string): Promise<Delet
 
 /** Deletes everything in the Inbox. The Inbox stays with its prompt, notes and S-number counter. */
 export function emptyInbox(db: IDBDatabase): Promise<DeletionCounts> {
-  return inTransaction(db, [...CAPTURE_STORES, 'jobs'], 'readwrite', (tx) => clearSession(tx, INBOX_SESSION_ID));
+  return inTransaction(db, [...CAPTURE_STORES, 'jobs', REMOVALS], 'readwrite', (tx) => clearSession(tx, INBOX_SESSION_ID, 'empty_inbox'));
 }
 
 /** What deleting a source (with `sourceId`) or a whole session would remove, for the confirmation. */
@@ -868,21 +950,24 @@ export interface LibraryData {
   sessions: Session[];
   /** Sources of all sessions, with snapshot metadata but without snapshot texts. */
   sources: SourceEntry<SnapshotMeta>[];
+  /** The deletion log, newest first. */
+  removals: Removal[];
 }
 
 /** Reads every session and source with captures and snapshot metadata, without any snapshot text, in one consistent read. */
 export function loadLibrary(db: IDBDatabase): Promise<LibraryData> {
-  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE], 'readonly', async (tx) => {
-    const [sessions, sources, captures, snapshots, textIds] = await Promise.all([
+  return inTransaction(db, ['sessions', 'sources', 'captures', 'snapshots', TEXT_STORE, REMOVALS], 'readonly', async (tx) => {
+    const [sessions, sources, captures, snapshots, textIds, removals] = await Promise.all([
       result(tx.objectStore('sessions').getAll()) as Promise<Session[]>,
       result(tx.objectStore('sources').getAll()) as Promise<Source[]>,
       result(tx.objectStore('captures').getAll()) as Promise<Capture[]>,
       result(tx.objectStore('snapshots').getAll()) as Promise<SnapshotMeta[]>,
       // Keys only: the texts themselves are read one at a time, when a source is opened.
       result(tx.objectStore(TEXT_STORE).getAllKeys()).then((keys) => new Set(keys as string[])),
+      result(tx.objectStore(REMOVALS).getAll()) as Promise<Removal[]>,
     ]);
     const checked = snapshots.map((s) => (s.status === 'ok' && !textIds.has(s.id) ? textMissing(s) : s));
-    return { sessions: sortSessions(sessions), sources: groupSources(sources, captures, checked) };
+    return { sessions: sortSessions(sessions), sources: groupSources(sources, captures, checked), removals: removals.sort((a, b) => b.removed_at.localeCompare(a.removed_at)) };
   });
 }
 
@@ -1005,6 +1090,7 @@ export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<voi
     const current = new Map(
       ((await result(tx.objectStore('sessions').getAll())) as Session[]).map((s) => [s.id, s.next_source_number]),
     );
+    const since = await logSinceBackup(tx, data);
     for (const store of [...DATA_STORES, TEXT_STORE, THUMB_STORE]) tx.objectStore(store).clear();
     for (const store of DATA_STORES) {
       if (store === 'snapshots') continue;
@@ -1023,7 +1109,29 @@ export function replaceAllData(db: IDBDatabase, data: DataSnapshot): Promise<voi
       tx.objectStore('snapshots').add(meta);
       if (text) tx.objectStore(TEXT_STORE).add(text);
     }
+    for (const removal of since) tx.objectStore(REMOVALS).add(removal);
   });
+}
+
+/**
+ * The deletion log outlives a restore, as the labels do: the entries made
+ * since the backup stay, without the labels the backup has back in use, and
+ * the sources whose labels the backup does not have are noted as replaced,
+ * with their titles and addresses.
+ */
+async function logSinceBackup(tx: IDBTransaction, data: DataSnapshot): Promise<Removal[]> {
+  const label = (s: { session_id: string; number: number }) => `${s.session_id}\u0000${s.number}`;
+  const live = new Set((data.sources as Source[]).map(label));
+  const inBackup = new Set((data.removals as Removal[]).map((r) => r.id));
+  const since = ((await result(tx.objectStore(REMOVALS).getAll())) as Removal[]).flatMap((r) => {
+    const sources = r.sources.filter((s) => !live.has(label(s)));
+    return inBackup.has(r.id) || !sources.length ? [] : [{ ...r, sources }];
+  });
+  const replaced = ((await result(tx.objectStore('sources').getAll())) as Source[]).filter((s) => !live.has(label(s)));
+  const retired = await Promise.all(replaced.map(async (source) => removedSource(tx, source, await capturesOf(tx, [source.id]), true)));
+  retired.sort((a, b) => a.session_name.localeCompare(b.session_name) || a.number - b.number);
+  if (retired.length) since.push({ id: crypto.randomUUID(), removed_at: new Date().toISOString(), action: 'restore', sources: retired, jobs: 0, moved_to: null });
+  return since;
 }
 
 // Thumbnails

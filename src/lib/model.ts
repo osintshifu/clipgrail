@@ -242,3 +242,40 @@ export type PageExtraction = (
   /** Read from the page code beside the text; null when that failed. */
   page_code?: PageCode | null;
 };
+
+/**
+ * How labels stopped being used: a source deleted on its own or with others,
+ * with its session or when the Inbox was emptied, removed with Undo or in the
+ * review after a recording, moved to another session, or replaced when a
+ * backup without it was restored.
+ */
+export type RemovalAction = 'delete' | 'delete_session' | 'empty_inbox' | 'undo' | 'review' | 'move' | 'restore';
+
+/** A source whose label a removal retired, as it was then. */
+export interface RemovedSource {
+  session_id: string;
+  /** The session's name then; the session may be renamed or deleted since. */
+  session_name: string;
+  number: number;
+  /** Title and address of a deleted source, or one a restore replaced. Undo, the review after a recording and a move keep none. */
+  title: string | null;
+  url: string | null;
+  /** Captures the source had, visits not counted. */
+  captures: number;
+}
+
+/**
+ * An entry of the deletion log: labels are never given to another source, so
+ * each retired one is noted with what it was, to explain gaps in a session's
+ * labels.
+ */
+export interface Removal {
+  id: string;
+  removed_at: string;
+  action: RemovalAction;
+  sources: RemovedSource[];
+  /** Research Jobs deleted with the sources. */
+  jobs: number;
+  /** For a move: the session the source went to and its label there, which it got or found when it joined a source with the same address. */
+  moved_to: { session_id: string; session_name: string; number: number; joined: boolean } | null;
+}

@@ -1554,7 +1554,7 @@ async function checkRestoreFile(file: File): Promise<void> {
   const s = check.summary;
   showRestoreSheet(
     `Backup from ${fmtTime(s.created_at)} is valid: ${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}, ${plural(s.jobs, 'job')}; all texts match their SHA-256.\n` +
-      `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). Back up the current data first if you may need it.`,
+      `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). The deletion log keeps its entries and notes the sources the backup does not have. Back up the current data first if you may need it.`,
     true,
   );
 }
@@ -1839,7 +1839,7 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
   remove.addEventListener('click', () => {
     const chosen = unchecked().map((row) => row.page.saved);
     remove.disabled = true;
-    undoSavedCaptures(db, chosen).then(
+    undoSavedCaptures(db, chosen, 'review').then(
       (result) => {
         if (sheetKind === 'review-recording') closeSheet();
         const gone = result.removed - result.stayed;

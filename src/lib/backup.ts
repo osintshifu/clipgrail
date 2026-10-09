@@ -1,7 +1,7 @@
 import type { DataSnapshot, DataStore } from './db';
 import { DATA_STORES, DB_SCHEMA_VERSION } from './db';
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, Session, Snapshot, Source } from './model';
+import type { Capture, Removal, Session, Snapshot, Source } from './model';
 import type { JobSettings } from './research-job';
 import type { Preset } from './settings';
 import { mergePresets } from './settings';
@@ -160,6 +160,9 @@ const JOB_TEXT_KEYS = ['text', 'character_count', 'available_character_count', '
 const JOB_SNAPSHOT_KEYS = [...JOB_TEXT_KEYS, 'snapshot_id', 'captured_at', 'extraction_method', 'fallback_reason', 'stored_sha256', 'truncated_at_capture', 'original_character_count'] as const;
 const JOB_SELECTION_KEYS = [...JOB_TEXT_KEYS, 'capture_id', 'captured_at', 'truncated_at_capture', 'method', 'frame_source_unestablished'] as const;
 const JOB_STATS_KEYS = ['source_count', 'character_count', 'utf8_bytes', 'missing_count', 'partial_count'] as const;
+const REMOVAL_KEYS = ['id', 'removed_at', 'action', 'sources', 'jobs', 'moved_to'] as const;
+const REMOVED_SOURCE_KEYS = ['session_id', 'session_name', 'number', 'title', 'url', 'captures'] as const;
+const MOVED_TO_KEYS = ['session_id', 'session_name', 'number', 'joined'] as const;
 
 function cleanCapture(c: Rec): Rec {
   const out = pick(c, CAPTURE_KEYS);
@@ -183,6 +186,13 @@ function cleanJob(j: Rec): Rec {
     if (source.capture_times !== null) s.capture_times = (source.capture_times as Rec[]).map((t) => pick(t, ['capture_id', 'kind', 'captured_at']));
     return s;
   });
+  return out;
+}
+
+function cleanRemoval(r: Rec): Rec {
+  const out = pick(r, REMOVAL_KEYS);
+  out.sources = (r.sources as Rec[]).map((s) => pick(s, REMOVED_SOURCE_KEYS));
+  if (r.moved_to !== null) out.moved_to = pick(r.moved_to as Rec, MOVED_TO_KEYS);
   return out;
 }
 
@@ -386,6 +396,44 @@ function validateJob(j: Rec, sessions: Map<string, Rec>): void {
   }
 }
 
+/**
+ * An entry of the deletion log. Its sessions may be gone, but a label of a
+ * session the backup has must be one that session gave out. Only a deleted
+ * source keeps its title and address, and only a move has a target.
+ */
+function validateRemoval(r: Rec, sessions: Map<string, Rec>, liveLabels: Set<string>): void {
+  const where = `removal ${String(r.id)}`;
+  str(r, 'removed_at', where, false);
+  const action = oneOf(r, 'action', ['delete', 'delete_session', 'empty_inbox', 'undo', 'review', 'move', 'restore'] as const, where);
+  const deleted = action === 'delete' || action === 'delete_session' || action === 'empty_inbox' || action === 'restore';
+  const sources = list(r.sources, `${where}: "sources"`);
+  if (!sources.length) throw new Invalid(`${where}: no labels.`);
+  if (action === 'move' && sources.length !== 1) throw new Invalid(`${where}: a move retires one label.`);
+  for (const s of sources) {
+    const sessionId = str(s, 'session_id', where, false);
+    const session = sessions.get(sessionId);
+    str(s, 'session_name', where, false);
+    const number = int(s, 'number', where, 1, MAX_SOURCE_NUMBER);
+    if (session && number >= (session.next_source_number as number)) throw new Invalid(`${where}: S${number} is not below the session's next number.`);
+    if (liveLabels.has(`${sessionId}\u0000${number}`)) throw new Invalid(`${where}: S${number} is still the label of a source.`);
+    const page = [strOrNull(s, 'title', where), webUrlOrNull(s, 'url', where)];
+    if (!deleted && page.some((v) => v !== null)) throw new Invalid(`${where}: only a deleted source keeps its title and address.`);
+    int(s, 'captures', where);
+  }
+  // Only a deletion takes Research Jobs with it.
+  int(r, 'jobs', where, 0, action === 'delete' || action === 'delete_session' || action === 'empty_inbox' ? Number.MAX_SAFE_INTEGER : 0);
+  if (action === 'move') {
+    const to = obj(r.moved_to, `${where} moved_to`);
+    const target = sessions.get(str(to, 'session_id', where, false));
+    str(to, 'session_name', where, false);
+    const number = int(to, 'number', where, 1, MAX_SOURCE_NUMBER);
+    if (target && number >= (target.next_source_number as number)) throw new Invalid(`${where}: the target S${number} is not below its session's next number.`);
+    bool(to, 'joined', where);
+  } else if (r.moved_to !== null) {
+    throw new Invalid(`${where}: only a move has a target.`);
+  }
+}
+
 async function checkText(text: string, sha256: string, characterCount: number, where: string): Promise<void> {
   if (text !== text.toWellFormed()) throw new Invalid(`${where}: text is not well-formed Unicode.`);
   if (countCharacters(text) !== characterCount) throw new Invalid(`${where}: character_count does not match the text.`);
@@ -418,15 +466,16 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
     // Version 4 only added thumbnails, which backups leave out: version 3 data is the same.
     // Version 5 added merged_ids to sources and frame to captures; version 6 added important to sources, navigation to captures and visits;
-    // version 7 added page_code to captures.
-    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, 5, 6, DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    // version 7 added page_code to captures; version 8 the deletion log.
+    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, 5, 6, 7, DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);
     const dataRoot = obj(root.data, 'Backup data');
     const data = {} as Record<(typeof DATA_STORES)[number], Rec[]>;
     for (const store of DATA_STORES) {
-      const list = dataRoot[store];
+      // Backups made before the deletion log have none.
+      const list = store === 'removals' && schemaVersion < 8 ? (dataRoot[store] ?? []) : dataRoot[store];
       if (!Array.isArray(list)) throw new Invalid(`Backup data: "${store}" must be a list.`);
       data[store] = list.map((item, i) => obj(item, `${store}[${i}]`));
     }
@@ -575,6 +624,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     }
 
     for (const j of uniqueIds(data.jobs, 'jobs').values()) validateJob(j, sessions);
+    for (const r of uniqueIds(data.removals, 'removals').values()) validateRemoval(r, sessions, numbers);
 
     const settingsRoot = obj(root.settings, 'Backup settings');
     const activeSessionId = str(settingsRoot, 'active_session_id', 'Backup settings', false);
@@ -603,6 +653,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
         captures: data.captures.map(cleanCapture) as unknown as Capture[],
         snapshots: data.snapshots.map((r) => pick(r, SNAPSHOT_KEYS[r.status as keyof typeof SNAPSHOT_KEYS])) as unknown as Snapshot[],
         jobs: data.jobs.map(cleanJob),
+        removals: data.removals.map(cleanRemoval) as unknown as Removal[],
       },
       settings,
     };
