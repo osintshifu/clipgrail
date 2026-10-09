@@ -26,7 +26,7 @@ import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../../lib/library';
 import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
-import { fold, parseSearch, termRanges, textHit } from '../../lib/search';
+import { parseSearch, storedRanges, textHit } from '../../lib/search';
 import type { SearchQuery } from '../../lib/search';
 import { INBOX_SESSION_ID } from '../../lib/model';
 import type { Session } from '../../lib/model';
@@ -464,6 +464,7 @@ function renderList(): void {
   }
   markSelected();
   renderSelection();
+  renderNarrowTop(selectedRow());
 }
 
 function clearFilters(): void {
@@ -515,7 +516,11 @@ function editNote(kind: 'source' | 'capture', id: string, value: string, label: 
       // Notes are searched: the list follows the edit after a pause in typing; the reader is not redrawn.
       if (parseSearch(filter.query).terms.length) {
         clearTimeout(noteSearchTimer);
-        noteSearchTimer = setTimeout(renderList, 300);
+        noteSearchTimer = setTimeout(() => {
+          const restore = keepListFocus();
+          renderList();
+          restore();
+        }, 300);
       }
     },
   });
@@ -567,7 +572,7 @@ function highlightMatches(): void {
   for (const box of terms.length ? document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy])') : []) {
     const node = box.firstChild;
     if (!(node instanceof Text)) continue;
-    for (const [start, end] of termRanges(fold(node.data), terms, MAX_HIGHLIGHTS)) {
+    for (const [start, end] of storedRanges(node.data, terms, MAX_HIGHLIGHTS)) {
       const range = new Range();
       range.setStart(node, start);
       range.setEnd(node, end);
@@ -1029,7 +1034,6 @@ function bind(): void {
       filter.query = (event.target as HTMLInputElement).value;
       renderList();
       highlightMatches();
-      renderNarrowTop(selectedRow());
     }, 120);
   });
   $<HTMLSelectElement>('status-filter').addEventListener('change', (event) => {

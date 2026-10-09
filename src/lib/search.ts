@@ -119,6 +119,25 @@ export function termRanges(folded: string, terms: string[], limit = Infinity): A
   return joined;
 }
 
+/**
+ * Matches of the terms in a text as stored (see termRanges). A text that
+ * stores accents as separate characters is searched in the composed form and
+ * the matches are mapped back, so the text itself is shown unchanged.
+ */
+export function storedRanges(text: string, terms: string[], limit = Infinity): Array<[number, number]> {
+  if (searchable(text) === text) return termRanges(fold(text), terms, limit);
+  let composed = '';
+  // Position in `text` of every code unit of `composed`, and the end.
+  const at: number[] = [];
+  for (const match of text.matchAll(/\P{M}\p{M}*|\p{M}+/gu)) {
+    const part = searchable(match[0]);
+    for (let k = 0; k < part.length; k++) at.push(match.index + Math.min(k, match[0].length - 1));
+    composed += part;
+  }
+  at.push(text.length);
+  return termRanges(fold(composed), terms, limit).map(([start, end]) => [at[start]!, at[end]!]);
+}
+
 /** A short passage from a text, with the matched terms marked (positions within `text`). */
 export interface Snippet {
   text: string;

@@ -4,7 +4,7 @@ import { commitCapture, createSession, loadLibrary, updateSourceNote, visitSnaps
 import { filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../src/lib/library';
 import type { LibraryFilter, TextHits } from '../src/lib/library';
 import { INBOX_SESSION_ID } from '../src/lib/model';
-import { parseSearch, textHit } from '../src/lib/search';
+import { parseSearch, storedRanges, textHit } from '../src/lib/search';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
 const all: LibraryFilter = { view: 'all', query: '', status: 'any', sort: 'last-desc' };
@@ -84,6 +84,9 @@ describe('library', () => {
     expect(await search('zrodla istanbul')).toEqual(['xn--w-uga1v8h.pl Saved text: źródła,İstanbul']);
     expect(await search('ΑΣ')).toEqual(['xn--w-uga1v8h.pl Saved text: ΑΣ']);
     expect(await search('site:żółw.pl')).toEqual(['xn--w-uga1v8h.pl -']);
+    // The reader marks the words in the text as stored, accents written separately included.
+    const stored = 'Raport: źródła.'.normalize('NFD');
+    expect(storedRanges(stored, parseSearch('zrodla').terms).map(([a, b]) => stored.slice(a, b).normalize('NFC'))).toEqual(['źródła']);
     // A qualifier without a usable value is an ordinary word, so it narrows rather than widens.
     expect(await search('after:yesterday')).toEqual([]);
   });

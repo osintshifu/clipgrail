@@ -197,21 +197,24 @@ export function carriesCredential(input: string): boolean {
 /**
  * The host a site is written as, in the form Chrome reports it (lower case,
  * international names in Punycode), or null when the value is not a site.
- * A scheme, port, path and trailing dot are dropped, so a pasted address works.
+ * A scheme, port, path and trailing dot are dropped, so a pasted address
+ * works, and so is a leading `*.` or `.`, since a site covers its subdomains.
  */
 export function siteHost(value: string): string | null {
-  const bare = value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const bare = value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^\*?\./, '');
   if (!bare || /\s/.test(bare)) return null;
   try {
-    return new URL(`http://${bare}`).hostname.replace(/\.$/, '') || null;
+    const host = new URL(`http://${bare}`).hostname.replace(/\.$/, '');
+    return host && !/\*|\.\.|^\.|\.$/.test(host) ? host : null;
   } catch {
     return null;
   }
 }
 
-/** True when the host is the site itself or one of its subdomains. */
+/** True when the host (with or without a trailing dot) is the site itself or one of its subdomains. */
 export function isOnSite(host: string, site: string): boolean {
-  return host === site || host.endsWith(`.${site}`);
+  const name = host.replace(/\.$/, '');
+  return name === site || name.endsWith(`.${site}`);
 }
 
 /** Longest embedded-frame address kept with a selection; a longer one (such as a data: URL) is recorded as not read. */

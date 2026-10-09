@@ -55,6 +55,7 @@ describe('recording', () => {
     const excluded = ['google.com', 'online.mybank.example'];
     expect(await recordVisit(db, INBOX_SESSION_ID, { url: 'https://mail.google.com/mail/u/0', title: '', found_on: null, at }, excluded)).toBeNull();
     expect(await recordVisit(db, INBOX_SESSION_ID, { url: 'https://online.mybank.example/accounts', title: '', found_on: null, at }, excluded)).toBeNull();
+    expect(await recordVisit(db, INBOX_SESSION_ID, { url: 'https://mail.google.com./mail/u/0', title: '', found_on: null, at }, excluded)).toBeNull();
     // A site that only ends with the same letters is recorded; the excluded page it was opened from is not kept.
     const saved = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://notgoogle.com/news', title: '', found_on: 'https://mail.google.com/mail/u/0', at }, excluded);
     expect(saved?.capture.found_on).toBeNull();

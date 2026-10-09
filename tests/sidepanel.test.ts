@@ -370,7 +370,7 @@ describe('side panel', () => {
     await vi.waitFor(() => expect($('sheet-body').querySelector('.alert-text')?.textContent).toBe('Not a site: not a site. Write a site such as example.org, one per line.'));
     expect(fake.local.recordingExcludedSites).toBeUndefined();
 
-    $<HTMLTextAreaElement>('excluded-sites').value = 'https://Mail.Google.com/mail/u/0\n\nonline.mybank.example\nmail.google.com';
+    $<HTMLTextAreaElement>('excluded-sites').value = 'https://Mail.Google.com/mail/u/0\n\n*.online.mybank.example\nmail.google.com';
     save();
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('2 sites are not recorded.'));
     expect(fake.local.recordingExcludedSites).toEqual(['mail.google.com', 'online.mybank.example']);
