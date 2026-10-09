@@ -6,7 +6,7 @@ How ClipGrail collects, organizes and exports research material, what it stores,
 
 The side panel has two views: **Clips** for clipping and reviewing sources and **Research Job** for preparing a job. Every capture goes to the active session, so ClipGrail does not ask where to save it.
 
-Clicking the toolbar icon opens the side panel, and clicking it again closes it. To use a popup instead, choose **··· > Toolbar button opens > Popup**. The shortcut and the right-click menu on a page then show the result in the popup, which closes by itself when the message goes away. Right-click the toolbar icon for **Open side panel** or **Open library**.
+Clicking the toolbar icon opens ClipGrail in a popup, which closes when you click elsewhere. The shortcut and the right-click menu on a page show the result in the popup, which closes by itself when the message goes away. To keep ClipGrail open beside the page, choose **··· > Toolbar button opens > Side panel**: clicking the icon then opens the side panel, and clicking it again closes it. The popup and the side panel show the same views, so what this guide says about the side panel applies to the popup too. Right-click the toolbar icon for **Open side panel** or **Open library**.
 
 | Action | How | What is saved |
 |---|---|---|

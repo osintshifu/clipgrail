@@ -317,16 +317,16 @@ describe('side panel', () => {
     expect(fake.local.activeSessionId).toBe(INBOX_SESSION_ID);
   });
 
-  it('stores what the toolbar button opens and shows a choice made in another ClipGrail page', async () => {
+  it('opens the popup from the toolbar button until the side panel is chosen, and shows a choice made in another ClipGrail page', async () => {
     const checked = () => Array.from(document.querySelectorAll('#menu [role="menuitemradio"]')).map((b) => `${b.textContent}:${b.getAttribute('aria-checked')}`);
-    expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
-    $('menu-button').click();
-    $('open-in-popup').click();
-    await vi.waitFor(() => expect($('toast-text').textContent).toBe('The toolbar button now opens a popup.'));
-    expect(fake.local.toolbarOpens).toBe('popup');
     expect(checked()).toEqual(['Side panel:false', 'Popup:true']);
-    storeElsewhere('toolbarOpens', 'panel');
+    $('menu-button').click();
+    $('open-in-panel').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('The toolbar button now opens the side panel.'));
+    expect(fake.local.toolbarOpens).toBe('panel');
     expect(checked()).toEqual(['Side panel:true', 'Popup:false']);
+    storeElsewhere('toolbarOpens', 'popup');
+    expect(checked()).toEqual(['Side panel:false', 'Popup:true']);
   });
 
   it('records only with Chrome permission, shows what it saved and could not save, and removes the pages unchecked after it stops', async () => {

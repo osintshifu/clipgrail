@@ -57,13 +57,13 @@ npm run build
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select `.output/chrome-mv3`.
-3. Click the ClipGrail toolbar icon to open the side panel.
+3. Click the ClipGrail toolbar icon to open ClipGrail in a popup. To keep it open beside the page, choose **··· > Toolbar button opens > Side panel**.
 
 ClipGrail is not currently available in the Chrome Web Store.
 
 ### Record browsing
 
-Click **Record** in the side panel, browse normally in that Chrome window, then click **Stop**. New pages are added to the active research session with their URL, title, and, where Chrome can determine it, the page they were opened from. The extension shows **REC** while recording. After **Stop**, ClipGrail lists the recorded pages so you can remove the ones you do not need.
+Click **Record** in ClipGrail, browse normally in that Chrome window, then click **Stop**. New pages are added to the active research session with their URL, title, and, where Chrome can determine it, the page they were opened from. The extension shows **REC** while recording. After **Stop**, ClipGrail lists the recorded pages so you can remove the ones you do not need.
 
 **Recording saves page addresses, not page content.** To preserve readable text, clip the pages you need. Existing source addresses are not duplicated, and addresses with a recognised sign-in or access token, such as a password-reset link, are not recorded. Sites you list under **··· › Sites not recorded**, such as your mail or bank, are skipped with their subdomains.
 

@@ -135,7 +135,8 @@ export type OpenMode = 'panel' | 'popup';
 export const OPEN_MODE_KEY = 'toolbarOpens';
 
 export async function getOpenMode(): Promise<OpenMode> {
-  return (await browser.storage.local.get(OPEN_MODE_KEY))[OPEN_MODE_KEY] === 'popup' ? 'popup' : 'panel';
+  // The popup unless the user chose the side panel.
+  return (await browser.storage.local.get(OPEN_MODE_KEY))[OPEN_MODE_KEY] === 'panel' ? 'panel' : 'popup';
 }
 
 export async function setOpenMode(mode: OpenMode): Promise<void> {
