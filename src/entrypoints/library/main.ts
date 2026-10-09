@@ -1,7 +1,7 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setSourceImportant, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import type { DeletionText } from '../../lib/describe';
 import {
@@ -26,9 +26,11 @@ import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { ALL_SOURCES, SORT_LABELS, filterRows, libraryRows, searchSnippet, textIdsOf, versionsOf } from '../../lib/library';
 import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
-import { parseSearch, storedRanges, textHit } from '../../lib/search';
+import { inDays, localDay, parseSearch, storedRanges, textHit } from '../../lib/search';
 import type { SearchQuery } from '../../lib/search';
-import { INBOX_SESSION_ID } from '../../lib/model';
+import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
+import { arrival, ledTo, sourcesByAddress, timelineEvents } from '../../lib/timeline';
+import type { TimelineEvent } from '../../lib/timeline';
 import type { Session } from '../../lib/model';
 import type { SourceStatus } from '../../lib/selection';
 import { describeFailure } from '../../lib/selection';
@@ -42,7 +44,9 @@ let data: LibraryData = { sessions: [], sources: [] };
 let rows: LibraryRow[] = [];
 let shown: LibraryRow[] = [];
 let activeId = INBOX_SESSION_ID;
-const filter: LibraryFilter = { view: ALL_SOURCES, query: '', status: 'any', sort: 'last-desc' };
+const filter: LibraryFilter = { view: ALL_SOURCES, query: '', status: 'any', important: false, sort: 'last-desc' };
+/** The list shows the sources, or a session's timeline: every capture and visit in time order. */
+let mode: 'sources' | 'timeline' = 'sources';
 let selectedId: string | null = null;
 let viewedCaptureId: string | null = null;
 let archivedOpen = false;
@@ -77,15 +81,19 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 const count = (n: number, word: string) => `${fmtNumber(n)} ${n === 1 ? word : `${word}s`}`;
 const chip = (status: SourceStatus) => h('span', { class: `chip ${status}` }, [STATUS_LABELS[status]]);
 const sessionOf = (id: string): Session | undefined => data.sessions.find((s) => s.id === id);
+/** The timeline is one session's; All sources, also reached when the session shown was deleted, lists sources. */
+const timelineShown = () => mode === 'timeline' && filter.view !== ALL_SOURCES;
 const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : (sessionOf(filter.view)?.name ?? 'All sources'));
 const selectedRow = () => rows.find((r) => r.entry.source.id === selectedId);
 
-// ---------- Address: #view=<session ID or all>&source=<source ID> (identifiers only) ----------
+// ---------- Address: #view=<session ID or all>&mode=timeline&source=<source ID> (identifiers only) ----------
 
 function readHash(): void {
   const params = new URLSearchParams(location.hash.slice(1));
   const view = params.get('view');
   filter.view = view && (view === ALL_SOURCES || sessionOf(view)) ? view : ALL_SOURCES;
+  // The timeline is one session's; All sources shows the list.
+  mode = params.get('mode') === 'timeline' && filter.view !== ALL_SOURCES ? 'timeline' : 'sources';
   const source = params.get('source');
   if (source !== selectedId) viewedCaptureId = null;
   selectedId = source;
@@ -94,6 +102,7 @@ function readHash(): void {
 
 function writeHash(): void {
   const params = new URLSearchParams({ view: filter.view });
+  if (timelineShown()) params.set('mode', 'timeline');
   if (selectedId) params.set('source', selectedId);
   history.replaceState(null, '', `#${params.toString()}`);
 }
@@ -256,6 +265,7 @@ function renderNav(): void {
 function setView(view: string): void {
   clearPicked();
   filter.view = view;
+  if (view === ALL_SOURCES) mode = 'sources';
   if (selectedId && view !== ALL_SOURCES && selectedRow()?.session.id !== view) {
     selectedId = null;
     viewedCaptureId = null;
@@ -306,7 +316,7 @@ function listItem(row: LibraryRow, mixed: boolean, query: SearchQuery): HTMLLIEl
           tabindex: '-1',
           'data-id': id,
           'aria-current': String(id === selectedId),
-          'aria-label': `${row.label}${mixed ? ` in ${row.session.name}` : ''}: ${name}, ${STATUS_LABELS[row.status]}${found ? `, found in ${found.where}` : ''}`,
+          'aria-label': `${row.label}${mixed ? ` in ${row.session.name}` : ''}: ${name}, ${STATUS_LABELS[row.status]}${entry.source.important ? ', important' : ''}${found ? `, found in ${found.where}` : ''}`,
         },
         on: {
           click: (event) => {
@@ -321,7 +331,7 @@ function listItem(row: LibraryRow, mixed: boolean, query: SearchQuery): HTMLLIEl
         thumbCaptureImage(entry),
         faviconTile(entry.source.dedup_url),
         h('span', { class: 'src-body' }, [
-          h('span', { class: `src-title${row.title ? '' : ' untitled'}` }, [name]),
+          h('span', { class: `src-title${row.title ? '' : ' untitled'}` }, [entry.source.important ? starMark() : null, name]),
           h('span', { class: 'src-meta' }, [
             mixed ? h('span', { class: 'sess', attrs: { title: row.session.name } }, [row.session.name]) : null,
             chip(row.status),
@@ -335,13 +345,71 @@ function listItem(row: LibraryRow, mixed: boolean, query: SearchQuery): HTMLLIEl
   ]);
 }
 
+/** The filled star of a source marked important. */
+const starMark = () => h('span', { class: 'star' }, [icon('star-fill', 'Important')]);
+
+/** A line of generated words with the S-labels in it shown as labels. */
+function withLabels(text: string): Child[] {
+  return text.split(/\b(S[1-9]\d*)\b/).map((part, i) => (i % 2 ? h('span', { class: 'sid' }, [part]) : part));
+}
+
+/** One event of the timeline: when, which source, and what happened. */
+function timelineItem(event: TimelineEvent): HTMLLIElement {
+  const { entry, capture } = event;
+  const row = rows.find((r) => r.entry.source.id === entry.source.id);
+  const title = row?.title ?? entry.source.dedup_url;
+  const time = fmtTime(capture.captured_at).slice(11);
+  const what = event.detail ? `${event.verb} · ${event.detail}` : event.verb;
+  return h('li', {}, [
+    h(
+      'button',
+      {
+        class: 'src tl-event',
+        attrs: {
+          type: 'button',
+          tabindex: '-1',
+          'data-id': entry.source.id,
+          'data-capture': capture.id,
+          'aria-label': `${time}, ${what}: ${sourceLabel(entry.source)} ${title}${entry.source.important ? ', important' : ''}`,
+        },
+        on: { click: () => openEvent(entry.source.id, capture.id, true) },
+      },
+      [
+        h('span', { class: 'tl-time' }, [time]),
+        h('span', { class: 'tl-body' }, [
+          h('span', { class: 'tl-head' }, [
+            h('span', { class: 'sid' }, [sourceLabel(entry.source)]),
+            h('span', { class: `tl-title${row?.title ? '' : ' untitled'}` }, [title]),
+            entry.source.important ? starMark() : null,
+            capture.note.trim() ? icon('note-pencil', 'Has a note') : null,
+            h('span', { class: 'tl-host' }, [hostOf(entry.source.dedup_url)]),
+          ]),
+          h('span', { class: 'tl-what' }, [h('b', {}, [event.verb]), ...(event.detail ? [' · ', ...withLabels(event.detail)] : [])]),
+        ]),
+      ],
+    ),
+  ]);
+}
+
+/** Opens the source of a timeline event at that capture; a visit shows the current text. */
+function openEvent(sourceId: string, captureId: string, userAction: boolean): void {
+  openSource(sourceId, userAction);
+  const capture = rows.find((r) => r.entry.source.id === sourceId)?.entry.captures.find((c) => c.capture.id === captureId);
+  if (capture) viewCapture(captureId, false);
+}
+
 const rowButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'));
+/** The row of the open source; on the timeline the event of the capture being read, else the source's first event. */
+function selectedButton(): HTMLButtonElement | undefined {
+  const buttons = rowButtons().filter((b) => b.dataset.id === selectedId);
+  return buttons.find((b) => b.dataset.capture === viewedCaptureId) ?? buttons[0];
+}
 
 /** One row is reachable with Tab: the open source if it is listed, else the first. */
 function markSelected(): void {
   const buttons = rowButtons();
   for (const button of buttons) button.setAttribute('aria-current', String(button.dataset.id === selectedId));
-  setTabStop(buttons.find((b) => b.dataset.id === selectedId) ?? buttons[0]);
+  setTabStop(selectedButton() ?? buttons[0]);
 }
 
 /** One row of the list is reachable with Tab: its checkbox and its button. */
@@ -432,7 +500,13 @@ function searchTexts(query: SearchQuery): void {
 /** Puts focus back on the same row, or its checkbox, after the list is drawn again. */
 function keepListFocus(): () => void {
   const active = document.activeElement instanceof HTMLElement && document.activeElement.closest('#rows') ? document.activeElement : null;
-  const selector = active?.dataset.id ? `.src[data-id="${CSS.escape(active.dataset.id)}"]` : active?.dataset.pick ? `.pick-box[data-pick="${CSS.escape(active.dataset.pick)}"]` : null;
+  const selector = active?.dataset.capture
+    ? `.src[data-capture="${CSS.escape(active.dataset.capture)}"]`
+    : active?.dataset.id
+      ? `.src[data-id="${CSS.escape(active.dataset.id)}"]`
+      : active?.dataset.pick
+        ? `.pick-box[data-pick="${CSS.escape(active.dataset.pick)}"]`
+        : null;
   return () => {
     if (selector) document.querySelector<HTMLElement>(`#rows ${selector}`)?.focus({ preventScroll: true });
   };
@@ -441,36 +515,88 @@ function keepListFocus(): () => void {
 function renderList(): void {
   const query = parseSearch(filter.query);
   searchTexts(query);
-  shown = filterRows(rows, filter, textSearch.hits);
-  const inView = filter.view === ALL_SOURCES ? rows.length : rows.filter((r) => r.session.id === filter.view).length;
-  const narrowed = filter.query.trim() !== '' || filter.status !== 'any';
+  const timeline = timelineShown();
+  shown = filterRows(rows, filter, textSearch.hits, timeline);
+  const inViewRows = filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view);
+  const inView = inViewRows.length;
+  const narrowed = filter.query.trim() !== '' || filter.status !== 'any' || filter.important;
   $('list-title').textContent = viewName();
-  $('result-count').textContent =
-    readingFor !== null ? 'Searching saved text…' : narrowed ? `${fmtNumber(shown.length)} of ${count(inView, 'source')}` : count(inView, 'source');
   $('clear-filters').hidden = !narrowed;
   $('status-filter').classList.toggle('filter-on', filter.status !== 'any');
   $('search').classList.toggle('filter-on', filter.query.trim() !== '');
-  const mixed = filter.view === ALL_SOURCES;
-  $('rows').replaceChildren(...shown.map((row) => listItem(row, mixed, query)));
+  const important = $('important-filter');
+  important.setAttribute('aria-pressed', String(filter.important));
+  important.classList.toggle('filter-on', filter.important);
+  $('mode-switch').hidden = filter.view === ALL_SOURCES;
+  $('mode-sources').setAttribute('aria-pressed', String(!timeline));
+  $('mode-timeline').setAttribute('aria-pressed', String(timeline));
+  $('sort').hidden = timeline;
+  $('rows').classList.toggle('timeline', timeline);
   const empty = $('list-empty');
-  empty.hidden = shown.length > 0;
-  if (!shown.length) {
-    fill(empty, [
-      inView === 0
-        ? h('p', {}, [filter.view === ALL_SOURCES ? 'No sources yet. Clip pages from the side panel and they appear here.' : 'This session has no sources yet.'])
-        : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No sources match the search and status filter.']),
-      inView > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
-    ]);
+  if (timeline) {
+    // Labels name every source of the session, also those the filters hide.
+    const byAddress = sourcesByAddress(inViewRows.map((r) => r.entry));
+    const all = timelineEvents(inViewRows.map((r) => r.entry), byAddress).length;
+    const events = timelineEvents(shown.map((r) => r.entry), byAddress).filter((e) => inDays(e.capture.captured_at, query));
+    $('result-count').textContent =
+      readingFor !== null ? 'Searching saved text…' : narrowed ? `${fmtNumber(events.length)} of ${count(all, 'event')}` : count(all, 'event');
+    const items: HTMLLIElement[] = [];
+    let day = '';
+    for (const event of events) {
+      const next = localDay(event.capture.captured_at);
+      if (next !== day) {
+        day = next;
+        const weekday = new Date(event.capture.captured_at).toLocaleDateString('en-US', { weekday: 'long' });
+        items.push(h('li', { class: 'tl-day' }, [`${day} · ${weekday}`]));
+      }
+      items.push(timelineItem(event));
+    }
+    $('rows').replaceChildren(...items);
+    empty.hidden = events.length > 0;
+    if (!events.length) {
+      fill(empty, [
+        all === 0
+          ? h('p', {}, ['No activity yet. Clip or record pages in the side panel and they appear here in the order they happened.'])
+          : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No activity matches the search and filters.']),
+        all > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
+      ]);
+    }
+  } else {
+    $('result-count').textContent =
+      readingFor !== null ? 'Searching saved text…' : narrowed ? `${fmtNumber(shown.length)} of ${count(inView, 'source')}` : count(inView, 'source');
+    const mixed = filter.view === ALL_SOURCES;
+    $('rows').replaceChildren(...shown.map((row) => listItem(row, mixed, query)));
+    empty.hidden = shown.length > 0;
+    if (!shown.length) {
+      fill(empty, [
+        inView === 0
+          ? h('p', {}, [filter.view === ALL_SOURCES ? 'No sources yet. Clip pages from the side panel and they appear here.' : 'This session has no sources yet.'])
+          : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No sources match the search and filters.']),
+        inView > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
+      ]);
+    }
   }
   markSelected();
   renderSelection();
   renderNarrowTop(selectedRow());
 }
 
+/** Shows the session's sources or its timeline. */
+function setMode(next: 'sources' | 'timeline'): void {
+  // The timeline is one session's.
+  if (next === mode || (next === 'timeline' && filter.view === ALL_SOURCES)) return;
+  clearPicked();
+  mode = next;
+  writeHash();
+  renderList();
+  $('list-col').scrollTop = 0;
+}
+
 function clearFilters(): void {
   clearPicked();
   filter.query = '';
   filter.status = 'any';
+  filter.important = false;
   $<HTMLInputElement>('search').value = '';
   $<HTMLSelectElement>('status-filter').value = 'any';
   renderList();
@@ -739,7 +865,16 @@ function renderReaderContents(): void {
       h('span', {}, ['·']),
       h('button', { class: 'link', attrs: { type: 'button', title: `Show all sources of ${session.name}` }, on: { click: () => setView(session.id) } }, [session.name]),
       session.archived_at ? h('span', { class: 'chip pending' }, ['Archived']) : null,
-      h('button', { class: 'btn-sm reader-actions', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, [icon('folder-simple'), 'Move to…']),
+      h(
+        'button',
+        {
+          class: 'btn-sm reader-actions important-toggle',
+          attrs: { id: 'important-source', type: 'button', 'aria-pressed': String(entry.source.important), title: entry.source.important ? 'Marked important. Click to unmark.' : 'Mark as important' },
+          on: { click: () => void toggleImportant(row) },
+        },
+        [icon(entry.source.important ? 'star-fill' : 'star'), 'Important'],
+      ),
+      h('button', { class: 'btn-sm', attrs: { id: 'move-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => openMove(row) } }, [icon('folder-simple'), 'Move to…']),
       h('button', { class: 'btn-sm delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void confirmDeleteSource(row) } }, [icon('trash'), 'Delete…']),
       expandButton,
     ]),
@@ -760,9 +895,55 @@ function renderReaderContents(): void {
       ]),
       group,
     ]),
+    ...pathBlocks(row),
     viewedSection(viewed, current, versions.length),
     details,
   ]);
+}
+
+/** The source's visits and the sources it led to, under its captures; nothing when there are none. */
+function pathBlocks(row: LibraryRow): Child[] {
+  const session = rows.filter((r) => r.session.id === row.session.id).map((r) => r.entry);
+  const byAddress = sourcesByAddress(session);
+  const led = ledTo(row.entry, session);
+  const visits = row.entry.visits;
+  return [
+    visits.length
+      ? h('div', { class: 'path-block' }, [
+          h('span', { class: 'section-title' }, [`Visited again · ${visits.length}`]),
+          ...visits.map((visit) => h('div', { class: 'visit-row' }, [h('span', { class: 'mono-t' }, [fmtTime(visit.captured_at)]), ' · ', ...withLabels(arrival(visit, byAddress) ?? '')])),
+        ])
+      : null,
+    led.length
+      ? h('div', { class: 'path-block' }, [
+          h('span', { class: 'section-title' }, [`Led to · ${led.length}`]),
+          ...led.map((target) => {
+            const title = rows.find((r) => r.entry.source.id === target.source.id)?.title ?? target.source.dedup_url;
+            return h('button', { class: 'led-to', attrs: { type: 'button' }, on: { click: () => openSource(target.source.id, true) } }, [
+              h('span', { class: 'sid' }, [sourceLabel(target.source)]),
+              h('span', {}, [title]),
+            ]);
+          }),
+        ])
+      : null,
+  ];
+}
+
+/** Marks the open source important, or not; the list and the reader show it at once. */
+async function toggleImportant(row: LibraryRow): Promise<void> {
+  const source = row.entry.source;
+  const important = !source.important;
+  try {
+    await setSourceImportant(db, source.id, important);
+    source.important = important;
+  } catch (error) {
+    notice(`Not saved: ${errorText(error)}`);
+  }
+  const restore = keepListFocus();
+  renderList();
+  restore();
+  renderReader();
+  document.getElementById('important-source')?.focus();
 }
 
 // ---------- Organizing ----------
@@ -1008,7 +1189,7 @@ async function moveSelected(row: LibraryRow, target: Session): Promise<void> {
 /** Reads the library again after a change elsewhere, keeping the open source, focus and scroll positions. */
 async function reload(): Promise<void> {
   const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const focus = active?.dataset.id ? { id: active.dataset.id, inRows: !!active.closest('#rows') } : null;
+  const focus = active?.dataset.id ? { id: active.dataset.id, capture: active.dataset.capture, inRows: !!active.closest('#rows') } : null;
   const restoreNote = keepNoteFocus();
   const scroll = [$('list-col').scrollTop, $('reader-col').scrollTop] as const;
   [data, thumbIds] = await Promise.all([loadLibrary(db), thumbnailIds(db)]);
@@ -1020,7 +1201,11 @@ async function reload(): Promise<void> {
   $('list-col').scrollTop = scroll[0];
   $('reader-col').scrollTop = scroll[1];
   restoreNote();
-  if (focus) document.querySelector<HTMLElement>(`${focus.inRows ? '#rows' : '#reader'} [data-id="${focus.id}"]`)?.focus({ preventScroll: true });
+  if (focus) {
+    const where = focus.inRows ? '#rows' : '#reader';
+    const event = focus.capture ? document.querySelector<HTMLElement>(`${where} [data-capture="${CSS.escape(focus.capture)}"]`) : null;
+    (event ?? document.querySelector<HTMLElement>(`${where} [data-id="${focus.id}"]`))?.focus({ preventScroll: true });
+  }
 }
 
 function bind(): void {
@@ -1045,6 +1230,13 @@ function bind(): void {
     filter.sort = sort.value as LibrarySort;
     renderList();
   });
+  $('important-filter').addEventListener('click', () => {
+    clearPicked();
+    filter.important = !filter.important;
+    renderList();
+  });
+  $('mode-sources').addEventListener('click', () => setMode('sources'));
+  $('mode-timeline').addEventListener('click', () => setMode('timeline'));
   $('clear-filters').addEventListener('click', clearFilters);
   $<HTMLInputElement>('select-all').addEventListener('change', (event) => {
     if ((event.target as HTMLInputElement).checked) for (const row of shown) picked.add(row.entry.source.id);
@@ -1065,7 +1257,7 @@ function bind(): void {
   $<HTMLSelectElement>('view-select').addEventListener('change', (event) => setView((event.target as HTMLSelectElement).value));
   $('back-button').addEventListener('click', () => {
     setReading(false);
-    rowButtons().find((b) => b.dataset.id === selectedId)?.focus();
+    selectedButton()?.focus();
   });
   // Arrow keys move through the list; in a wide window the source under focus opens next to it.
   $('rows').addEventListener('keydown', (event) => {
@@ -1078,14 +1270,16 @@ function bind(): void {
     const button = buttons[next]!;
     setTabStop(button);
     button.focus();
-    if (wide.matches && button.dataset.id) openSource(button.dataset.id, false);
+    if (!wide.matches || !button.dataset.id) return;
+    if (button.dataset.capture) openEvent(button.dataset.id, button.dataset.capture, false);
+    else openSource(button.dataset.id, false);
   });
   window.addEventListener('hashchange', () => {
     readHash();
     renderNav();
     renderList();
     renderReader();
-    rowButtons().find((b) => b.dataset.id === selectedId)?.scrollIntoView({ block: 'nearest' });
+    selectedButton()?.scrollIntoView({ block: 'nearest' });
   });
   browser.storage.onChanged.addListener((changes, area) => {
     const id = changes.activeSessionId?.newValue;
@@ -1146,7 +1340,7 @@ async function init(): Promise<void> {
     renderNav();
     renderList();
     renderReader();
-    rowButtons().find((b) => b.dataset.id === selectedId)?.scrollIntoView({ block: 'nearest' });
+    selectedButton()?.scrollIntoView({ block: 'nearest' });
   } catch (error) {
     $('reader').replaceChildren(h('div', { class: 'empty' }, [h('p', {}, [`ClipGrail could not load its data: ${errorText(error)}`])]));
   }

@@ -101,6 +101,38 @@ select:focus { background-color: var(--surface); }
 .src-meta { display: flex; flex-wrap: wrap; gap: 3px 8px; align-items: center; font-size: 11.5px; color: var(--muted); min-width: 0; font-variant-numeric: tabular-nums; }
 .src-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 /* Where a search found the source: a passage of a note, selection or saved text with the words marked. */
+/* Sources marked important. */
+.star { display: inline-flex; color: var(--star); vertical-align: -1px; margin-right: 4px; }
+.star .ic { width: 12px; height: 12px; }
+.important-toggle[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent-line); }
+.important-toggle[aria-pressed='true'] .ic, #important-filter[aria-pressed='true'] .ic { color: var(--star); }
+/* Sources | Timeline */
+.mode-switch { display: inline-flex; margin-left: auto; gap: 2px; padding: 2px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.mode-switch[hidden] { display: none; }
+.mode-switch button { border: 0; background: none; padding: 3px 10px; font-size: 12px; font-weight: 550; color: var(--muted); border-radius: 5px; }
+.mode-switch button[aria-pressed='true'] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+/* The timeline: one button per event, under a header per day. */
+.rows.timeline > li.tl-day {
+  content-visibility: visible; position: sticky; top: 0; z-index: 1; padding: 10px 8px 6px; border-radius: 0;
+  font-size: 12px; font-weight: 600; color: var(--muted); background: var(--surface);
+}
+.src.tl-event { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 0 8px; align-items: start; }
+.tl-time { font: 500 11.5px/19px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tl-head { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.tl-head .star { margin-right: 0; }
+.tl-head > .ic { width: 12px; height: 12px; color: var(--muted); flex: none; }
+.tl-title { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tl-host { font-size: 11.5px; color: var(--muted); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-what { font-size: 12px; color: var(--muted); line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-what b { color: var(--fg); font-weight: 550; }
+.tl-what .sid, .visit-row .sid { font-size: 10px; padding: 1px 4px; }
+/* Under the captures of the open source: its visits and the sources it led to. */
+.path-block { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.visit-row { font-size: 12.5px; color: var(--muted); }
+.mono-t { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.led-to { display: inline-flex; gap: 7px; align-items: baseline; border: 0; background: none; padding: 1px 0; font-size: 12.5px; color: var(--fg); text-align: left; }
+.led-to:hover:not(:disabled) { background: none; color: var(--accent); }
 .src-snippet {
   font-size: 12px; line-height: 1.45; color: var(--muted); overflow: hidden; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;

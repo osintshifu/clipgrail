@@ -37,10 +37,27 @@ export interface Source {
    * they were generated with, so deleting this source finds them by these too.
    */
   merged_ids: string[];
+  /** Marked important by the user. Kept by Undo and by the review after a recording. */
+  important: boolean;
 }
 
-/** tab: the address and title of an open tab, saved without reading the page. */
-export type CaptureKind = 'page' | 'selection' | 'link' | 'tab';
+/**
+ * tab: the address and title of an open tab, saved without reading the page.
+ * visit: a recorded return to a page the session already had; it has no
+ * snapshot and is shown in the timeline, not among the source's captures.
+ */
+export type CaptureKind = 'page' | 'selection' | 'link' | 'tab' | 'visit';
+
+/**
+ * How Chrome says a recorded page was reached, exactly as reported
+ * (webNavigation transitionType and transitionQualifiers). `in_page` is true
+ * when the page changed its address without loading a new document.
+ */
+export interface CaptureNavigation {
+  transition: string;
+  qualifiers: string[];
+  in_page: boolean;
+}
 
 /** Text the user selected on a page. */
 export interface Fragment {
@@ -75,7 +92,7 @@ export interface Capture {
   original_url: string;
   /** Tab title at capture time (page, selection and tab captures); empty for links saved without opening. */
   tab_title: string;
-  /** Link captures: page the link was found on. Private provenance. */
+  /** Link captures, and pages saved by a recording: page the link was found on. Private provenance. */
   found_on: string | null;
   /** Link captures: link text, recorded only when it was unambiguous. */
   anchor_text: string | null;
@@ -83,6 +100,8 @@ export interface Capture {
   fragment: Fragment | null;
   /** Selections made in an embedded frame; null otherwise, and on every capture made before frames were recorded. */
   frame: CaptureFrame | null;
+  /** Pages saved by a recording, and visits: how the page was reached. Null otherwise, and on every capture made before it was recorded. */
+  navigation: CaptureNavigation | null;
   /** Page, link and tab captures have a snapshot; selection captures do not. */
   snapshot_id: string | null;
   /** Private note. */

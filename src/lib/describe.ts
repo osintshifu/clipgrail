@@ -1,5 +1,5 @@
 import type { DataSummary, DeletionCounts, SourceEntry as FullSourceEntry } from './db';
-import type { Capture, OkSnapshotMeta, SnapshotMeta } from './model';
+import type { Capture, CaptureNavigation, OkSnapshotMeta, SnapshotMeta } from './model';
 import { sourceLabel } from './model';
 import type { SourceStatus } from './selection';
 import { FRAME_UNESTABLISHED_NOTE, chooseSnapshot, describeFailure, failedSnapshotOf, frameSourceUnestablished, laterFailureOf, okSnapshotOf } from './selection';
@@ -17,7 +17,34 @@ export const STATUS_LABELS: Record<SourceStatus, string> = {
   none: 'Selections only',
 };
 
-const KIND_LABELS: Record<Capture['kind'], string> = { page: 'Page', selection: 'Selection', link: 'Link', tab: 'Tab' };
+const KIND_LABELS: Record<Capture['kind'], string> = { page: 'Page', selection: 'Selection', link: 'Link', tab: 'Tab', visit: 'Visit' };
+
+/** Chrome's transition types in words (webNavigation transitionType). */
+const TRANSITION_WORDS: Record<string, string> = {
+  link: 'Link',
+  form_submit: 'Form',
+  typed: 'Typed address',
+  generated: 'Address bar suggestion',
+  keyword: 'Address bar keyword',
+  keyword_generated: 'Address bar keyword',
+  auto_bookmark: 'Bookmark or browser menu',
+  start_page: 'Start page',
+};
+
+/** How a recorded page was reached, in words, or null when it was not recorded. The first matching rule wins. */
+export function navigationWords(navigation: CaptureNavigation | null): string | null {
+  if (!navigation) return null;
+  const { transition, qualifiers, in_page } = navigation;
+  let words: string;
+  if (qualifiers.includes('forward_back')) words = 'Back or Forward';
+  else if (in_page) words = 'Address changed by the page';
+  else if (transition === 'reload') words = 'Reload or reopened tab';
+  else if (qualifiers.includes('client_redirect')) words = 'Redirect by the page';
+  // Anything started from the address bar is entered there, whatever type Chrome gives it.
+  else if (qualifiers.includes('from_address_bar') && (transition === 'link' || transition === 'form_submit')) words = TRANSITION_WORDS.typed!;
+  else words = TRANSITION_WORDS[transition] ?? `Other (Chrome: ${transition})`;
+  return qualifiers.includes('server_redirect') ? `${words}, redirected by the server` : words;
+}
 
 const nf = new Intl.NumberFormat('en-US');
 export const fmtNumber = (n: number): string => nf.format(n);
@@ -121,10 +148,12 @@ function frameLine(capture: Capture): string | null {
   return frameSourceUnestablished(capture.frame) ? FRAME_UNESTABLISHED_NOTE : 'Selected in an embedded frame';
 }
 
-/** Provenance lines of one capture: an embedded frame, where a saved link, a recorded page or a frame was found, and the address as visited. */
+/** Provenance lines of one capture: an embedded frame, how a recorded page was reached, where a saved link, a recorded page or a frame was found, and the address as visited. */
 export function captureExtra(capture: Capture, dedupUrl: string): string {
+  const reached = navigationWords(capture.navigation);
   return [
     frameLine(capture) ?? '',
+    reached ? `Reached by: ${reached}` : '',
     capture.kind === 'link'
       ? `Found on ${capture.found_on ?? 'an unknown page'}${capture.anchor_text ? ` · link text “${capture.anchor_text}”` : ''}`
       : capture.found_on
@@ -199,6 +228,8 @@ export function detailRows(entry: SourceEntry, sessionName: string): DetailRow[]
 export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | undefined, dedupUrl: string): DetailRow[] {
   const rows: DetailRow[] = [{ label: 'Captured', value: `${fmtTime(capture.captured_at)} · ${KIND_LABELS[capture.kind]}`, mono: false }];
   if (capture.original_url !== dedupUrl) rows.push({ label: 'As visited', value: capture.original_url, mono: true });
+  const reached = navigationWords(capture.navigation);
+  if (reached) rows.push({ label: 'Reached by', value: reached, mono: false });
   if (capture.kind === 'link') {
     rows.push({ label: 'Found on', value: `${capture.found_on ?? 'unknown page'}${capture.anchor_text ? ` · link text “${capture.anchor_text}”` : ''}`, mono: false });
   } else if (capture.found_on) {

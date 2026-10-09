@@ -329,7 +329,7 @@ describe('side panel', () => {
     expect(checked()).toEqual(['Side panel:false', 'Popup:true']);
   });
 
-  it('records only with Chrome permission, shows what it saved and could not save, and removes the pages unchecked after it stops', async () => {
+  it('records only with Chrome permission, shows what it saved and could not save, and after it stops removes the pages unchecked but never one marked important', async () => {
     fake.tabsPermission = false;
     $('record-button').click();
     await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording not started'));
@@ -355,19 +355,25 @@ describe('side panel', () => {
       at: '2026-10-07T09:01:00.000Z',
     });
     saved.push({ capture_id: next!.capture.id, session_id: next!.capture.session_id });
+    // A page the session had before the recording, opened again from a link more than 30 minutes later.
+    const link = { transition: 'link', qualifiers: [], in_page: false };
+    await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/berths', title: 'Berths', found_on: null, at: '2026-10-07T08:00:00.000Z' });
+    const again = await recordVisit(db, INBOX_SESSION_ID, { url: 'https://port.example.org/berths', title: 'Berths', found_on: null, at: '2026-10-07T09:02:00.000Z', navigation: link });
+    expect(again!.capture.kind).toBe('visit');
+    const visits = [{ capture_id: again!.capture.id, session_id: again!.capture.session_id }];
     // The button turns into Stop and tells what was saved and what could not be; clicking it again stops.
     expect($('record-button').getAttribute('aria-pressed')).toBe('true');
     expect($('record-button').title).toBe('Recording: 1 page saved, 1 could not be saved. Click to stop.');
 
     // Stop opens a list of the recorded pages, all kept until unchecked.
-    fake.response = { captures: saved, failed: 1 };
+    fake.response = { captures: saved, visits, failed: 1 };
     $('record-button').click();
     await vi.waitFor(() => expect($('sheet-title').textContent).toBe('Review recorded pages'));
     expect(fake.messages.at(-1)).toEqual({ type: 'record', action: 'stop', windowId: 1 });
     backgroundStores('recording', undefined);
     expect($('record-button').getAttribute('aria-pressed')).toBe('false');
     expect($('sheet-body').querySelector('p')!.textContent).toBe(
-      '2 pages were saved to Inbox as addresses; 1 could not be saved. Uncheck the ones you do not need; they are removed when you click Remove.',
+      '2 pages were saved to Inbox as addresses; 1 could not be saved. 1 page the session already had was visited again. Uncheck the ones you do not need; they are removed when you click Remove. Pages you mark important stay.',
     );
     const rows = Array.from(document.querySelectorAll<HTMLLabelElement>('.review-list label'));
     expect(rows.map((row) => row.textContent)).toEqual([
@@ -388,12 +394,24 @@ describe('side panel', () => {
     second.click();
     expect(rows[1]!.classList.contains('removed')).toBe(true);
     expect(remove.textContent).toBe('Remove 1 page');
+    // I marks the first page important, which keeps it checked even when All pages is unchecked.
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
+    await vi.waitFor(() => expect(rows[0]!.querySelector('.review-star')!.getAttribute('aria-pressed')).toBe('true'));
+    const all = document.querySelector<HTMLInputElement>('.review-all input')!;
+    all.click();
+    all.click();
+    // The important row cannot be unchecked.
+    expect([first.checked, first.getAttribute('aria-disabled'), second.checked]).toEqual([true, 'true', false]);
+    first.click();
+    expect(first.checked).toBe(true);
     remove.click();
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('1 recorded page removed. 1 kept.'));
     expect($('sheet-layer').hidden).toBe(true);
-    const ids = (await loadSessionView(db, INBOX_SESSION_ID)).sources.map((s) => s.source.id);
-    expect(ids).toContain(visit!.source.id);
-    expect(ids).not.toContain(next!.source.id);
+    const sources = (await loadSessionView(db, INBOX_SESSION_ID)).sources;
+    expect(sources.find((s) => s.source.id === visit!.source.id)?.source.important).toBe(true);
+    expect(sources.some((s) => s.source.id === next!.source.id)).toBe(false);
+    // The visit to a page the session already had stays in its timeline.
+    expect(sources.find((s) => s.source.id === again!.source.id)?.visits.map((v) => v.id)).toEqual([again!.capture.id]);
   });
 
   it('keeps the sites not recorded from pasted addresses and refuses a line that is not a site', async () => {

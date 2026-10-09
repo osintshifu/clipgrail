@@ -13,6 +13,7 @@ import { captureThumbnail } from '../lib/thumbnail';
 import type { Recording, TrailEntry } from '../lib/recording';
 import { RECORDING_KEY, foundOnFor, isRecording, recordVisit } from '../lib/recording';
 import { plural } from '../lib/text';
+import { normalizeUrl } from '../lib/url';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -176,7 +177,7 @@ async function stopRecording(): Promise<RecordResponse> {
   const recording = await currentRecording();
   await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]);
   showRecordingBadge(false);
-  return { captures: recording?.captures ?? [], failed: recording?.failed ?? 0 };
+  return { captures: recording?.captures ?? [], visits: recording?.visits ?? [], failed: recording?.failed ?? 0 };
 }
 
 /**
@@ -208,8 +209,8 @@ async function recordFailure(started: string): Promise<void> {
   }
 }
 
-/** Notes where a main-frame navigation in the recorded window came from. */
-function navigated(tabId: number, url: string, transition: string, qualifiers: string[]): void {
+/** Notes where a main-frame navigation in the recorded window came from and how Chrome says it was reached. */
+function navigated(tabId: number, url: string, transition: string, qualifiers: string[], inPage: boolean): void {
   void serial(async () => {
     const recording = await currentRecording();
     if (!recording) return;
@@ -221,7 +222,17 @@ function navigated(tabId: number, url: string, transition: string, qualifiers: s
     if (!previous && tab.openerTabId !== undefined) {
       opener = pages[String(tab.openerTabId)]?.url ?? (await browser.tabs.get(tab.openerTabId).catch(() => null))?.url ?? null;
     }
-    pages[String(tabId)] = { url, found_on: foundOnFor({ transition, qualifiers }, previous, opener) };
+    const sameAddress = !!previous && (previous.url === url || (normalizeUrl(previous.url) ?? previous.url) === normalizeUrl(url));
+    pages[String(tabId)] =
+      // A page that rewrites its address in place (replaceState while loading, a tracking parameter removed) continues the navigation that loaded it.
+      inPage && previous && sameAddress
+        ? { ...previous, url }
+        : {
+            url,
+            found_on: foundOnFor({ transition, qualifiers }, previous, opener, url),
+            navigation: { transition, qualifiers: [...qualifiers], in_page: inPage },
+            same_page: sameAddress,
+          };
     // Without its trail the recording would name the wrong pages as where the next ones were found.
     await browser.storage.session.set({ [TRAIL_KEY]: pages }).catch(() => abandonRecording(recording));
   });
@@ -249,11 +260,19 @@ async function recordTab(tabId: number): Promise<void> {
   let saved;
   try {
     const entry = (await trail())[String(tabId)];
+    const known = entry?.url === tab.url;
     const db = await getDb();
     saved = await recordVisit(
       db,
       await resolveActiveSessionId(db),
-      { url: tab.url, title: tab.title ?? '', found_on: entry?.url === tab.url ? entry.found_on : null, at: new Date().toISOString() },
+      {
+        url: tab.url,
+        title: tab.title ?? '',
+        found_on: known ? entry.found_on : null,
+        navigation: known ? (entry.navigation ?? null) : null,
+        same_page: known && !!entry.same_page,
+        at: new Date().toISOString(),
+      },
       // Read at every page, so a change to the list applies to a recording already running.
       await getExcludedSites(),
     );
@@ -266,8 +285,9 @@ async function recordTab(tabId: number): Promise<void> {
   const now = await currentRecording();
   if (now?.started_at !== recording.started_at) return;
   const capture = { capture_id: saved.capture.id, session_id: saved.capture.session_id };
+  const update: Recording = saved.capture.kind === 'visit' ? { ...now, visits: [...(now.visits ?? []), capture] } : { ...now, captures: [...now.captures, capture] };
   try {
-    await browser.storage.session.set({ [RECORDING_KEY]: { ...now, captures: [...now.captures, capture] } });
+    await browser.storage.session.set({ [RECORDING_KEY]: update });
   } catch {
     await abandonRecording(now);
   }
@@ -279,11 +299,11 @@ function listenToNavigation(): void {
   const navigation = browser.webNavigation as typeof browser.webNavigation | undefined;
   if (listening || !navigation) return;
   listening = true;
-  navigation.onCommitted.addListener((d) => d.frameId === 0 && navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers));
+  navigation.onCommitted.addListener((d) => d.frameId === 0 && navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers, false));
   // Pages that change their address without loading: history.pushState, and a new #fragment (a different source, such as a Telegram channel).
   const inPage = (d: { frameId: number; tabId: number; url: string; transitionType: string; transitionQualifiers: string[] }) => {
     if (d.frameId !== 0) return;
-    navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers);
+    navigated(d.tabId, d.url, d.transitionType, d.transitionQualifiers, true);
     recordSoon(d.tabId);
   };
   navigation.onHistoryStateUpdated.addListener(inPage);

@@ -253,6 +253,60 @@ describe('organizing in the library', () => {
     expect($('selection-bar').hidden).toBe(true);
   });
 
+  it('shows a session as a timeline, opens the capture an event names, and marks and filters important sources', async () => {
+    const { db, session, capture } = await openExample('Timeline');
+    const page = capture.source.dedup_url;
+    // While recording, a link on the page led to another page, and the page was opened again later.
+    const recorded = { ...linkDraft('https://example.test/timeline-next', '2026-10-01T09:00:00.000Z', page, session.id), kind: 'tab' as const, anchor_text: null };
+    await commitCapture(db, { ...recorded, navigation: { transition: 'link', qualifiers: [], in_page: false } });
+    await commitCapture(db, {
+      ...recorded,
+      kind: 'visit',
+      dedup_url: page,
+      original_url: page,
+      found_on: null,
+      captured_at: '2026-10-02T09:00:00.000Z',
+      navigation: { transition: 'typed', qualifiers: [], in_page: false },
+      snapshot: null,
+    });
+    fake.refresh();
+    const events = () => Array.from(document.querySelectorAll('#rows .tl-what')).map((e) => e.textContent);
+    // All sources has no timeline; a session has.
+    $('mode-timeline').click();
+    expect(location.hash).not.toContain('mode=timeline');
+    Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((b) => b.textContent?.startsWith('Timeline'))!.click();
+    expect($('mode-switch').hidden).toBe(false);
+    $('mode-timeline').click();
+    await vi.waitFor(() => expect(events()).toEqual(['Opened · Link from S1', 'Visited again · Typed address', 'Clipped · 16 characters']));
+    expect(location.hash).toContain('mode=timeline');
+    expect($('result-count').textContent).toBe('3 events');
+
+    // An event opens its source at that capture; the page shows its return visit and the page it led to.
+    const event = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .tl-event')).find((b) => b.textContent?.includes(text))!;
+    event('Opened').click();
+    await vi.waitFor(() => expect(versions().map((v) => v.getAttribute('aria-checked'))).toEqual(['true']));
+    expect($('reader').querySelector('.ver-title')?.textContent).toBe('Capture 1 · Tab');
+    event('Clipped').click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Controlled text.'));
+    expect(Array.from($('reader').querySelectorAll('.path-block')).map((b) => b.textContent)).toEqual([
+      'Visited again · 12026-10-02 11:00 · Typed address'.replace('11:00', new Date('2026-10-02T09:00:00.000Z').toTimeString().slice(0, 5)),
+      'Led to · 1S2https://example.test/timeline-next',
+    ]);
+
+    // Marked important, the source has a star in the list and passes the Important filter alone.
+    $('important-source').click();
+    await vi.waitFor(() => expect($('important-source').getAttribute('aria-pressed')).toBe('true'));
+    expect((await loadSessionView(db, session.id)).sources.find((s) => s.source.id === capture.source.id)?.source.important).toBe(true);
+    $('important-filter').click();
+    expect(events()).toEqual(['Visited again · Typed address', 'Clipped · 16 characters']);
+    expect($('result-count').textContent).toBe('2 of 3 events');
+    $('mode-sources').click();
+    expect(Array.from(document.querySelectorAll('#rows .src .star')).length).toBe(1);
+    expect($('result-count').textContent).toMatch(/^1 of 2 sources$/);
+    $('clear-filters').click();
+    expect(location.hash).not.toContain('mode=timeline');
+  });
+
   it('finds a source by its saved text, shows where, and opens the earlier version the words are in', async () => {
     // jsdom has no layout; the reader scrolls to the first match by its position.
     Range.prototype.getBoundingClientRect = () => new DOMRect();

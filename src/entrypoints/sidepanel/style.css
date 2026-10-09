@@ -122,6 +122,9 @@ button.back:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
   border-radius: var(--r-sm); background: var(--surface); color: var(--fg); white-space: nowrap; text-decoration: none; font-weight: 500;
 }
 .detail-actions > :is(a, .delete) { padding: 4px 6px; }
+.detail-actions > .important-toggle { padding: 4px 6px; }
+.important-toggle[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent-line); }
+.important-toggle[aria-pressed='true'] .ic { color: var(--star); }
 .detail-actions a:hover, .detail-actions button:hover:not(:disabled) { background: var(--hover); }
 .detail-actions .ic { width: 15px; height: 15px; }
 .detail-title { display: flex; gap: 8px; align-items: flex-start; }
@@ -159,6 +162,16 @@ button.back:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .capture-card { border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; background: var(--surface); }
 .capture-card .head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .capture-card .line { color: var(--muted); overflow-wrap: anywhere; white-space: pre-line; }
+/* Sources marked important. */
+.star { display: inline-flex; color: var(--star); vertical-align: -1px; margin-right: 4px; }
+.star .ic { width: 12px; height: 12px; }
+/* Under the captures of a source: its visits and the sources it led to. */
+.path-block { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; margin-top: 4px; }
+.visit-row { font-size: 12px; color: var(--muted); }
+.visit-row .sid { font-size: 10px; padding: 1px 4px; }
+.mono-t { font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.led-to { display: inline-flex; gap: 7px; align-items: baseline; border: 0; background: none; padding: 1px 0; font-size: 12.5px; color: var(--fg); text-align: left; white-space: normal; }
+.led-to:hover:not(:disabled) { background: none; color: var(--accent); }
 .capture-card textarea { font-size: 12px; padding: 6px 8px; }
 .details { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; font-size: 12px; }
 .details dt { color: var(--muted); white-space: nowrap; }
@@ -293,6 +306,11 @@ fieldset.private legend { padding: 0; margin-bottom: 6px; }
 .review-list label { grid-template-columns: auto 34px minmax(0, 1fr); align-items: start; }
 .review-list .meta { grid-column: 3; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .review-list .removed .title { color: var(--muted); text-decoration: line-through; }
+.review-list label:has(.review-star) { grid-template-columns: auto 34px minmax(0, 1fr) auto; }
+.review-list input[aria-disabled='true'] { opacity: 0.55; }
+.review-star { grid-column: 4; grid-row: 1 / span 2; align-self: center; border: 0; background: none; padding: 4px; color: var(--muted); }
+.review-star.on { color: var(--star); }
+.review-star .ic { width: 15px; height: 15px; }
 .review-list label:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* Room for the buttons, so a row reached with the keyboard is never behind them: focus scrolls to the checkbox, the row's address line is below it. */
 .sheet-body:has(.review-actions) { scroll-padding-bottom: 60px; }

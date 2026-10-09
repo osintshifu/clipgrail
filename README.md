@@ -41,7 +41,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes. |
-| **Research library** | Organize sources into sessions; browse, filter, search saved text, notes and selections, and add notes. |
+| **Research library** | Organize sources into sessions; follow a session on its timeline, mark important sources, search saved text, notes and selections, and add notes. |
 | **Research Jobs** | Combine a prompt with selected sources referenced as `[S1]`, `[S2]`, and so on. |
 | **Export and backup** | Copy jobs, export Markdown or JSON, and back up or restore local research data. |
 
@@ -64,9 +64,9 @@ ClipGrail is not currently available in the Chrome Web Store.
 
 ### Record browsing
 
-Click **Record** in ClipGrail, browse normally in that Chrome window, then click **Stop**. New pages are added to the active research session with their URL, title, and, where Chrome can determine it, the page they were opened from. The extension shows **REC** while recording. After **Stop**, ClipGrail lists the recorded pages so you can remove the ones you do not need.
+Click **Record** in ClipGrail, browse normally in that Chrome window, then click **Stop**. New pages are added to the active research session with their URL, title, how you reached them and, where Chrome can determine it, the page they were opened from. The extension shows **REC** while recording. After **Stop**, ClipGrail lists the recorded pages so you can remove the ones you do not need and mark the important ones.
 
-**Recording saves page addresses, not page content.** To preserve readable text, clip the pages you need. Existing source addresses are not duplicated, and addresses with a recognised sign-in or access token, such as a password-reset link, are not recorded. Sites you list under **··· › Sites not recorded**, such as your mail or bank, are skipped with their subdomains.
+**Recording saves page addresses, not page content.** To preserve readable text, clip the pages you need. A page the session already has is not saved again, unless it has the page only as a link saved without opening it; returning to a page after 30 minutes or more is noted as a visit. Addresses with a recognised sign-in or access token, such as a password-reset link, are not recorded. Sites you list under **··· › Sites not recorded**, such as your mail or bank, are skipped with their subdomains.
 
 ### Clip and organize
 
@@ -77,7 +77,7 @@ Click **Record** in ClipGrail, browse normally in that Chrome window, then click
 | **Save link** | URL without opening or downloading the destination. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 
-ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results.
+ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones.
 
 ### Research Jobs
 

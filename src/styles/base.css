@@ -39,6 +39,8 @@
   --fail-bg: #fcebe7;
   --warn: #9a5b07;
   --warn-bg: #fcf1df;
+  /* Sources marked important. */
+  --star: #c98500;
   --pend: #555e6b;
   --pend-bg: #eceff3;
   --toast: #15181d;
@@ -74,6 +76,7 @@
     --fail-bg: rgba(255, 142, 128, 0.12);
     --warn: #f0b35c;
     --warn-bg: rgba(240, 179, 92, 0.12);
+    --star: #f2b630;
     --pend: #a4acb9;
     --pend-bg: rgba(164, 172, 185, 0.12);
     --toast: #1b1e24;

@@ -26,6 +26,10 @@
         <div class="list-head">
           <button id="show-sessions" class="icon-btn" type="button" title="Show sessions" aria-label="Show sessions" aria-controls="nav" hidden><span data-icon="sidebar-simple"></span></button>
           <h2 id="list-title"></h2>
+          <div id="mode-switch" class="mode-switch" role="group" aria-label="Show">
+            <button id="mode-sources" type="button" aria-pressed="true">Sources</button>
+            <button id="mode-timeline" type="button" aria-pressed="false" title="Every capture and recorded visit of this session in time order">Timeline</button>
+          </div>
         </div>
         <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search text, notes, title or address" aria-label="Search text, notes, title or address" title="All words must match: title, address, label, notes, selections and saved text. Use quotes for a phrase; site:example.org, after:2026-10-01 and before:2026-10-31 narrow the results." autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
         <div class="filters">
@@ -38,6 +42,7 @@
             <option value="none">Selections only</option>
           </select>
           <select id="sort" aria-label="Sort"></select>
+          <button id="important-filter" class="btn-sm" type="button" aria-pressed="false" title="Show only sources marked important"><span data-icon="star"></span>Important</button>
           <button id="clear-filters" class="link" type="button" hidden>Clear filters</button>
           <span id="result-count" class="count" role="status"></span>
         </div>

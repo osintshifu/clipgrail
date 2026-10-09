@@ -86,6 +86,7 @@ export async function writeBackup(
   };
   const counts = Object.fromEntries(DATA_STORES.map((store) => [store, 0])) as Record<DataStore, number>;
   const sessionIds = new Set<string>();
+  let visits = 0;
   let open = -1;
   const openUntil = (index: number) => {
     while (open < index) {
@@ -99,6 +100,8 @@ export async function writeBackup(
     openUntil(DATA_STORES.indexOf(store));
     add(`${counts[store] ? ',' : ''}\n${JSON.stringify(record)}`);
     counts[store] += 1;
+    // Visits are not captures the user saved; the summary leaves them out, as the side panel does.
+    if (store === 'captures' && (record as { kind?: string }).kind === 'visit') visits += 1;
     if (store === 'sessions') sessionIds.add((record as Session).id);
   });
   openUntil(DATA_STORES.length - 1);
@@ -106,7 +109,7 @@ export async function writeBackup(
   return {
     parts: bytes > limit ? [] : parts,
     bytes,
-    summary: { created_at: createdAt, sessions: counts.sessions, sources: counts.sources, captures: counts.captures, snapshots: counts.snapshots, jobs: counts.jobs },
+    summary: { created_at: createdAt, sessions: counts.sessions, sources: counts.sources, captures: counts.captures - visits, snapshots: counts.snapshots, jobs: counts.jobs },
   };
 }
 
@@ -122,7 +125,7 @@ export function summarize(data: DataSnapshot, createdAt: string): BackupSummary 
     created_at: createdAt,
     sessions: data.sessions.length,
     sources: data.sources.length,
-    captures: data.captures.length,
+    captures: data.captures.filter((c) => (c as { kind?: string }).kind !== 'visit').length,
     snapshots: data.snapshots.length,
     jobs: data.jobs.length,
   };
@@ -141,8 +144,8 @@ function pick(r: Rec, keys: readonly string[]): Rec {
   return out;
 }
 const SESSION_KEYS = ['id', 'name', 'created_at', 'next_source_number', 'prompt', 'notes', 'archived_at'] as const;
-const SOURCE_KEYS = ['id', 'session_id', 'number', 'dedup_url', 'created_at', 'note', 'merged_ids'] as const;
-const CAPTURE_KEYS = ['id', 'session_id', 'source_id', 'kind', 'captured_at', 'original_url', 'tab_title', 'found_on', 'anchor_text', 'fragment', 'frame', 'snapshot_id', 'note'] as const;
+const SOURCE_KEYS = ['id', 'session_id', 'number', 'dedup_url', 'created_at', 'note', 'merged_ids', 'important'] as const;
+const CAPTURE_KEYS = ['id', 'session_id', 'source_id', 'kind', 'captured_at', 'original_url', 'tab_title', 'found_on', 'anchor_text', 'fragment', 'frame', 'navigation', 'snapshot_id', 'note'] as const;
 const FRAGMENT_KEYS = ['text', 'character_count', 'sha256', 'truncated', 'original_character_count', 'method'] as const;
 const SNAPSHOT_BASE_KEYS = ['id', 'capture_id', 'source_id', 'session_id', 'status'] as const;
 const SNAPSHOT_KEYS = {
@@ -161,6 +164,7 @@ function cleanCapture(c: Rec): Rec {
   const out = pick(c, CAPTURE_KEYS);
   if (c.fragment !== null) out.fragment = pick(c.fragment as Rec, FRAGMENT_KEYS);
   if (c.frame !== null) out.frame = pick(c.frame as Rec, ['url']);
+  if (c.navigation !== null) out.navigation = pick(c.navigation as Rec, ['transition', 'qualifiers', 'in_page']);
   return out;
 }
 function cleanJob(j: Rec): Rec {
@@ -226,6 +230,17 @@ function uniqueIds(records: Rec[], where: string): Map<string, Rec> {
   return map;
 }
 
+/** A transition type or qualifier as Chrome reports it; any such word, so a value a later Chrome adds still restores. */
+const CHROME_WORD = /^[a-z_]{1,40}$/;
+function navigation(c: Rec, where: string): void {
+  const n = obj(c.navigation, `${where} navigation`);
+  if (typeof n.transition !== 'string' || !CHROME_WORD.test(n.transition)) throw new Invalid(`${where}: the navigation has no valid transition.`);
+  const qualifiers = strings(n.qualifiers, `${where}: navigation qualifiers`);
+  if (qualifiers.length > 8 || new Set(qualifiers).size !== qualifiers.length || !qualifiers.every((q) => CHROME_WORD.test(q))) {
+    throw new Invalid(`${where}: the navigation qualifiers are not valid.`);
+  }
+  bool(n, 'in_page', where);
+}
 function strings(value: unknown, where: string): string[] {
   if (!Array.isArray(value) || !value.every((v) => typeof v === 'string')) throw new Invalid(`${where} must be a list of strings.`);
   return value as string[];
@@ -400,8 +415,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
     const schemaVersion = root.db_schema_version;
     // Schemas 2 and 3 store the same records; 3 only keeps snapshot texts in a separate store inside the database.
     // Version 4 only added thumbnails, which backups leave out: version 3 data is the same.
-    // Version 5 added merged_ids to sources and frame to captures.
-    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    // Version 5 added merged_ids to sources and frame to captures; version 6 added important to sources, navigation to captures and visits.
+    if (typeof schemaVersion !== 'number' || ![1, 2, 3, 4, 5, DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Invalid(`Unsupported database schema version ${String(schemaVersion)}.`);
     }
     const createdAt = str(root, 'created_at', 'Backup', false);
@@ -421,6 +436,11 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       // As the database upgrade does: no merged sources, and no frame recorded for earlier captures.
       data.sources = data.sources.map((s) => ({ merged_ids: [], ...s }));
       data.captures = data.captures.map((c) => ({ frame: null, ...c }));
+    }
+    if (schemaVersion < 6) {
+      // As the database upgrade does: nothing marked important, and no navigation recorded for earlier captures.
+      data.sources = data.sources.map((s) => ({ important: false, ...s }));
+      data.captures = data.captures.map((c) => ({ navigation: null, ...c }));
     }
 
     const sessions = uniqueIds(data.sessions, 'sessions');
@@ -457,6 +477,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       dedupUrls.add(urlKey);
       str(s, 'created_at', where, false);
       str(s, 'note', where);
+      bool(s, 'important', where);
     }
     // An ID a source took over when another source joined it belongs to that source alone, and to no current source.
     const mergedOwner = new Map<string, unknown>();
@@ -476,7 +497,7 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       const where = `capture ${String(c.id)}`;
       const source = sources.get(str(c, 'source_id', where, false));
       if (!source || source.session_id !== c.session_id) throw new Invalid(`${where}: unknown source or session mismatch.`);
-      const kind = oneOf(c, 'kind', ['page', 'selection', 'link', 'tab'] as const, where);
+      const kind = oneOf(c, 'kind', ['page', 'selection', 'link', 'tab', 'visit'] as const, where);
       str(c, 'captured_at', where, false);
       webUrl(c, 'original_url', where);
       str(c, 'tab_title', where);
@@ -489,7 +510,14 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
         const frame = obj(c.frame, `${where} frame`);
         if (frame.url !== null && frameAddress(frame.url) !== frame.url) throw new Invalid(`${where}: the frame address is not valid.`);
       }
-      if (kind === 'selection') {
+      if (c.navigation !== null) {
+        if (kind !== 'tab' && kind !== 'visit') throw new Invalid(`${where}: only recorded pages and visits have a navigation.`);
+        navigation(c, where);
+      }
+      if (kind === 'visit') {
+        // A visit notes a return to a page: no text, no selection, no link text.
+        if (c.navigation === null || snapshotId !== null || c.fragment !== null || c.anchor_text !== null) throw new Invalid(`${where}: a visit has only a navigation.`);
+      } else if (kind === 'selection') {
         if (snapshotId !== null) throw new Invalid(`${where}: a selection capture cannot have a snapshot.`);
         const f = obj(c.fragment, `${where} fragment`);
         oneOf(f, 'method', ['dom-selection', 'menu-selection-text'] as const, where);
@@ -507,7 +535,8 @@ export async function validateBackup(json: string): Promise<BackupCheck> {
       }
     }
     if (usedSnapshots.size !== snapshots.size) throw new Invalid('The backup contains snapshots without a capture.');
-    const capturedSources = new Set([...captures.values()].map((c) => c.source_id));
+    // A source exists while it has a capture other than a visit, as in the database.
+    const capturedSources = new Set([...captures.values()].filter((c) => c.kind !== 'visit').map((c) => c.source_id));
     for (const source of sources.values()) {
       if (!capturedSources.has(source.id)) throw new Invalid(`source ${String(source.id)}: has no captures.`);
     }

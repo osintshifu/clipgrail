@@ -25,6 +25,7 @@ import {
   saveThumbnail,
   saveJob,
   setSessionArchived,
+  setSourceImportant,
   thumbnailIds,
   undoCapture,
   undoCaptures,
@@ -34,6 +35,7 @@ import {
   updateSourceNote,
 } from '../src/lib/db';
 import { INBOX_SESSION_ID } from '../src/lib/model';
+import { recordVisit } from '../src/lib/recording';
 import type { OkSnapshot } from '../src/lib/model';
 import { DEFAULT_JOB_SETTINGS, buildResearchJob } from '../src/lib/research-job';
 import { chooseSnapshot } from '../src/lib/selection';
@@ -98,11 +100,13 @@ describe('sessions', () => {
     await legacyDb(name, 1, (tx) => {
       tx.objectStore('sessions').add({ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '' });
       tx.objectStore('sources').add({ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x' });
+      tx.objectStore('captures').add({ id: 'cap-1', session_id: INBOX_SESSION_ID, source_id: 'src-1', kind: 'tab', captured_at: 'x', note: '' });
     });
     const db = await openDb(name);
     const data = await readAllData(db);
     expect(data.sessions).toEqual([{ id: INBOX_SESSION_ID, name: 'Inbox', created_at: 'x', next_source_number: 2, prompt: 'p', notes: '', archived_at: null }]);
-    expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '', merged_ids: [] }]);
+    expect(data.sources).toEqual([{ id: 'src-1', session_id: INBOX_SESSION_ID, number: 1, dedup_url: URL_A, created_at: 'x', note: '', merged_ids: [], important: false }]);
+    expect(data.captures).toEqual([{ id: 'cap-1', session_id: INBOX_SESSION_ID, source_id: 'src-1', kind: 'tab', captured_at: 'x', note: '', frame: null, navigation: null }]);
   });
 
   it('upgrades a schema 2 database by moving snapshot texts to their own store, unchanged', async () => {
@@ -233,11 +237,63 @@ describe('undoSavedCaptures', () => {
     await updateSourceNote(db, saved[0]!.source.id, 'Source note');
     await updateCaptureNote(db, saved[1]!.capture.id, 'Capture note');
     await moveSource(db, saved[2]!.source.id, other.id);
-    await commitCapture(db, linkDraft('https://example.com/e', '2026-10-07T09:05:00.000Z', URL_A));
+    await commitCapture(db, await pageDraft('https://example.com/e', 'Clipped since.', '2026-10-07T09:05:00.000Z'));
     const items = saved.map((r) => ({ capture_id: r.capture.id, session_id: r.capture.session_id }));
     expect(await undoSavedCaptures(db, items)).toEqual({ removed: 2, kept: 3, stayed: 1 });
     expect(await undoSavedCaptures(db, items)).toEqual({ removed: 0, kept: 3, stayed: 0 });
     expect((await readAllData(db)).sources.map((s) => (s as { dedup_url: string }).dedup_url).sort()).toEqual(['a', 'b', 'c', 'e'].map((p) => `https://example.com/${p}`));
+  });
+});
+
+describe('visits and important sources', () => {
+  it('removes a source with its visits when its last saved capture goes, and Undo keeps sources marked important', async () => {
+    const db = await freshDb();
+    const at = '2026-10-07T09:00:00.000Z';
+    const visitDraft = (url: string) => ({
+      ...linkDraft(url, '2026-10-07T10:00:00.000Z', URL_A),
+      kind: 'visit' as const,
+      anchor_text: null,
+      navigation: { transition: 'typed', qualifiers: [], in_page: false },
+      snapshot: null,
+    });
+    const [a, b] = await commitCaptures(db, ['a', 'b'].map((p) => linkDraft(`https://example.com/${p}`, at, URL_A)));
+    const [va, vb] = await commitCaptures(db, [visitDraft('https://example.com/a'), visitDraft('https://example.com/b')]);
+    expect(va!.captureCount).toBe(1);
+    await setSourceImportant(db, b!.source.id, true);
+    const view = await loadSessionView(db, INBOX_SESSION_ID);
+    expect(view.sources.map((s) => [s.captures.length, s.visits.length, s.source.important])).toEqual([[1, 1, false], [1, 1, true]]);
+    // Visits are removed and not counted; the important source stays with its visit.
+    const items = [a!, b!, va!, vb!].map((r) => ({ capture_id: r.capture.id, session_id: r.capture.session_id }));
+    expect(await undoSavedCaptures(db, items)).toEqual({ removed: 1, kept: 1, stayed: 0 });
+    expect((await readAllData(db)).captures.map((c) => (c as { id: string }).id)).toEqual([b!.capture.id]);
+    // Undoing the last saved capture takes the source and any visit left with it.
+    const [vb2] = await commitCaptures(db, [visitDraft('https://example.com/b')]);
+    expect(vb2!.isNewSource).toBe(false);
+    expect((await undoCapture(db, b!.capture.id)).sourceRemoved).toBe(true);
+    const left = await readAllData(db);
+    expect([left.sources.length, left.captures.length]).toEqual([0, 0]);
+  });
+
+  it('never makes a source from a visit alone, also when the page is deleted while a return to it is saved, and a recorded opening of a saved link goes with its visits', async () => {
+    const db = await freshDb();
+    const url = 'https://example.com/r';
+    const at = (minutes: number) => new Date(Date.UTC(2026, 9, 7, 9, minutes)).toISOString();
+    const nav = { transition: 'link', qualifiers: [], in_page: false };
+    const first = await recordVisit(db, INBOX_SESSION_ID, { url, title: '', found_on: null, at: at(0), navigation: nav });
+    await Promise.all([recordVisit(db, INBOX_SESSION_ID, { url, title: '', found_on: null, at: at(40), navigation: nav }), deleteSource(db, first!.source.id)]);
+    const data = await readAllData(db);
+    const saved = new Set((data.captures as Array<{ kind: string; source_id: string }>).filter((c) => c.kind !== 'visit').map((c) => c.source_id));
+    expect((data.sources as Array<{ id: string }>).every((s) => saved.has(s.id))).toBe(true);
+
+    // A page saved as a link, opened while recording and returned to: removing the recorded opening removes the return too.
+    const linked = 'https://example.com/linked';
+    await commitCapture(db, linkDraft(linked, at(0), URL_A));
+    const opened = await recordVisit(db, INBOX_SESSION_ID, { url: linked, title: '', found_on: null, at: at(1), navigation: nav });
+    const back = await recordVisit(db, INBOX_SESSION_ID, { url: linked, title: '', found_on: null, at: at(45), navigation: nav });
+    expect([opened!.capture.kind, back!.capture.kind]).toEqual(['tab', 'visit']);
+    expect(await undoSavedCaptures(db, [{ capture_id: opened!.capture.id, session_id: INBOX_SESSION_ID }])).toEqual({ removed: 1, kept: 0, stayed: 0 });
+    const entry = (await loadSessionView(db, INBOX_SESSION_ID)).sources.find((s) => s.source.dedup_url === linked)!;
+    expect([entry.captures.map((c) => c.capture.kind), entry.visits.length]).toEqual([['link'], 0]);
   });
 });
 

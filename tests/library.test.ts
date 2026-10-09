@@ -7,7 +7,7 @@ import { INBOX_SESSION_ID } from '../src/lib/model';
 import { parseSearch, storedRanges, textHit } from '../src/lib/search';
 import { failedDraft, freshDb, linkDraft, pageDraft, selectionDraft } from './helpers';
 
-const all: LibraryFilter = { view: 'all', query: '', status: 'any', sort: 'last-desc' };
+const all: LibraryFilter = { view: 'all', query: '', status: 'any', important: false, sort: 'last-desc' };
 
 async function library() {
   const db = await freshDb();

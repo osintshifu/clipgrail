@@ -25,6 +25,7 @@ import {
   replaceAllData,
   saveJob,
   setSessionArchived,
+  setSourceImportant,
   setWriteListener,
   summarizeData,
   undoCapture,
@@ -40,6 +41,7 @@ import type { ClipRequest, ClipResponse, RecordRequest, RecordResponse } from '.
 import type { Recording } from '../../lib/recording';
 import { RECORDING_KEY, isRecording } from '../../lib/recording';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
+import { arrival, ledTo, sourcesByAddress } from '../../lib/timeline';
 import type { Session } from '../../lib/model';
 import type { Notice } from '../../lib/notice';
 import { NOTICE_KEY } from '../../lib/notice';
@@ -234,7 +236,7 @@ async function undoCaptureWithToast(captureId: string): Promise<void> {
 async function undoBatchWithToast(saved: SavedCapture[], removed: string, gone: string): Promise<void> {
   try {
     const result = await undoSavedCaptures(db, saved);
-    const kept = result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '';
+    const kept = result.kept ? `${plural(result.kept, 'page')} you added notes to, marked important or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '';
     if (result.removed) showToast(kept ? `${removed} ${kept}` : removed);
     else showToast(kept ? `Nothing removed: ${kept}` : gone);
   } catch (error) {
@@ -726,13 +728,17 @@ function renderCollect(): void {
           'button',
           {
             class: 'src',
-            attrs: { type: 'button', 'data-focus': `src:${entry.source.id}`, 'aria-label': `${label}: ${title ?? entry.source.dedup_url}, ${STATUS_LABELS[status]}, open details` },
+            attrs: {
+              type: 'button',
+              'data-focus': `src:${entry.source.id}`,
+              'aria-label': `${label}: ${title ?? entry.source.dedup_url}, ${STATUS_LABELS[status]}${entry.source.important ? ', important' : ''}, open details`,
+            },
             on: { click: () => openDetail(entry.source.id) },
           },
           [
             faviconTile(entry.source.dedup_url),
             h('span', { class: 'src-body' }, [
-              h('span', { class: `src-title${title ? '' : ' untitled'}` }, [title ?? entry.source.dedup_url]),
+              h('span', { class: `src-title${title ? '' : ' untitled'}` }, [entry.source.important ? starMark() : null, title ?? entry.source.dedup_url]),
               h('span', { class: 'src-meta' }, [
                 chip(status),
                 h('span', { class: 'src-host' }, [hostOf(entry.source.dedup_url)]),
@@ -832,6 +838,44 @@ function textSection(entry: SourceEntry): Child[] {
 }
 
 function capturesSection(entry: SourceEntry): Child[] {
+  return [...captureCards(entry), ...pathBlocks(entry)];
+}
+
+/** The filled star of a source marked important. */
+const starMark = () => h('span', { class: 'star' }, [icon('star-fill', 'Important')]);
+
+/** A line of generated words with the S-labels in it shown as labels. */
+function withLabels(text: string): Child[] {
+  return text.split(/\b(S[1-9]\d*)\b/).map((part, i) => (i % 2 ? h('span', { class: 'sid' }, [part]) : part));
+}
+
+/** Under the captures: the recorded returns to the page and the sources it led to; nothing when there are none. */
+function pathBlocks(entry: SourceEntry): Child[] {
+  const sources = view?.sources ?? [];
+  const byAddress = sourcesByAddress(sources);
+  const led = ledTo(entry, sources);
+  return [
+    entry.visits.length
+      ? h('div', { class: 'path-block' }, [
+          h('span', { class: 'section-title' }, [`Visited again · ${entry.visits.length}`]),
+          ...entry.visits.map((visit) => h('div', { class: 'visit-row' }, [h('span', { class: 'mono-t' }, [fmtTime(visit.captured_at)]), ' · ', ...withLabels(arrival(visit, byAddress) ?? '')])),
+        ])
+      : null,
+    led.length
+      ? h('div', { class: 'path-block' }, [
+          h('span', { class: 'section-title' }, [`Led to · ${led.length}`]),
+          ...led.map((target) =>
+            h('button', { class: 'led-to', attrs: { type: 'button' }, on: { click: () => openDetail(target.source.id) } }, [
+              h('span', { class: 'sid' }, [sourceLabel(target.source)]),
+              h('span', {}, [capturedTitle(target) ?? target.source.dedup_url]),
+            ]),
+          ),
+        ])
+      : null,
+  ];
+}
+
+function captureCards(entry: SourceEntry): Child[] {
   return entry.captures.map(({ capture, snapshot }, i) => {
     const head = captureHead(capture, i);
     const line = captureLine(capture, snapshot);
@@ -900,6 +944,21 @@ function renderDetail(): void {
     h('div', { class: 'detail-top' }, [
       h('button', { class: 'back', attrs: { id: 'detail-back', type: 'button' }, on: { click: closeDetail } }, [icon('arrow-left'), 'Sources']),
       h('span', { class: 'detail-actions' }, [
+        h(
+          'button',
+          {
+            class: 'important-toggle',
+            attrs: {
+              id: 'important-button',
+              type: 'button',
+              'aria-pressed': String(entry.source.important),
+              'aria-label': 'Important',
+              title: entry.source.important ? 'Marked important. Click to unmark.' : 'Mark as important',
+            },
+            on: { click: () => void toggleImportant(entry) },
+          },
+          [icon(entry.source.important ? 'star-fill' : 'star')],
+        ),
         h('button', { attrs: { id: 'move-button', type: 'button', 'aria-haspopup': 'dialog' }, on: { click: () => void openMoveSheet(entry) } }, [icon('folder-simple'), 'Move to…']),
         h('a', { attrs: { href: url, target: '_blank', rel: 'noopener noreferrer', title: 'Open page', 'aria-label': 'Open page' } }, [icon('arrow-square-out')]),
         h('button', { class: 'delete', attrs: { id: 'delete-source', type: 'button', 'aria-haspopup': 'dialog', title: 'Delete source', 'aria-label': 'Delete…' }, on: { click: () => void openDeleteSourceSheet(entry) } }, [icon('trash')]),
@@ -914,6 +973,19 @@ function renderDetail(): void {
     seg,
     h('div', { class: 'detail-section', attrs: { id: 'detail-section', role: 'tabpanel', 'aria-labelledby': `detail-tab-${detailTab}` } }, section),
   );
+}
+
+/** Marks the open source important, or not; the list and the details show it at once. */
+async function toggleImportant(entry: SourceEntry): Promise<void> {
+  const important = !entry.source.important;
+  try {
+    await setSourceImportant(db, entry.source.id, important);
+    entry.source.important = important;
+  } catch (error) {
+    showToast(`Not saved: ${errorText(error)}`, { level: 'error' });
+  }
+  renderCollect();
+  document.getElementById('important-button')?.focus();
 }
 
 function setDetailTab(tab: DetailTab, focus = false): void {
@@ -1508,7 +1580,7 @@ function helpSheet(): void {
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need. Addresses the session already has are skipped, and so are addresses with a sign-in or access token, such as a password-reset link. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
+        'While recording, every page you open in this window is saved as Address only, with the page whose link led to it and how you reached it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need and mark the important ones. A page the session already has is noted as visited again when a new page load returns to it 30 minutes or more after it was last saved or visited; reloads, Back and Forward are not. Addresses with a sign-in or access token, such as a password-reset link, are skipped. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
       ),
       ...item(
         "Can't read this tab?",
@@ -1620,26 +1692,31 @@ async function stopRecording(): Promise<void> {
     showToast(`Recording not stopped: ${response.error}`, { level: 'error' });
     return;
   }
-  if (response.captures.length) await reviewRecording(response.captures, response.failed);
-  else showRecordingEnded('Recording stopped.', '', response.captures, response.failed, 'Recording stopped. No new pages.');
+  const visits = response.visits ?? [];
+  if (response.captures.length) await reviewRecording(response.captures, visits, response.failed);
+  else showRecordingEnded('Recording stopped.', '', response.captures, visits, response.failed, 'Recording stopped. No new pages.');
 }
 
 /**
  * After Stop: the pages the recording saved, all kept; the ones the user
- * unchecks are removed with Remove, under the rules of Undo. Closing the
- * sheet keeps every page.
+ * unchecks are removed with Remove, under the rules of Undo, with their
+ * visits. A star marks a page important, which keeps it. Closing the sheet
+ * keeps every page. Visits to pages the session already had stay.
  */
-async function reviewRecording(saved: SavedCapture[], failed: number): Promise<void> {
+async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], failed: number): Promise<void> {
   let pages: SavedPage[] = [];
+  let visited: SavedPage[] = [];
   try {
-    pages = await loadSavedPages(db, saved);
+    [pages, visited] = await Promise.all([loadSavedPages(db, saved), loadSavedPages(db, visits)]);
   } catch {
     // The message with Undo below still lets the user remove the recording.
   }
   if (!pages.length) {
-    showRecordingEnded('Recording stopped.', '', saved, failed, 'Recording stopped. No new pages.');
+    showRecordingEnded('Recording stopped.', '', saved, visits, failed, 'Recording stopped. No new pages.');
     return;
   }
+  const newSources = new Set(pages.map((page) => page.source.id));
+  const earlier = new Set(visited.map((page) => page.source.id).filter((id) => !newSources.has(id))).size;
   const n = pages.length;
   const names = [...new Set(pages.map((page) => page.saved.session_id))].map((id) => sessions.find((s) => s.id === id)?.name ?? 'a session');
   const where = names.length === 1 ? names[0] : plural(names.length, 'session');
@@ -1651,14 +1728,40 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
     const title = page.capture.tab_title.trim();
     const host = hostOf(page.source.dedup_url);
     const meta = page.capture.found_on ? `${host} · from ${hostOf(page.capture.found_on)}` : host;
+    const star = h('button', { class: 'review-star', attrs: { type: 'button', 'aria-label': `Mark ${sourceLabel(page.source)} important` } });
     const label = h('label', {}, [
       box,
       h('span', { class: 'sid' }, [sourceLabel(page.source)]),
       h('span', { class: `title${title ? '' : ' untitled'}` }, [title || page.source.dedup_url]),
       h('span', { class: 'meta' }, [meta]),
+      star,
     ]);
-    return { page, box, label };
+    return { page, box, label, star };
   });
+  type Row = (typeof rows)[number];
+  /** An important page is kept: its checkbox stays checked. */
+  const showStar = (row: Row) => {
+    const on = row.page.source.important;
+    row.star.replaceChildren(icon(on ? 'star-fill' : 'star'));
+    row.star.setAttribute('aria-pressed', String(on));
+    row.star.classList.toggle('on', on);
+    // Not disabled: a disabled checkbox drops the keyboard focus and the arrow keys skip it.
+    if (on) row.box.checked = true;
+    row.box.setAttribute('aria-disabled', String(on));
+    row.box.title = on ? 'Important pages are kept' : '';
+  };
+  const toggleStar = (row: Row) => {
+    const important = !row.page.source.important;
+    setSourceImportant(db, row.page.source.id, important).then(
+      () => {
+        row.page.source.important = important;
+        showStar(row);
+        update();
+        void refreshData();
+      },
+      (error: unknown) => sheetError(`Not saved: ${errorText(error)}`),
+    );
+  };
   const all = h('input', { attrs: { type: 'checkbox' } });
   const remove = h('button', { class: 'primary', attrs: { type: 'button' } });
   const unchecked = () => rows.filter((row) => !row.box.checked);
@@ -1671,17 +1774,26 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
     remove.disabled = count === 0;
   };
   all.addEventListener('change', () => {
-    for (const row of rows) row.box.checked = all.checked;
+    for (const row of rows) row.box.checked = all.checked || row.page.source.important;
     update();
   });
-  for (const row of rows) row.box.addEventListener('change', update);
+  for (const row of rows) {
+    row.box.addEventListener('change', () => {
+      if (row.page.source.important) row.box.checked = true;
+      update();
+    });
+    row.star.addEventListener('click', () => toggleStar(row));
+    showStar(row);
+  }
 
   const list = h('ul', { class: 'checklist review-list', attrs: { 'aria-label': 'Recorded pages' } }, rows.map((row) => h('li', {}, [row.label])));
   list.addEventListener('keydown', (event) => {
-    const at = rows.findIndex((row) => row.box === event.target);
+    const at = rows.findIndex((row) => row.box === event.target || row.star === event.target);
     if (at < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       rows[Math.min(n - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]!.box.focus();
+    } else if (event.key === 'i' || event.key === 'I') {
+      toggleStar(rows[at]!);
     } else if (event.key === 'o' || event.key === 'O') {
       // A new active tab would close the toolbar popup, and the review with it.
       const active = !document.documentElement.classList.contains('popup');
@@ -1699,7 +1811,7 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
         const gone = result.removed - result.stayed;
         const kept = n - chosen.length + result.kept + result.stayed;
         const reasons = [
-          result.kept ? `${plural(result.kept, 'page')} you added notes to or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '',
+          result.kept ? `${plural(result.kept, 'page')} you added notes to, marked important or moved ${result.kept === 1 ? 'is' : 'are'} kept.` : '',
           result.stayed ? `${plural(result.stayed, 'page')} you clipped ${result.stayed === 1 ? 'is' : 'are'} kept.` : '',
         ].filter(Boolean).join(' ');
         if (gone) showToast(`${plural(gone, 'recorded page')} removed. ${kept} kept.${reasons ? ` ${reasons}` : ''}`);
@@ -1720,9 +1832,11 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
     [
       h('p', {}, [
         `${plural(n, 'page')} ${n === 1 ? 'was' : 'were'} saved to ${where} as ${n === 1 ? 'an address' : 'addresses'}${lost}. `,
+        earlier ? `${plural(earlier, 'page')} the session already had ${earlier === 1 ? 'was' : 'were'} visited again. ` : '',
         n === 1 ? 'Uncheck it if you do not need it; it is removed when you click Remove.' : 'Uncheck the ones you do not need; they are removed when you click Remove.',
+        ' Pages you mark important stay.',
       ]),
-      h('p', { class: 'small' }, ['↑ ↓ move · Space keeps or removes · O opens the page in a new tab']),
+      h('p', { class: 'small' }, ['↑ ↓ move · Space keeps or removes · I marks important · O opens the page in a new tab']),
       h('label', { class: 'review-all' }, [all, 'All pages']),
       list,
       h('div', { class: 'sheet-actions review-actions' }, [
@@ -1734,12 +1848,13 @@ async function reviewRecording(saved: SavedCapture[], failed: number): Promise<v
   );
 }
 
-/** The message after this window's recording ends, with Undo for the pages it saved. */
-function showRecordingEnded(start: string, where: string, saved: SavedCapture[], failed: number, nothing: string): void {
+/** The message after this window's recording ends, with Undo for the pages it saved and its visits. */
+function showRecordingEnded(start: string, where: string, saved: SavedCapture[], visits: SavedCapture[], failed: number, nothing: string): void {
   const lost = failed ? `; ${failed} could not be saved` : '';
-  showToast(saved.length || lost ? `${start} ${plural(saved.length, 'page')} saved${where}${lost}.` : nothing, {
+  const again = visits.length ? ` ${plural(visits.length, 'visit')} to pages the session already had ${visits.length === 1 ? 'was' : 'were'} noted.` : '';
+  showToast(saved.length || lost ? `${start} ${plural(saved.length, 'page')} saved${where}${lost}.${again}` : `${nothing}${again}`, {
     level: lost ? 'error' : 'info',
-    undo: saved.length ? () => undoBatchWithToast(saved, 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
+    undo: saved.length ? () => undoBatchWithToast([...saved, ...visits], 'Recorded pages removed. Earlier captures are kept.', 'Those pages were already removed.') : undefined,
   });
 }
 
@@ -1889,7 +2004,7 @@ function bind(): void {
       renderRecording();
       // Another window started recording, which ended the recording here.
       if (before && before.window_id === windowId && recording && recording.window_id !== windowId) {
-        showRecordingEnded('Recording moved to another window.', ' here', before.captures, before.failed, 'Recording moved to another window. No new pages here.');
+        showRecordingEnded('Recording moved to another window.', ' here', before.captures, before.visits ?? [], before.failed, 'Recording moved to another window. No new pages here.');
       }
     }
     if (area === 'local' && changes[OPEN_MODE_KEY]) renderOpenMode(changes[OPEN_MODE_KEY].newValue === 'popup' ? 'popup' : 'panel');

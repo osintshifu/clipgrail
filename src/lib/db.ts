@@ -1,10 +1,10 @@
 import { INBOX_SESSION_ID } from './model';
-import type { Capture, CaptureFrame, CaptureKind, FailedSnapshot, Fragment, OkSnapshotMeta, Session, Snapshot, SnapshotMeta, Source } from './model';
+import type { Capture, CaptureFrame, CaptureKind, CaptureNavigation, FailedSnapshot, Fragment, OkSnapshotMeta, Session, Snapshot, SnapshotMeta, Source } from './model';
 import type { ResearchJob } from './research-job';
 import type { SnapshotDraft } from './snapshot';
 
 export const DB_NAME = 'clipgrail';
-export const DB_SCHEMA_VERSION = 5;
+export const DB_SCHEMA_VERSION = 6;
 /** Records as they appear in backups. The texts of successful snapshots are part of the snapshot records there. */
 export const DATA_STORES = ['sessions', 'sources', 'captures', 'snapshots', 'jobs'] as const;
 export type DataStore = (typeof DATA_STORES)[number];
@@ -108,6 +108,11 @@ export function openDb(name: string = DB_NAME): Promise<IDBDatabase> {
         defaults.sources.merged_ids = [];
         defaults.captures.frame = null;
       }
+      if (event.oldVersion >= 1 && event.oldVersion < 6) {
+        // v6: sources can be marked important; recorded pages keep how they were reached. Earlier captures have no navigation recorded.
+        defaults.sources.important = false;
+        defaults.captures.navigation = null;
+      }
       for (const [store, fields] of Object.entries(defaults)) {
         if (Object.keys(fields).length && request.transaction) backfill(request.transaction.objectStore(store), fields);
       }
@@ -185,9 +190,31 @@ export function hasSession(db: IDBDatabase, id: string): Promise<boolean> {
   return inTransaction(db, ['sessions'], 'readonly', async (tx) => (await result(tx.objectStore('sessions').getKey(id))) !== undefined);
 }
 
-/** True when the session already has a source with this address. */
-export function hasSourceAddress(db: IDBDatabase, sessionId: string, dedupUrl: string): Promise<boolean> {
-  return inTransaction(db, ['sources'], 'readonly', async (tx) => (await result(tx.objectStore('sources').index('session_dedup_url').count([sessionId, dedupUrl]))) > 0);
+/**
+ * Saves a page a recording visited, in one transaction with the look at the
+ * session, so a source deleted or moved meanwhile is never recreated by a
+ * visit alone. `kindFor` gets when the page was last saved or visited (the
+ * newest capture other than a link saved without opening it): undefined when
+ * the session does not have the page, null when it has it only as such links.
+ * It returns the kind to save, or null to save nothing. A page is saved with
+ * a PENDING snapshot, a visit without one.
+ */
+export function commitRecordedPage(
+  db: IDBDatabase,
+  draft: Omit<CaptureDraft, 'kind' | 'snapshot'>,
+  kindFor: (lastOpenedAt: string | null | undefined) => 'tab' | 'visit' | null,
+): Promise<CommitResult | null> {
+  return inTransaction(db, CAPTURE_STORES, 'readwrite', async (tx) => {
+    const source = (await result(tx.objectStore('sources').index('session_dedup_url').get([draft.session_id, draft.dedup_url]))) as Source | undefined;
+    let last: string | null | undefined;
+    if (source) {
+      const captures = (await result(tx.objectStore('captures').index('source').getAll(source.id))) as Capture[];
+      last = captures.filter((c) => c.kind !== 'link').map((c) => c.captured_at).sort().at(-1) ?? null;
+    }
+    const kind = kindFor(last);
+    if (!kind) return null;
+    return addCapture(tx, { ...draft, kind, snapshot: kind === 'tab' ? { status: 'pending' } : null });
+  });
 }
 
 export function listSessions(db: IDBDatabase): Promise<Session[]> {
@@ -278,6 +305,15 @@ export function loadNote(db: IDBDatabase, kind: 'source' | 'capture', id: string
   });
 }
 
+/** Marks a source important or not. */
+export function setSourceImportant(db: IDBDatabase, sourceId: string, important: boolean): Promise<void> {
+  return inTransaction(db, ['sources'], 'readwrite', async (tx) => {
+    const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
+    if (!source) throw new Error('This source no longer exists.');
+    tx.objectStore('sources').put({ ...source, important });
+  });
+}
+
 export function updateSourceNote(db: IDBDatabase, sourceId: string, note: string): Promise<Source> {
   return inTransaction(db, ['sources'], 'readwrite', async (tx) => {
     const source = (await result(tx.objectStore('sources').get(sourceId))) as Source | undefined;
@@ -302,7 +338,9 @@ export interface CaptureDraft {
   fragment: Fragment | null;
   /** Selections made in an embedded frame (see CaptureFrame); absent otherwise. */
   frame?: CaptureFrame | null;
-  /** Required for page, link and tab captures, absent for selections. */
+  /** Pages saved by a recording and visits (see CaptureNavigation); absent otherwise. */
+  navigation?: CaptureNavigation | null;
+  /** Required for page, link and tab captures, absent for selections and visits. */
   snapshot: SnapshotDraft | null;
 }
 
@@ -311,7 +349,7 @@ export interface CommitResult {
   capture: Capture;
   snapshot: Snapshot | null;
   isNewSource: boolean;
-  /** Number of captures of this source after this one was added. */
+  /** Number of captures of this source after this one was added, visits not counted. */
   captureCount: number;
 }
 
@@ -345,6 +383,8 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     | Source
     | undefined;
   const isNewSource = !source;
+  // A visit is a return to a page the session has; it never makes a source by itself.
+  if (!source && draft.kind === 'visit') throw new Error('A visit needs a source that already exists.');
   if (!source) {
     source = {
       id: crypto.randomUUID(),
@@ -354,6 +394,7 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
       created_at: draft.captured_at,
       note: '',
       merged_ids: [],
+      important: false,
     };
     sessions.put({ ...session, next_source_number: session.next_source_number + 1 });
     sources.add(source);
@@ -373,6 +414,7 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     anchor_text: draft.anchor_text,
     fragment: draft.fragment,
     frame: draft.frame ?? null,
+    navigation: draft.navigation ?? null,
     snapshot_id: snapshotId,
     note: '',
   };
@@ -390,8 +432,8 @@ async function addCapture(tx: IDBTransaction, draft: CaptureDraft): Promise<Comm
     tx.objectStore('snapshots').add(meta);
     if (text) tx.objectStore(TEXT_STORE).add(text);
   }
-  const captureCount = await result(tx.objectStore('captures').index('source').count(source.id));
-  return { source, capture, snapshot, isNewSource, captureCount };
+  const all = (await result(tx.objectStore('captures').index('source').getAll(source.id))) as Capture[];
+  return { source, capture, snapshot, isNewSource, captureCount: all.filter((c) => c.kind !== 'visit').length };
 }
 
 export interface UndoResult {
@@ -401,8 +443,14 @@ export interface UndoResult {
   sourceRemoved: boolean;
 }
 
-/** Removes a capture with its snapshot, text and thumbnail, and its source when no other capture is left; true when the source went too. */
-async function removeCapture(tx: IDBTransaction, capture: Capture): Promise<boolean> {
+/**
+ * Removes a capture with its snapshot, text and thumbnail, and returns the
+ * captures its source still has. Visits are returns to a page that was
+ * opened: when only links saved without opening the page are left, the
+ * visits go too. A source exists only while it has a capture other than a
+ * visit: when none is left, the source goes and nothing is returned.
+ */
+async function removeCapture(tx: IDBTransaction, capture: Capture): Promise<Capture[]> {
   const captures = tx.objectStore('captures');
   if (capture.snapshot_id) {
     tx.objectStore('snapshots').delete(capture.snapshot_id);
@@ -410,9 +458,12 @@ async function removeCapture(tx: IDBTransaction, capture: Capture): Promise<bool
   }
   tx.objectStore(THUMB_STORE).delete(capture.id);
   captures.delete(capture.id);
-  const remaining = await result(captures.index('source').count(capture.source_id));
-  if (remaining === 0) tx.objectStore('sources').delete(capture.source_id);
-  return remaining === 0;
+  const remaining = ((await result(captures.index('source').getAll(capture.source_id))) as Capture[]).filter((c) => c.id !== capture.id);
+  if (remaining.some((c) => c.kind !== 'visit' && c.kind !== 'link')) return remaining;
+  for (const visit of remaining.filter((c) => c.kind === 'visit')) captures.delete(visit.id);
+  const links = remaining.filter((c) => c.kind === 'link');
+  if (!links.length) tx.objectStore('sources').delete(capture.source_id);
+  return links;
 }
 
 /** Removes exactly these captures and their snapshots in one transaction. Other captures of their sources stay untouched. */
@@ -421,7 +472,7 @@ export function undoCaptures(db: IDBDatabase, captureIds: string[]): Promise<Und
     const results: UndoResult[] = [];
     for (const captureId of captureIds) {
       const capture = (await result(tx.objectStore('captures').get(captureId))) as Capture | undefined;
-      results.push(capture ? { removed: true, sourceRemoved: await removeCapture(tx, capture) } : { removed: false, sourceRemoved: false });
+      results.push(capture ? { removed: true, sourceRemoved: (await removeCapture(tx, capture)).length === 0 } : { removed: false, sourceRemoved: false });
     }
     return results;
   });
@@ -436,9 +487,10 @@ export interface SavedCapture {
 /**
  * Undo of saved tabs or a recording, which can come long after the first
  * page was saved. Captures the user has worked on since stay: a capture with
- * a note, or one whose source has a note or was moved to another session.
- * `stayed` counts the removed captures whose source stays with other captures,
- * such as a clip of the page made since.
+ * a note, or one whose source has a note, is marked important or was moved to
+ * another session. `stayed` counts the removed captures whose source stays
+ * with other captures saved since, such as a clip of the page. Visits are
+ * removed and not counted: they are not pages.
  */
 export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promise<{ removed: number; kept: number; stayed: number }> {
   return inTransaction(db, ['captures', 'snapshots', TEXT_STORE, THUMB_STORE, 'sources'], 'readwrite', async (tx) => {
@@ -448,12 +500,17 @@ export function undoSavedCaptures(db: IDBDatabase, saved: SavedCapture[]): Promi
     for (const { capture_id, session_id } of saved) {
       const capture = (await result(tx.objectStore('captures').get(capture_id))) as Capture | undefined;
       if (!capture) continue;
+      if (capture.kind === 'visit') {
+        await removeCapture(tx, capture);
+        continue;
+      }
       const source = (await result(tx.objectStore('sources').get(capture.source_id))) as Source | undefined;
-      if (capture.note.trim() || source?.note.trim() || capture.session_id !== session_id) {
+      if (capture.note.trim() || source?.note.trim() || source?.important || capture.session_id !== session_id) {
         kept += 1;
         continue;
       }
-      if (!(await removeCapture(tx, capture))) stayed += 1;
+      // Kept by a capture saved since, such as a clip; a link saved before does not count, the recorded page is gone.
+      if ((await removeCapture(tx, capture)).some((c) => c.kind !== 'link')) stayed += 1;
       removed += 1;
     }
     return { removed, kept, stayed };
@@ -518,7 +575,7 @@ export function moveSource(db: IDBDatabase, sourceId: string, targetSessionId: s
     if (existing) {
       const mergedIds = new Set([...existing.merged_ids, source.id, ...source.merged_ids]);
       mergedIds.delete(existing.id);
-      moved = { ...existing, note: joinNotes(existing.note, source.note), merged_ids: [...mergedIds] };
+      moved = { ...existing, note: joinNotes(existing.note, source.note), merged_ids: [...mergedIds], important: existing.important || source.important };
       sources.delete(source.id);
     } else {
       moved = { ...source, session_id: target.id, number: target.next_source_number };
@@ -584,6 +641,9 @@ function jobsIncluding(tx: IDBTransaction, sources: Source[], captures: Capture[
   });
 }
 
+/** Captures other than visits: what the user saved. */
+const savedCount = (captures: Capture[]) => captures.filter((c) => c.kind !== 'visit').length;
+
 /** All captures of these sources. */
 async function capturesOf(tx: IDBTransaction, sourceIds: string[]): Promise<Capture[]> {
   const index = tx.objectStore('captures').index('source');
@@ -630,7 +690,7 @@ async function removeSources(tx: IDBTransaction, sources: Source[]): Promise<Del
   deleteCaptures(tx, captures);
   for (const job of jobs) tx.objectStore('jobs').delete(job.id);
   for (const id of ids) tx.objectStore('sources').delete(id);
-  return { sources: ids.length, captures: captures.length, jobs: jobs.length };
+  return { sources: ids.length, captures: savedCount(captures), jobs: jobs.length };
 }
 
 /** A session's sources and captures, and the Research Jobs that deleting them removes: its own and any other that includes one of its sources. */
@@ -647,7 +707,7 @@ async function clearSession(tx: IDBTransaction, sessionId: string): Promise<Dele
   deleteCaptures(tx, captures);
   for (const id of sourceIds) tx.objectStore('sources').delete(id);
   for (const id of jobIds) tx.objectStore('jobs').delete(id);
-  return { sources: sourceIds.length, captures: captures.length, jobs: jobIds.size };
+  return { sources: sourceIds.length, captures: savedCount(captures), jobs: jobIds.size };
 }
 
 /** Deletes a session with everything in it, including its Research Jobs. The Inbox can only be emptied. */
@@ -671,7 +731,7 @@ export function countForDeletion(db: IDBDatabase, sessionId: string, sourceId?: 
   if (sourceId !== undefined) return countSourcesForDeletion(db, [sourceId]);
   return inTransaction(db, ['sources', 'captures', 'jobs'], 'readonly', async (tx) => {
     const { sourceIds, captures, jobIds } = await sessionContents(tx, sessionId);
-    return { sources: sourceIds.length, captures: captures.length, jobs: jobIds.size };
+    return { sources: sourceIds.length, captures: savedCount(captures), jobs: jobIds.size };
   });
 }
 
@@ -682,7 +742,7 @@ export function countSourcesForDeletion(db: IDBDatabase, sourceIds: string[]): P
     const sources = found.filter((source): source is Source => !!source);
     const captures = await capturesOf(tx, sources.map((source) => source.id));
     const jobs = await jobsIncluding(tx, sources, captures);
-    return { sources: sources.length, captures: captures.length, jobs: jobs.length };
+    return { sources: sources.length, captures: savedCount(captures), jobs: jobs.length };
   });
 }
 
@@ -706,7 +766,7 @@ export function summarizeData(db: IDBDatabase): Promise<DataSummary> {
     const characters =
       snapshots.reduce((sum, s) => sum + (s.status === 'ok' ? s.character_count : 0), 0) +
       captures.reduce((sum, c) => sum + (c.fragment?.character_count ?? 0), 0);
-    return { sessions, sources, captures: captures.length, characters };
+    return { sessions, sources, captures: savedCount(captures), characters };
   });
 }
 
@@ -720,8 +780,10 @@ export interface CaptureEntry<S extends SnapshotMeta = Snapshot> {
 
 export interface SourceEntry<S extends SnapshotMeta = Snapshot> {
   source: Source;
-  /** Oldest first. */
+  /** Oldest first, visits not included. */
   captures: CaptureEntry<S>[];
+  /** Recorded returns to the page, oldest first. */
+  visits: Capture[];
 }
 
 export interface SessionView {
@@ -730,11 +792,16 @@ export interface SessionView {
   sources: SourceEntry[];
 }
 
-/** Groups captures with their snapshots under their sources, captures oldest first and sources by S-number. */
+/** Groups captures with their snapshots under their sources, captures and visits oldest first and sources by S-number. */
 function groupSources<S extends SnapshotMeta>(sources: Source[], captures: Capture[], snapshots: S[]): SourceEntry<S>[] {
   const snapshotById = new Map(snapshots.map((s) => [s.id, s]));
   const bySource = new Map<string, CaptureEntry<S>[]>();
+  const visits = new Map<string, Capture[]>();
   for (const capture of captures) {
+    if (capture.kind === 'visit') {
+      visits.set(capture.source_id, [...(visits.get(capture.source_id) ?? []), capture]);
+      continue;
+    }
     const list = bySource.get(capture.source_id) ?? [];
     list.push({ capture, snapshot: capture.snapshot_id ? snapshotById.get(capture.snapshot_id) : undefined });
     bySource.set(capture.source_id, list);
@@ -743,7 +810,11 @@ function groupSources<S extends SnapshotMeta>(sources: Source[], captures: Captu
     a.capture.captured_at.localeCompare(b.capture.captured_at) || a.capture.id.localeCompare(b.capture.id);
   return sources
     .sort((a, b) => a.number - b.number)
-    .map((source) => ({ source, captures: (bySource.get(source.id) ?? []).sort(ordered) }));
+    .map((source) => ({
+      source,
+      captures: (bySource.get(source.id) ?? []).sort(ordered),
+      visits: (visits.get(source.id) ?? []).sort((a, b) => a.captured_at.localeCompare(b.captured_at) || a.id.localeCompare(b.id)),
+    }));
 }
 
 /**

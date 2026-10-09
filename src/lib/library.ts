@@ -41,6 +41,8 @@ export interface LibraryFilter {
   view: string;
   query: string;
   status: SourceStatus | 'any';
+  /** Only sources marked important. */
+  important: boolean;
   sort: LibrarySort;
 }
 
@@ -140,9 +142,11 @@ function matches(row: LibraryRow, query: SearchQuery, hits: TextHits | undefined
  * Rows of the chosen view that contain every word and phrase of the search,
  * pass its site:, after: and before:, and have the chosen status, in the
  * chosen order. Saved texts count once a search has read them (hits).
+ * The timeline leaves out after: and before: here and applies them to each event.
  */
-export function filterRows(rows: LibraryRow[], filter: LibraryFilter, hits?: TextHits): LibraryRow[] {
+export function filterRows(rows: LibraryRow[], filter: LibraryFilter, hits?: TextHits, anyDay = false): LibraryRow[] {
   const query = parseSearch(filter.query);
+  if (anyDay) Object.assign(query, { after: null, before: null });
   const key = filter.sort.startsWith('last') ? 'last_captured_at' : 'added_at';
   const direction = filter.sort.endsWith('desc') ? -1 : 1;
   return rows
@@ -150,6 +154,7 @@ export function filterRows(rows: LibraryRow[], filter: LibraryFilter, hits?: Tex
       (row) =>
         (filter.view === ALL_SOURCES || row.session.id === filter.view) &&
         (filter.status === 'any' || row.status === filter.status) &&
+        (!filter.important || row.entry.source.important) &&
         matches(row, query, hits),
     )
     .sort(

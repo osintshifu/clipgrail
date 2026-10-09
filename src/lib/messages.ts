@@ -45,9 +45,10 @@ export interface RecordRequest {
   windowId: number;
 }
 
-/** The captures a stopped recording saved and the pages it could not save (none after a start), or why it failed. */
+/** The pages a stopped recording saved, its visits to pages the session already had and the pages it could not save (none after a start), or why it failed. */
 export interface RecordResponse {
   captures: SavedCapture[];
+  visits?: SavedCapture[];
   failed: number;
   /** After a start that took the recording over from another window: how many pages it had saved there. */
   moved?: { saved: number };
