@@ -31,9 +31,11 @@ import { compareTexts } from '../../lib/diff';
 import { pageCodeBlock } from '../../lib/page-code-block';
 import type { DiffPart, TextDiff } from '../../lib/diff';
 import { ALL_SOURCES, SORT_LABELS, compareChoices, filterRows, libraryRows, searchSnippet, textIdsOf, textShaOf, versionsOf } from '../../lib/library';
-import type { LibraryFilter, LibraryRow, LibrarySort, SearchSnippet, TextHits, Version } from '../../lib/library';
-import { inDays, localDay, parseSearch, storedRanges, textHit } from '../../lib/search';
-import type { SearchQuery } from '../../lib/search';
+import type { LibraryEntry, LibraryFilter, LibraryRow, LibrarySort, TextHits, Version } from '../../lib/library';
+import { PIVOT_GROUPS, PIVOT_KINDS, PIVOT_NOTES, collectPivots, filterPivots, textFinds } from '../../lib/pivots';
+import type { Pivot, PivotFilter, PivotUse, TextFind } from '../../lib/pivots';
+import { fold, inDays, localDay, parseSearch, searchable, storedRanges, textHit } from '../../lib/search';
+import type { SearchQuery, Snippet } from '../../lib/search';
 import { INBOX_SESSION_ID, sourceLabel } from '../../lib/model';
 import { arrival, ledTo, sourcesByAddress, timelineEvents } from '../../lib/timeline';
 import type { TimelineEvent } from '../../lib/timeline';
@@ -51,8 +53,17 @@ let rows: LibraryRow[] = [];
 let shown: LibraryRow[] = [];
 let activeId = INBOX_SESSION_ID;
 const filter: LibraryFilter = { view: ALL_SOURCES, query: '', status: 'any', important: false, sort: 'last-desc' };
-/** The list shows the sources, or a session's timeline: every capture and visit in time order. */
-let mode: 'sources' | 'timeline' = 'sources';
+/** The list shows the sources, a session's timeline (every capture and visit in time order), or pivots: values with the sources each is in. */
+let mode: 'sources' | 'timeline' | 'pivots' = 'sources';
+/** The value open in the reader while no source is, by its key; the filters of the list of values; and the value as written in a source opened from it, marked there. */
+let pivotKey: string | null = null;
+const pivotFilter: PivotFilter = { query: '', group: 'all', shared: true };
+let pivotMark: string | null = null;
+/** The values of the view, as last listed. */
+let pivots: Pivot[] = [];
+/** Values found in each saved text, by snapshot ID. A saved text never changes, so each is read once. */
+const finds = new Map<string, TextFind[]>();
+let readingFinds = false;
 let selectedId: string | null = null;
 let viewedCaptureId: string | null = null;
 /** While comparing: the source, its viewed capture and the one it is compared with; void once another capture or source is viewed. */
@@ -103,7 +114,7 @@ const timelineShown = () => mode === 'timeline' && filter.view !== ALL_SOURCES;
 const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : (sessionOf(filter.view)?.name ?? 'All sources'));
 const selectedRow = () => rows.find((r) => r.entry.source.id === selectedId);
 
-// ---------- Address: #view=<session ID or all>&mode=timeline&source=<source ID> (identifiers only) ----------
+// ---------- Address: #view=<session ID or all>&mode=timeline|pivots&source=<source ID> (identifiers only) ----------
 // The side panel can add capture=<capture ID>&compare=<capture ID> to open a comparison of two saved texts.
 
 function readHash(): void {
@@ -111,7 +122,8 @@ function readHash(): void {
   const view = params.get('view');
   filter.view = view && (view === ALL_SOURCES || sessionOf(view)) ? view : ALL_SOURCES;
   // The timeline is one session's; All sources shows the list.
-  mode = params.get('mode') === 'timeline' && filter.view !== ALL_SOURCES ? 'timeline' : 'sources';
+  const wanted = params.get('mode');
+  mode = wanted === 'pivots' ? 'pivots' : wanted === 'timeline' && filter.view !== ALL_SOURCES ? 'timeline' : 'sources';
   const source = params.get('source');
   if (source !== selectedId) viewedCaptureId = null;
   const capture = params.get('capture');
@@ -127,7 +139,7 @@ function readHash(): void {
 
 function writeHash(): void {
   const params = new URLSearchParams({ view: filter.view });
-  if (timelineShown()) params.set('mode', 'timeline');
+  if (timelineShown() || mode === 'pivots') params.set('mode', mode);
   if (selectedId) params.set('source', selectedId);
   history.replaceState(null, '', `#${params.toString()}`);
 }
@@ -290,7 +302,7 @@ function renderNav(): void {
 function setView(view: string): void {
   clearPicked();
   filter.view = view;
-  if (view === ALL_SOURCES) mode = 'sources';
+  if (view === ALL_SOURCES && mode === 'timeline') mode = 'sources';
   if (selectedId && view !== ALL_SOURCES && selectedRow()?.session.id !== view) {
     selectedId = null;
     viewedCaptureId = null;
@@ -305,10 +317,10 @@ function setView(view: string): void {
 
 // ---------- Sources ----------
 
-/** Where the search found a source, under its title: a passage with the words marked. */
-function snippetLine(found: SearchSnippet): HTMLElement {
-  const { text, marks, cut_before, cut_after } = found.snippet;
-  const parts: Child[] = [h('span', { class: 'where' }, [found.where]), cut_before ? '…' : null];
+/** A passage with the words found marked: under a source, where the search found it; under a source a value is in, around the value. */
+function snippetLine(snippet: Snippet, where?: string): HTMLElement {
+  const { text, marks, cut_before, cut_after } = snippet;
+  const parts: Child[] = [where ? h('span', { class: 'where' }, [where]) : null, cut_before ? '…' : null];
   let at = 0;
   for (const [start, end] of marks) {
     parts.push(text.slice(at, start), h('mark', {}, [text.slice(start, end)]));
@@ -363,7 +375,7 @@ function listItem(row: LibraryRow, mixed: boolean, query: SearchQuery): HTMLLIEl
             h('span', { class: 'src-host' }, [hostOf(entry.source.dedup_url)]),
             h('span', {}, [meta]),
           ]),
-          found ? snippetLine(found) : null,
+          found ? snippetLine(found.snippet, found.where) : null,
         ]),
       ],
     ),
@@ -424,16 +436,20 @@ function openEvent(sourceId: string, captureId: string, userAction: boolean): vo
 }
 
 const rowButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'));
-/** The row of the open source; on the timeline the event of the capture being read, else the source's first event. */
+/** The row of the open source; on the timeline the event of the capture being read, else the source's first event; in Pivots the value open or last opened. */
 function selectedButton(): HTMLButtonElement | undefined {
+  if (mode === 'pivots') return rowButtons().find((b) => b.dataset.pivot === pivotKey);
   const buttons = rowButtons().filter((b) => b.dataset.id === selectedId);
   return buttons.find((b) => b.dataset.capture === viewedCaptureId) ?? buttons[0];
 }
 
-/** One row is reachable with Tab: the open source if it is listed, else the first. */
+/** One row is reachable with Tab: the open source (or value) if it is listed, else the first. */
 function markSelected(): void {
   const buttons = rowButtons();
-  for (const button of buttons) button.setAttribute('aria-current', String(button.dataset.id === selectedId));
+  for (const button of buttons) {
+    const current = button.dataset.pivot !== undefined ? button.dataset.pivot === pivotKey : button.dataset.id === selectedId;
+    button.setAttribute('aria-current', String(current));
+  }
   setTabStop(selectedButton() ?? buttons[0]);
 }
 
@@ -525,7 +541,9 @@ function searchTexts(query: SearchQuery): void {
 /** Puts focus back on the same row, or its checkbox, after the list is drawn again. */
 function keepListFocus(): () => void {
   const active = document.activeElement instanceof HTMLElement && document.activeElement.closest('#rows') ? document.activeElement : null;
-  const selector = active?.dataset.capture
+  const selector = active?.dataset.pivot !== undefined
+    ? `.src[data-pivot="${CSS.escape(active.dataset.pivot)}"]`
+    : active?.dataset.capture
     ? `.src[data-capture="${CSS.escape(active.dataset.capture)}"]`
     : active?.dataset.id
       ? `.src[data-id="${CSS.escape(active.dataset.id)}"]`
@@ -538,25 +556,48 @@ function keepListFocus(): () => void {
 }
 
 function renderList(): void {
+  const pivotsShown = mode === 'pivots';
+  const timeline = timelineShown();
+  $('list-title').textContent = viewName();
+  // Pivots are found in all sources too; the timeline is one session's.
+  $('mode-timeline').hidden = filter.view === ALL_SOURCES;
+  $('mode-sources').setAttribute('aria-pressed', String(!timeline && !pivotsShown));
+  $('mode-timeline').setAttribute('aria-pressed', String(timeline));
+  $('mode-pivots').setAttribute('aria-pressed', String(pivotsShown));
+  for (const id of ['status-filter', 'important-filter']) $(id).hidden = pivotsShown;
+  $('sort').hidden = timeline || pivotsShown;
+  $('pivot-kind').hidden = !pivotsShown;
+  $('shared-only').hidden = !pivotsShown;
+  setSearchLabels(pivotsShown);
+  $('rows').classList.toggle('timeline', timeline);
+  if (pivotsShown) renderPivotList();
+  else renderSourceList(timeline);
+  markSelected();
+  renderSelection();
+  renderNarrowTop(selectedRow());
+}
+
+function renderSourceList(timeline: boolean): void {
   const query = parseSearch(filter.query);
   searchTexts(query);
-  const timeline = timelineShown();
   shown = filterRows(rows, filter, textSearch.hits, timeline);
   const inViewRows = filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view);
   const inView = inViewRows.length;
-  const narrowed = filter.query.trim() !== '' || filter.status !== 'any' || filter.important;
-  $('list-title').textContent = viewName();
+  const narrowed = filter.query.trim() !== '' || filter.status !== 'any' || filter.important || !!filter.pivot;
   $('clear-filters').hidden = !narrowed;
   $('status-filter').classList.toggle('filter-on', filter.status !== 'any');
   $('search').classList.toggle('filter-on', filter.query.trim() !== '');
   const important = $('important-filter');
   important.setAttribute('aria-pressed', String(filter.important));
   important.classList.toggle('filter-on', filter.important);
-  $('mode-switch').hidden = filter.view === ALL_SOURCES;
-  $('mode-sources').setAttribute('aria-pressed', String(!timeline));
-  $('mode-timeline').setAttribute('aria-pressed', String(timeline));
-  $('sort').hidden = timeline;
-  $('rows').classList.toggle('timeline', timeline);
+  // Show sources in Pivots keeps the sources a value is in, until this button or Clear filters.
+  const pivotFilterButton = $('pivot-filter');
+  pivotFilterButton.hidden = !filter.pivot;
+  if (filter.pivot) {
+    fill(pivotFilterButton, [icon('x'), h('span', { class: 'pv-filter-value' }, [filter.pivot.value])]);
+    pivotFilterButton.title = `Only the sources with ${filter.pivot.value}. Click to show all sources.`;
+    pivotFilterButton.setAttribute('aria-label', `Remove filter: sources with ${filter.pivot.value}`);
+  }
   const empty = $('list-empty');
   if (timeline) {
     // Labels name every source of the session, also those the filters hide.
@@ -601,29 +642,51 @@ function renderList(): void {
       ]);
     }
   }
-  markSelected();
-  renderSelection();
-  renderNarrowTop(selectedRow());
 }
 
-/** Shows the session's sources or its timeline. */
-function setMode(next: 'sources' | 'timeline'): void {
+/** The search field searches sources, or in Pivots the values. */
+const SOURCE_SEARCH = { placeholder: $<HTMLInputElement>('search').placeholder, title: $<HTMLInputElement>('search').title };
+const VALUE_SEARCH = { placeholder: 'Search values', title: 'All words must be in the value or its kind. Use quotes for a phrase.' };
+
+/** Shows the search of the list shown: of values in Pivots, else of sources. */
+function showSearch(): void {
+  $<HTMLInputElement>('search').value = mode === 'pivots' ? pivotFilter.query : filter.query;
+}
+
+function setSearchLabels(values: boolean): void {
+  const search = $<HTMLInputElement>('search');
+  const labels = values ? VALUE_SEARCH : SOURCE_SEARCH;
+  search.placeholder = labels.placeholder;
+  search.title = labels.title;
+  search.setAttribute('aria-label', labels.placeholder);
+}
+
+/** Shows the session's sources, its timeline or pivots; each keeps its own search. */
+function setMode(next: typeof mode): void {
   // The timeline is one session's.
   if (next === mode || (next === 'timeline' && filter.view === ALL_SOURCES)) return;
   clearPicked();
   mode = next;
+  showSearch();
   writeHash();
   renderList();
+  renderReader();
   $('list-col').scrollTop = 0;
 }
 
 function clearFilters(): void {
   clearPicked();
-  filter.query = '';
-  filter.status = 'any';
-  filter.important = false;
+  if (mode === 'pivots') {
+    pivotFilter.query = '';
+    pivotFilter.group = 'all';
+  } else {
+    filter.query = '';
+    filter.status = 'any';
+    filter.important = false;
+    filter.pivot = null;
+    $<HTMLSelectElement>('status-filter').value = 'any';
+  }
   $<HTMLInputElement>('search').value = '';
-  $<HTMLSelectElement>('status-filter').value = 'any';
   renderList();
   highlightMatches();
   $('search').focus();
@@ -633,7 +696,9 @@ function openSource(id: string, userAction: boolean): void {
   // A narrow window shows the reader first, so the reader can scroll to a match.
   const narrow = userAction && !wide.matches;
   if (narrow) setReading(true);
-  const query = parseSearch(filter.query);
+  pivotMark = null;
+  // In Pivots the search is of values, not of sources.
+  const query = parseSearch(mode === 'pivots' ? '' : filter.query);
   // Opened from a search: the capture where it found the words (null: the current text), also for the source already open.
   const row = rows.find((r) => r.entry.source.id === id);
   const found = row && query.terms.length ? searchSnippet(row, query, textSearch.hits) : null;
@@ -648,6 +713,225 @@ function openSource(id: string, userAction: boolean): void {
   writeHash();
   renderReader();
   if (narrow) $('back-button').focus();
+}
+
+// ---------- Pivots: values with the sources each is in ----------
+
+/** Reads the saved texts of the view not yet read for values, then lists the values again. */
+function readFinds(entries: LibraryEntry[]): void {
+  if (readingFinds) return;
+  const ids = entries.flatMap(textIdsOf).filter((id) => !finds.has(id));
+  if (!ids.length) return;
+  readingFinds = true;
+  const done = (error?: unknown) => {
+    readingFinds = false;
+    if (error !== undefined) {
+      // Not read again, so a text the browser cannot read does not restart the reading forever.
+      for (const id of ids) if (!finds.has(id)) finds.set(id, []);
+      notice(`Saved texts could not be read for values: ${errorText(error)}`);
+    }
+    if (mode !== 'pivots') return;
+    const restore = keepListFocus();
+    renderList();
+    restore();
+    if (!selectedId) {
+      // The open value is drawn again with the values found; focus stays on its button or source.
+      const active = document.activeElement instanceof HTMLElement && document.activeElement.closest('#reader') ? document.activeElement : null;
+      renderReader();
+      const again = active?.id ? document.getElementById(active.id) : active?.dataset.capture ? document.querySelector<HTMLElement>(`#reader [data-capture="${CSS.escape(active.dataset.capture)}"]`) : null;
+      again?.focus({ preventScroll: true });
+    }
+  };
+  // Reading stops while the list shows something else and goes on when it shows values again.
+  visitSnapshotTexts(db, ids, (id, text) => {
+    if (mode !== 'pivots') return false;
+    try {
+      finds.set(id, textFinds(text));
+    } catch {
+      // One text that cannot be read for values does not hide the values of the others.
+      finds.set(id, []);
+    }
+    return true;
+  }).then(() => done(), done);
+}
+
+function renderPivotList(): void {
+  shown = [];
+  const entries = (filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view)).map((r) => r.entry);
+  readFinds(entries);
+  pivots = collectPivots(entries, (id) => finds.get(id));
+  const listed = filterPivots(pivots, pivotFilter);
+  const narrowed = pivotFilter.query.trim() !== '' || pivotFilter.group !== 'all';
+  $('clear-filters').hidden = !narrowed;
+  $('pivot-filter').hidden = true;
+  $('search').classList.toggle('filter-on', pivotFilter.query.trim() !== '');
+  const kind = $<HTMLSelectElement>('pivot-kind');
+  kind.value = pivotFilter.group;
+  kind.classList.toggle('filter-on', pivotFilter.group !== 'all');
+  const shared = $('shared-only');
+  shared.setAttribute('aria-pressed', String(pivotFilter.shared));
+  shared.classList.toggle('filter-on', pivotFilter.shared);
+  $('result-count').textContent = readingFinds
+    ? 'Reading saved texts…'
+    : narrowed
+      ? `${fmtNumber(listed.length)} of ${count(pivots.length, 'value')}`
+      : pivotFilter.shared
+        ? `${fmtNumber(listed.length)} shared of ${count(pivots.length, 'value')}`
+        : count(pivots.length, 'value');
+  const mixed = filter.view === ALL_SOURCES;
+  $('rows').replaceChildren(...listed.map((pivot) => pivotItem(pivot, mixed)));
+  const empty = $('list-empty');
+  empty.hidden = listed.length > 0;
+  if (listed.length) return;
+  const action = (label: string, run: () => void) => h('button', { class: 'link', attrs: { type: 'button' }, on: { click: run } }, [label]);
+  fill(
+    empty,
+    readingFinds
+      ? [h('p', {}, ['Reading saved texts…'])]
+      : !pivots.length
+        ? [
+            h('p', {}, [
+              'No values yet. Trackers and what pages declare about themselves are read when you clip a page; email addresses, Bitcoin and Ethereum addresses, IBANs and Telegram links are found in saved text and selections.',
+            ]),
+          ]
+        : pivotFilter.shared && !narrowed
+          ? [
+              h('p', {}, ['No value is in two or more sources.']),
+              action('Show all values', () => {
+                pivotFilter.shared = false;
+                renderList();
+                $('shared-only').focus();
+              }),
+            ]
+          : [h('p', {}, ['No values match the search and filters.']), action('Clear filters', clearFilters)],
+  );
+}
+
+function pivotItem(pivot: Pivot, mixed: boolean): HTMLLIElement {
+  const kind = PIVOT_KINDS[pivot.kind];
+  const sites = `${pivot.sites.slice(0, 2).join(', ')}${pivot.sites.length > 2 ? ` +${pivot.sites.length - 2}` : ''}`;
+  const meta = [kind.label, sites, mixed && pivot.sessions > 1 ? count(pivot.sessions, 'session') : null].filter(Boolean).join(' · ');
+  return h('li', {}, [
+    h(
+      'button',
+      {
+        class: 'src pv-row',
+        attrs: {
+          type: 'button',
+          tabindex: '-1',
+          'data-pivot': pivot.key,
+          'aria-current': String(pivot.key === pivotKey),
+          'aria-label': `${kind.label} ${pivot.value}: in ${count(pivot.uses.length, 'source')} on ${count(pivot.sites.length, 'site')}`,
+        },
+        on: { click: () => openPivot(pivot.key, true) },
+      },
+      [
+        h('span', { class: 'pv-kind' }, [kind.badge]),
+        h('span', { class: `pv-value${kind.mono ? ' mono' : ''}` }, [pivot.value]),
+        h('span', { class: 'pv-count' }, [count(pivot.uses.length, 'source')]),
+        h('span', { class: 'src-meta' }, [meta]),
+      ],
+    ),
+  ]);
+}
+
+/** Shows a value of the list in the reader, with the sources it is in. */
+function openPivot(key: string, userAction: boolean): void {
+  const narrow = userAction && !wide.matches;
+  if (narrow) setReading(true);
+  pivotKey = key;
+  pivotMark = null;
+  selectedId = null;
+  viewedCaptureId = null;
+  setComparing(null);
+  $('reader-col').scrollTop = 0;
+  markSelected();
+  writeHash();
+  renderReader();
+  if (narrow) $('back-button').focus();
+}
+
+/** The value open in Pivots: the sources it is in, each opening where the value was found. */
+function renderPivot(reader: HTMLElement): void {
+  const pivot = pivots.find((p) => p.key === pivotKey);
+  if (!pivot) {
+    const message = !pivotKey ? 'Select a value to see the sources it is in.' : readingFinds ? 'Reading saved texts…' : 'This value is not in the sources shown.';
+    reader.replaceChildren(h('div', { class: 'empty' }, [h('p', {}, [message])]));
+    return;
+  }
+  const kind = PIVOT_KINDS[pivot.kind];
+  const mixed = filter.view === ALL_SOURCES;
+  const n = pivot.uses.length;
+  const places = [...new Set(pivot.uses.map((u) => (u.where === 'Selection' ? 'selections' : 'saved text')))].sort();
+  const found = kind.group === 'text' ? `Found in ${places.join(' and ')}.` : `Read from the page code when ${n === 1 ? 'the page was' : 'the pages were'} clipped.`;
+  fill(reader, [
+    h('div', { class: 'crumb' }, [
+      h('span', {}, ['Pivot']),
+      h('span', {}, ['·']),
+      h('span', {}, [kind.label]),
+      h('span', { class: 'pv-actions' }, [
+        h('button', { class: 'btn-sm', attrs: { id: 'copy-pivot', type: 'button' }, on: { click: () => void copyPivot(pivot.value) } }, [icon('copy'), 'Copy']),
+        h('button', { class: 'btn-sm', attrs: { id: 'show-pivot-sources', type: 'button', title: 'List these sources to read them one after another' }, on: { click: () => showPivotSources(pivot) } }, ['Show sources']),
+      ]),
+    ]),
+    h('h3', { class: `pv-title${kind.mono ? ' mono' : ''}` }, [pivot.value]),
+    h('div', { class: 'status-line' }, [
+      h('span', {}, [`In ${count(n, 'source')} on ${count(pivot.sites.length, 'site')}${mixed ? `, in ${count(pivot.sessions, 'session')}` : ''}. ${found}`]),
+    ]),
+    h('div', { class: 'pv-uses' }, pivot.uses.map((use) => pivotUseButton(pivot, use, mixed))),
+    h('p', { class: 'small' }, [PIVOT_NOTES[kind.group]]),
+  ]);
+}
+
+function pivotUseButton(pivot: Pivot, use: PivotUse, mixed: boolean): HTMLButtonElement {
+  const { source } = use.entry;
+  const title = rows.find((r) => r.entry.source.id === source.id)?.title ?? source.dedup_url;
+  const meta = [hostOf(source.dedup_url), mixed ? (sessionOf(source.session_id)?.name ?? null) : null, use.where].filter(Boolean).join(' · ');
+  return h('button', { class: 'pv-use', attrs: { type: 'button', 'data-id': source.id, 'data-capture': use.capture_id }, on: { click: () => openPivotUse(pivot, use) } }, [
+    h('span', { class: 'sid' }, [sourceLabel(source)]),
+    h('span', { class: 'pv-use-title' }, [title]),
+    h('span', { class: 'pv-use-meta' }, [meta]),
+    use.snippet ? snippetLine(use.snippet) : null,
+  ]);
+}
+
+/** Opens a source the value is in at the capture where it was found, with the value marked; a value from the page code is in Details. */
+function openPivotUse(pivot: Pivot, use: PivotUse): void {
+  if (PIVOT_KINDS[pivot.kind].group !== 'text') detailsOpen = true;
+  openSource(use.entry.source.id, true);
+  pivotMark = use.raw;
+  scrollToMatch = true;
+  viewCapture(use.capture_id, false);
+  if (wide.matches) document.querySelector<HTMLElement>(`#reader .ver[data-id="${CSS.escape(use.capture_id)}"]`)?.focus({ preventScroll: true });
+}
+
+async function copyPivot(value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (error) {
+    notice(`Not copied: ${errorText(error)}`);
+    return;
+  }
+  say(`Copied ${value}.`);
+  const button = document.getElementById('copy-pivot');
+  if (!button) return;
+  fill(button, [icon('check'), 'Copied']);
+  setTimeout(() => fill(button, [icon('copy'), 'Copy']), 1500);
+}
+
+/** Lists the sources a value is in, with the other filters cleared, and opens the first. */
+function showPivotSources(pivot: Pivot): void {
+  filter.pivot = { value: pivot.value, ids: new Set(pivot.uses.map((u) => u.entry.source.id)) };
+  filter.query = '';
+  filter.status = 'any';
+  filter.important = false;
+  $<HTMLSelectElement>('status-filter').value = 'any';
+  setMode('sources');
+  const first = shown[0];
+  // A wide window reads the first source next to the list; a narrow one shows the list.
+  if (first && wide.matches) openSource(first.entry.source.id, false);
+  else setReading(false);
+  rowButtons()[0]?.focus();
 }
 
 // ---------- The open source ----------
@@ -723,9 +1007,12 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
   if (box.isConnected) highlightMatches();
 }
 
-/** Marks the search words in the texts and page code values shown in the reader; after a source is opened from a search, scrolls to the first. */
+/**
+ * Marks the search words (in Pivots the value a source was opened for) in the texts and page code values shown in the
+ * reader; after a source is opened from a search or a value, scrolls to the first.
+ */
 function highlightMatches(): void {
-  const terms = parseSearch(filter.query).terms;
+  const terms = mode === 'pivots' ? (pivotMark ? [fold(searchable(pivotMark))] : []) : parseSearch(filter.query).terms;
   const ranges: Range[] = [];
   const shown = '#reader .text-box:not([aria-busy]):not(.diff-box), #reader .page-code dd > span:first-child';
   for (const box of terms.length ? document.querySelectorAll<HTMLElement>(shown) : []) {
@@ -850,7 +1137,7 @@ function diffOf(older: Version, newer: Version, key: string): TextDiff | null | 
   return lastDiff.diff;
 }
 
-/** Tells screen readers what a comparison found, or which change Previous and Next moved to. */
+/** Tells screen readers what a comparison found, which change Previous and Next moved to, or that a value was copied. */
 function say(text: string): void {
   $('compare-said').textContent = text;
 }
@@ -1052,6 +1339,7 @@ function renderReaderContents(): void {
   $('narrow-session-actions').hidden = !actionSession;
   expandButton.hidden = !row;
   applyLayout();
+  if (!row && !selectedId && mode === 'pivots') return renderPivot(reader);
   if (!row) {
     reader.replaceChildren(
       h('div', { class: 'empty' }, [
@@ -1412,7 +1700,9 @@ async function moveSelected(row: LibraryRow, target: Session): Promise<void> {
     filter.view = target.id;
     filter.query = '';
     filter.status = 'any';
-    $<HTMLInputElement>('search').value = '';
+    // The sources a value was in are not the moved source's, which can have joined another.
+    filter.pivot = null;
+    showSearch();
     $<HTMLSelectElement>('status-filter').value = 'any';
     writeHash();
     // Settings belong to the source session, which need not be the active session.
@@ -1437,6 +1727,7 @@ async function moveSelected(row: LibraryRow, target: Session): Promise<void> {
 async function reload(): Promise<void> {
   const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const focus = active?.dataset.id ? { id: active.dataset.id, capture: active.dataset.capture, inRows: !!active.closest('#rows') } : null;
+  const restoreRow = keepListFocus();
   // Reader controls such as Next keep focus by their ID; notes keep it with their caret below.
   const control = !focus && active?.id && active.closest('#reader') && active.tagName !== 'TEXTAREA' ? active.id : '';
   const restoreNote = keepNoteFocus();
@@ -1451,6 +1742,8 @@ async function reload(): Promise<void> {
   $('reader-col').scrollTop = scroll[1];
   restoreNote();
   if (control) document.getElementById(control)?.focus({ preventScroll: true });
+  // A value of Pivots keeps focus by its key.
+  if (active?.dataset.pivot !== undefined) restoreRow();
   if (focus) {
     const where = focus.inRows ? '#rows' : '#reader';
     const event = focus.capture ? document.querySelector<HTMLElement>(`${where} [data-capture="${CSS.escape(focus.capture)}"]`) : null;
@@ -1466,7 +1759,9 @@ function bind(): void {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       clearPicked();
-      filter.query = (event.target as HTMLInputElement).value;
+      const value = (event.target as HTMLInputElement).value;
+      if (mode === 'pivots') pivotFilter.query = value;
+      else filter.query = value;
       renderList();
       highlightMatches();
     }, 120);
@@ -1487,6 +1782,24 @@ function bind(): void {
   });
   $('mode-sources').addEventListener('click', () => setMode('sources'));
   $('mode-timeline').addEventListener('click', () => setMode('timeline'));
+  $('mode-pivots').addEventListener('click', () => setMode('pivots'));
+  const kind = $<HTMLSelectElement>('pivot-kind');
+  const kinds: Array<[string, string]> = [['all', 'All kinds'], ...Object.entries(PIVOT_GROUPS)];
+  kind.replaceChildren(...kinds.map(([value, label]) => h('option', { attrs: { value } }, [label])));
+  kind.addEventListener('change', () => {
+    pivotFilter.group = kind.value as PivotFilter['group'];
+    renderList();
+  });
+  $('shared-only').addEventListener('click', () => {
+    pivotFilter.shared = !pivotFilter.shared;
+    renderList();
+  });
+  $('pivot-filter').addEventListener('click', () => {
+    clearPicked();
+    filter.pivot = null;
+    renderList();
+    $('search').focus();
+  });
   $('clear-filters').addEventListener('click', clearFilters);
   $<HTMLInputElement>('select-all').addEventListener('change', (event) => {
     if ((event.target as HTMLInputElement).checked) for (const row of shown) picked.add(row.entry.source.id);
@@ -1520,12 +1833,15 @@ function bind(): void {
     const button = buttons[next]!;
     setTabStop(button);
     button.focus();
-    if (!wide.matches || !button.dataset.id) return;
+    if (!wide.matches) return;
+    if (button.dataset.pivot !== undefined) openPivot(button.dataset.pivot, false);
+    if (!button.dataset.id) return;
     if (button.dataset.capture) openEvent(button.dataset.id, button.dataset.capture, false);
     else openSource(button.dataset.id, false);
   });
   window.addEventListener('hashchange', () => {
     readHash();
+    showSearch();
     // A capture and comparison from the side panel are opened once, so the same link works again.
     writeHash();
     renderNav();

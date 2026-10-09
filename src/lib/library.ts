@@ -45,6 +45,8 @@ export interface LibraryFilter {
   /** Only sources marked important. */
   important: boolean;
   sort: LibrarySort;
+  /** Only the sources a value is in, chosen with Show sources in Pivots. */
+  pivot?: { value: string; ids: Set<string> } | null;
 }
 
 export const ALL_SOURCES = 'all';
@@ -160,6 +162,7 @@ export function filterRows(rows: LibraryRow[], filter: LibraryFilter, hits?: Tex
         (filter.view === ALL_SOURCES || row.session.id === filter.view) &&
         (filter.status === 'any' || row.status === filter.status) &&
         (!filter.important || row.entry.source.important) &&
+        (!filter.pivot || filter.pivot.ids.has(row.entry.source.id)) &&
         matches(row, query, hits),
     )
     .sort(

@@ -354,6 +354,77 @@ describe('organizing in the library', () => {
     expect(location.hash).not.toContain('mode=timeline');
   });
 
+  it('lists the values found in several sources, shows the sources of one, opens a source where it is, and lists those sources', async () => {
+    // jsdom has no layout; the reader scrolls to the marked value by its position.
+    Range.prototype.getBoundingClientRect = () => new DOMRect();
+    const { db, session, capture } = await openExample('Pivots');
+    const code = { declared: [], trackers: [{ kind: 'ga4' as const, id: 'G-PIV0T2K9QX', where: ['script_address' as const] }] };
+    const wallet = 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh';
+    const a = await commitCapture(db, { ...(await pageDraft('https://a.example.test/', `Donate: ${wallet}.`, '2026-10-06T10:00:00.000Z', session.id)), page_code: code });
+    const b = await commitCapture(db, { ...(await pageDraft('https://b.example.test/', `Fund ${wallet}`, '2026-10-06T11:00:00.000Z', session.id)), page_code: code });
+    fake.refresh();
+    Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((n) => n.textContent?.startsWith('Pivots'))!.click();
+    // Each list keeps its own search.
+    const search = $<HTMLInputElement>('search');
+    search.value = 'a.example';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect($('result-count').textContent).toBe('1 of 3 sources'));
+    $('mode-pivots').click();
+    await vi.waitFor(() => expect($('result-count').textContent).toBe('2 shared of 2 values'));
+    expect([search.value, search.placeholder]).toEqual(['', 'Search values']);
+    $('mode-sources').click();
+    expect(search.value).toBe('a.example');
+    $('mode-pivots').click();
+    expect(location.hash).toBe(`#view=${session.id}&mode=pivots&source=${capture.source.id}`);
+    const values = () => Array.from(document.querySelectorAll('#rows .pv-row'), (r) => r.textContent);
+    expect(values()).toEqual([
+      'GA4G-PIV0T2K9QX2 sourcesGoogle Analytics 4 · a.example.test, b.example.test',
+      `BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`,
+    ]);
+    // The kind and the search narrow the values; the search of sources is kept for the Sources list.
+    const kind = $<HTMLSelectElement>('pivot-kind');
+    kind.value = 'text';
+    kind.dispatchEvent(new Event('change'));
+    expect([values(), $('result-count').textContent]).toEqual([[`BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`], '1 of 2 values']);
+    $('clear-filters').click();
+    search.value = 'btc';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(values()).toEqual([`BTC${wallet}2 sourcesBitcoin address · a.example.test, b.example.test`]));
+    search.value = 'g-piv0t';
+    search.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(values().map((v) => v?.slice(0, 15))).toEqual(['GA4G-PIV0T2K9QX']));
+
+    // The open value lists its sources; one opens at the capture where the value was found, with Details open for page code.
+    document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
+    expect($('reader').querySelector('h3')?.textContent).toBe('G-PIV0T2K9QX');
+    expect($('reader').querySelector('.status-line')?.textContent).toBe('In 2 sources on 2 sites. Read from the page code when the pages were clipped.');
+    expect(Array.from(document.querySelectorAll('#reader .pv-use .pv-use-meta'), (m) => m.textContent)).toEqual(['a.example.test · script address', 'b.example.test · script address']);
+    document.querySelector<HTMLButtonElement>(`#reader .pv-use[data-id="${b.source.id}"]`)!.click();
+    await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe(`Fund ${wallet}`));
+    expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
+    expect(document.querySelector('#rows .pv-row')?.getAttribute('aria-current')).toBe('true');
+
+    // Copy puts the value on the clipboard.
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
+    $('copy-pivot').click();
+    await vi.waitFor(() => expect($('copy-pivot').textContent).toBe('Copied'));
+    expect(writeText).toHaveBeenCalledWith('G-PIV0T2K9QX');
+
+    // Show sources lists the sources the value is in, until its filter is removed with its button or Clear filters.
+    $('show-pivot-sources').click();
+    expect([$('mode-sources').getAttribute('aria-pressed'), search.value, $('pivot-filter').textContent, $('result-count').textContent]).toEqual(['true', '', 'G-PIV0T2K9QX', '2 of 3 sources']);
+    expect(Array.from(document.querySelectorAll<HTMLButtonElement>('#rows .src'), (r) => r.dataset.id).sort()).toEqual([a.source.id, b.source.id].sort());
+    $('pivot-filter').click();
+    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '3 sources']);
+    $('mode-pivots').click();
+    document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
+    $('show-pivot-sources').click();
+    $('clear-filters').click();
+    expect([$('pivot-filter').hidden, $('result-count').textContent]).toEqual([true, '3 sources']);
+  });
+
   it('finds a source by its saved text, shows where, and opens the earlier version the words are in', async () => {
     // jsdom has no layout; the reader scrolls to the first match by its position.
     Range.prototype.getBoundingClientRect = () => new DOMRect();

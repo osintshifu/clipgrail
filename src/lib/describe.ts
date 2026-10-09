@@ -291,7 +291,7 @@ export function captureDetailRows(capture: Capture, snapshot: SnapshotMeta | und
 
 // ---------- Page code ----------
 
-const DECLARED_LABELS: Record<DeclaredField, string> = {
+export const DECLARED_LABELS: Record<DeclaredField, string> = {
   site_name: 'Site name',
   author: 'Author',
   publisher: 'Publisher',
@@ -301,7 +301,7 @@ const DECLARED_LABELS: Record<DeclaredField, string> = {
   canonical: 'Canonical',
   generator: 'Generator',
 };
-const TRACKER_LABELS: Record<TrackerKind, string> = {
+export const TRACKER_LABELS: Record<TrackerKind, string> = {
   ga4: 'Google Analytics 4',
   google_tag: 'Google tag',
   ua: 'Google Analytics (Universal)',
@@ -309,7 +309,7 @@ const TRACKER_LABELS: Record<TrackerKind, string> = {
   meta_pixel: 'Meta Pixel',
   adsense: 'Google AdSense',
 };
-const PLACE_WORDS: Record<TrackerPlace, string> = {
+export const PLACE_WORDS: Record<TrackerPlace, string> = {
   script_address: 'script address',
   inline_script: 'inline script',
   noscript: 'noscript frame',

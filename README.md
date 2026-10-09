@@ -41,6 +41,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
 | **Page code** | Record the trackers in a clipped page (Google Analytics, Google tag, Tag Manager, Meta Pixel, AdSense) and what it declares about itself, each with where it was found; search finds the pages that share them. |
+| **Pivots** | List the tracker IDs, declared names, email, Bitcoin and Ethereum addresses, IBANs and Telegram links found in several sources, and open the sources each is in. |
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes, see which captures saved the same text, and compare two of them word by word. |
 | **Research library** | Organize sources into sessions; follow a session on its timeline, mark important sources, search saved text, notes and selections, and add notes. |
 | **Research Jobs** | Combine a prompt with selected sources referenced as `[S1]`, `[S2]`, and so on. |
@@ -78,7 +79,7 @@ Click **Record** in ClipGrail, browse normally in that Chrome window, then click
 | **Save link** | URL without opening or downloading the destination. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 
-ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones.
+ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones. **Pivots** lists the values that several sources share, such as a tracker ID, an email address or a crypto address, with the sources each is in.
 
 ### Research Jobs
 

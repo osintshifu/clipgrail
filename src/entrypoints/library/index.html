@@ -29,6 +29,7 @@
           <div id="mode-switch" class="mode-switch" role="group" aria-label="Show">
             <button id="mode-sources" type="button" aria-pressed="true">Sources</button>
             <button id="mode-timeline" type="button" aria-pressed="false" title="Every capture and recorded visit of this session in time order">Timeline</button>
+            <button id="mode-pivots" type="button" aria-pressed="false" title="Trackers, what pages declare and addresses in saved text, with the sources each is in">Pivots</button>
           </div>
         </div>
         <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search text, notes, title or address" aria-label="Search text, notes, title or address" title="All words must match: title, address, label, notes, selections and saved text. Use quotes for a phrase; site:example.org, after:2026-10-01 and before:2026-10-31 narrow the results." autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
@@ -43,6 +44,9 @@
           </select>
           <select id="sort" aria-label="Sort"></select>
           <button id="important-filter" class="btn-sm" type="button" aria-pressed="false" title="Show only sources marked important"><span data-icon="star"></span>Important</button>
+          <select id="pivot-kind" aria-label="Kind" hidden></select>
+          <button id="shared-only" class="btn-sm" type="button" aria-pressed="true" title="Show only values found in two or more sources" hidden>Shared only</button>
+          <button id="pivot-filter" class="btn-sm filter-on" type="button" hidden></button>
           <button id="clear-filters" class="link" type="button" hidden>Clear filters</button>
           <span id="result-count" class="count" role="status"></span>
         </div>

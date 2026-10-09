@@ -106,7 +106,7 @@ select:focus { background-color: var(--surface); }
 .star .ic { width: 12px; height: 12px; }
 .important-toggle[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent-line); }
 .important-toggle[aria-pressed='true'] .ic, #important-filter[aria-pressed='true'] .ic { color: var(--star); }
-/* Sources | Timeline */
+/* Sources | Timeline | Pivots */
 .mode-switch { display: inline-flex; margin-left: auto; gap: 2px; padding: 2px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .mode-switch[hidden] { display: none; }
 .mode-switch button { border: 0; background: none; padding: 3px 10px; font-size: 12px; font-weight: 550; color: var(--muted); border-radius: 5px; }
@@ -222,6 +222,31 @@ select:focus { background-color: var(--surface); }
 details summary { cursor: pointer; color: var(--muted); font-weight: 550; font-size: 12px; }
 details summary:hover { color: var(--fg); }
 .details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 10px 0 6px; font-size: 12px; }
+/* Pivots: a value per row with its kind and how many sources it is in; the open value lists those sources. */
+.src.pv-row { grid-template-columns: 62px minmax(0, 1fr) auto; gap: 3px 10px; padding: 9px 12px; }
+.pv-kind {
+  justify-self: start; margin-top: 1px; font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--sunken);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; line-height: 17px; white-space: nowrap;
+}
+.pv-value { min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.pv-value.mono { font-family: var(--mono); font-size: 12.5px; font-weight: 550; }
+.pv-count { font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pv-row .src-meta { grid-column: 2 / 4; }
+.pv-actions { display: flex; gap: 6px; margin-left: auto; }
+/* Show sources keeps a value as a filter; a long one is cut, its full text is in the title. */
+#pivot-filter { max-width: 100%; min-width: 0; }
+.pv-filter-value { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.reader h3.pv-title.mono { font-family: var(--mono); font-size: 18px; letter-spacing: 0; }
+.pv-uses { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--surface); }
+.pv-use {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 9px; align-items: baseline; padding: 10px 14px; border: 0; border-radius: 0;
+  background: none; text-align: left; font-size: 12.5px; white-space: normal;
+}
+.pv-use + .pv-use { border-top: 1px solid var(--line); }
+.pv-use-title { font-weight: 550; overflow-wrap: anywhere; }
+.pv-use-meta, .pv-use .src-snippet { grid-column: 2; }
+.pv-use-meta { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.pv-use .src-snippet { color: var(--fg-2); }
 .details dt { color: var(--muted); }
 .details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .details dd.mono { font: 11.5px/1.5 var(--mono); }
