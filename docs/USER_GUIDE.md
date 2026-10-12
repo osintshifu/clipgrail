@@ -4,7 +4,7 @@ How ClipGrail collects, organizes and exports research material, what it stores,
 
 ## Collecting sources
 
-The side panel has two views: **Clips** for clipping and reviewing sources and **Create job** for preparing a Research Job; the **Create job** tab shows how many sources go into the job. Every capture goes to the active session, so ClipGrail does not ask where to save it.
+The side panel has two views: **Clips** for clipping and reviewing sources and **Create job** for preparing a Research Job; the **Create job** tab shows how many sources go into the job. **Copy links** above the sources on **Clips** copies the addresses of all sources of the session, one a line, without tracking parameters. Every capture goes to the active session, so ClipGrail does not ask where to save it.
 
 Clicking the toolbar icon opens ClipGrail in a popup, which closes when you click elsewhere. The shortcut and the right-click menu on a page show the result in the popup, which closes by itself when the message goes away. To keep ClipGrail open beside the page, choose **··· > Toolbar button opens > Side panel**: clicking the icon then opens the side panel, and clicking it again closes it. The popup and the side panel show the same views, so what this guide says about the side panel applies to the popup too. Right-click the toolbar icon for **Open library**. In popup mode, the same menu also has **Open side panel**, which opens the side panel while the toolbar button keeps opening the popup.
 
@@ -93,7 +93,7 @@ The library and side panel refresh when research data changes in another ClipGra
 
 1. Write the prompt, or pick one under **Presets ▾** and edit it.
 2. Choose the context.
-3. Choose the sources. New sources are included until you untick them.
+3. Choose the sources. New sources are included until you untick them. **Copy links** next to **All** and **None** copies the addresses of all sources or of the ticked ones, one a line.
 4. Under **Options**, optionally set a maximum number of characters per source and choose which private data to include.
 5. Click **Generate job**. The panel switches to **Result** and shows the job.
 

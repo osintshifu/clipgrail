@@ -525,6 +525,29 @@ describe('side panel', () => {
     expect($('summary').textContent).toContain('Missing text: S2 (URL only) · S3 (Capture failed)');
   });
 
+  it('copies the addresses of the sources one a line: all in Clips, all or the checked ones in Create job', async () => {
+    const db = await openDb();
+    const at = '2026-10-09T10:00:00.000Z';
+    const session = await createSession(db, 'Links');
+    await commitCapture(db, await pageDraft('https://example.com/a', 'Saved text', at, session.id));
+    await commitCapture(db, linkDraft('https://example.com/b', at, 'https://example.com/a', session.id));
+    await pickSession('Links');
+    $('tab-collect').click();
+    await vi.waitFor(() => expect($('sources-heading').textContent).toBe('Sources · 2'));
+    $('copy-links').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Copied 2 links.'));
+    expect(fake.copied.at(-1)!.split('\n').sort()).toEqual(['https://example.com/a', 'https://example.com/b']);
+    $('tab-job').click();
+    await vi.waitFor(() => expect(document.querySelectorAll('#job-sources input[type="checkbox"]')).toHaveLength(2));
+    document.querySelector<HTMLInputElement>('#job-sources input[type="checkbox"]')!.click();
+    await vi.waitFor(() => expect($('copy-checked-links').textContent).toBe('Checked links · 1'));
+    $('copy-links-button').click();
+    expect([$('copy-links-menu').hidden, $('copy-all-links').textContent]).toEqual([false, 'All links · 2']);
+    $('copy-checked-links').click();
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('Copied 1 link.'));
+    expect([fake.copied.at(-1)!.split('\n').length, $('copy-links-menu').hidden]).toEqual([1, true]);
+  });
+
   it('says when Chrome does not open the library', async () => {
     fake.createError = new Error('Tabs cannot be edited right now (user may be dragging a tab).');
     $('library-button').click();

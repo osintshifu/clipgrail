@@ -53,7 +53,7 @@ import { capturedTitle, chooseSnapshot, okSnapshotOf } from '../../lib/selection
 import { openLibrary } from '../../lib/library-tab';
 import { pageCodeBlock } from '../../lib/page-code-block';
 import type { CopyReport } from '../../lib/copy';
-import { copyableValue } from '../../lib/copy';
+import { copyToClipboard, copyableValue } from '../../lib/copy';
 import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { OpenMode, Preset } from '../../lib/settings';
@@ -377,6 +377,17 @@ async function renderStorageSummary(): Promise<void> {
   } catch {
     box.textContent = 'Stored data could not be counted.';
   }
+}
+
+function toggleLinksMenu(open: boolean): void {
+  $('copy-links-menu').hidden = !open;
+  $('copy-links-button').setAttribute('aria-expanded', String(open));
+  if (open) $('copy-links-menu').querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+}
+
+/** Copies the addresses of sources, one a line: the address a Research Job gives, without tracking parameters. */
+function copyLinks(entries: SourceEntry[]): void {
+  void copyToClipboard(entries.map((entry) => entry.source.dedup_url).join('\n'), plural(entries.length, 'link'), reportCopy);
 }
 
 function togglePresetsMenu(open: boolean): void {
@@ -739,7 +750,7 @@ function renderCollect(): void {
   if (!view) return;
   const has = view.sources.length > 0;
   $('sources-heading').textContent = `Sources · ${view.sources.length}`;
-  $('sources-heading').hidden = !has;
+  $('sources-head').hidden = !has;
   $('source-list').hidden = !has;
   $('source-list').replaceChildren(
     ...view.sources.map((entry) => {
@@ -1406,6 +1417,10 @@ function renderJob(): void {
   const excluded = new Set(settings.excluded_source_ids);
   const selectedCount = view.sources.filter((s) => !excluded.has(s.source.id)).length;
   $('job-sources-heading').textContent = `Sources · ${selectedCount} of ${view.sources.length}`;
+  $('copy-all-links').textContent = `All links · ${view.sources.length}`;
+  $('copy-checked-links').textContent = `Checked links · ${selectedCount}`;
+  $<HTMLButtonElement>('copy-checked-links').disabled = selectedCount === 0;
+  $<HTMLButtonElement>('copy-links-button').disabled = view.sources.length === 0;
   $('job-sources-empty').hidden = view.sources.length > 0;
 
   draft = buildResearchJob({ view, settings, id: 'draft', createdAt: '' });
@@ -2103,6 +2118,19 @@ function bind(): void {
     changeSettings({ excluded_source_ids: [] });
     renderJobSources();
   });
+  $('copy-links').addEventListener('click', () => view && copyLinks(view.sources));
+  $('copy-links-button').addEventListener('click', () => toggleLinksMenu($('copy-links-menu').hidden === true));
+  $('copy-all-links').addEventListener('click', () => {
+    toggleLinksMenu(false);
+    $('copy-links-button').focus();
+    if (view) copyLinks(view.sources);
+  });
+  $('copy-checked-links').addEventListener('click', () => {
+    toggleLinksMenu(false);
+    $('copy-links-button').focus();
+    const excluded = new Set(settings.excluded_source_ids);
+    if (view) copyLinks(view.sources.filter((entry) => !excluded.has(entry.source.id)));
+  });
   $('select-none').addEventListener('click', () => {
     changeSettings({ excluded_source_ids: view?.sources.map((s) => s.source.id) ?? [] });
     renderJobSources();
@@ -2120,6 +2148,7 @@ function bind(): void {
     const target = event.target as HTMLElement;
     if (!$('menu').hidden && !target.closest('#menu, #menu-button')) toggleMenu(false);
     if (!$('presets-menu').hidden && !target.closest('#presets-menu, #presets-button')) togglePresetsMenu(false);
+    if (!$('copy-links-menu').hidden && !target.closest('#copy-links-menu, #copy-links-button')) toggleLinksMenu(false);
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -2131,6 +2160,9 @@ function bind(): void {
     } else if (!$('presets-menu').hidden) {
       togglePresetsMenu(false);
       $('presets-button').focus();
+    } else if (!$('copy-links-menu').hidden) {
+      toggleLinksMenu(false);
+      $('copy-links-button').focus();
     } else return;
     event.preventDefault();
   });

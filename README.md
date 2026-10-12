@@ -45,7 +45,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes, see which captures saved the same text, and compare two of them word by word. |
 | **Research library** | Organize sources into sessions; follow a session on its timeline, mark important sources, search saved text, notes and selections, and add notes. |
 | **Research Jobs** | Combine a prompt with selected sources referenced as `[S1]`, `[S2]`, and so on. |
-| **Export and backup** | Copy jobs, export Markdown or JSON, and back up or restore local research data. |
+| **Export and backup** | Copy jobs or source links, export Markdown or JSON, and back up or restore local research data. |
 
 ### Quick start
 

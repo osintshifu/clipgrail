@@ -48,7 +48,10 @@
     <main id="main">
       <section id="view-collect" class="view" role="tabpanel" aria-labelledby="tab-collect">
         <div id="sources-panel" class="view">
-          <h2 id="sources-heading" class="list-head section-title">Sources</h2>
+          <div id="sources-head" class="list-head sources-head">
+            <h2 id="sources-heading" class="section-title">Sources</h2>
+            <button id="copy-links" class="link copy-links" type="button" title="Copy the addresses of all sources, one a line">Copy links</button>
+          </div>
           <ul id="source-list" class="sources"></ul>
           <div id="sources-empty" class="empty" hidden>
             <p class="empty-title">No sources yet</p>
@@ -98,7 +101,7 @@
           <section class="field tight">
             <div class="row between">
               <div id="job-sources-heading" class="section-title">Sources</div>
-              <span class="small-links"><button id="select-all" class="link" type="button">All</button> <span class="muted">·</span> <button id="select-none" class="link" type="button">None</button></span>
+              <span class="small-links"><button id="select-all" class="link" type="button">All</button> <span class="muted">·</span> <button id="select-none" class="link" type="button">None</button> <span class="muted">·</span> <span class="menu-wrap"><button id="copy-links-button" class="link copy-links" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="copy-links-menu">Copy links<span data-icon="caret-down"></span></button><span id="copy-links-menu" class="menu copy-links-menu" role="menu" hidden><button id="copy-all-links" role="menuitem" type="button">All links</button><button id="copy-checked-links" role="menuitem" type="button">Checked links</button></span></span></span>
             </div>
             <p id="job-sources-empty" class="small" hidden>No sources yet. Clip a page first.</p>
             <ul id="job-sources" class="checklist" aria-labelledby="job-sources-heading"></ul>
