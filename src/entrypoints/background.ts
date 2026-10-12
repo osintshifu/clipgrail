@@ -123,7 +123,7 @@ async function openInChat(
     const adapter = DESTINATIONS[destination];
     const failed = await copyText(job.text);
     if (failed) {
-      return void (await notice('error', `${outcome.message}. The job could not be copied (${failed}), so ${adapter.name} was not opened. Use Create job in the side panel.`, outcome.result.capture.id));
+      return void (await notice('error', `${outcome.message}. Job not copied (${failed}), ${adapter.name} not opened. Use Create job in the panel.`, outcome.result.capture.id));
     }
     await browser.tabs.create({ url: adapter.launch_url!, windowId, ...(tab.index === undefined ? {} : { index: tab.index + 1 }) });
     await notice('info', 'Job copied. Paste it into the chat.', outcome.result.capture.id);
@@ -144,7 +144,7 @@ function recordFromMenu(windowId: number, tabId: number): void {
       const db = await getDb();
       const sessionId = await resolveActiveSessionId(db);
       const name = (await listSessions(db)).find((s) => s.id === sessionId)?.name ?? 'the active session';
-      await notice('info', `Recording. Pages you open in this window are saved to ${name} as addresses.`);
+      await notice('info', `Recording to ${name}: pages you open here are saved as addresses.`);
     },
     (error: unknown) => notice('error', `Recording not started: ${error instanceof Error ? error.message : String(error)}`),
   ).catch(() => undefined);
@@ -366,7 +366,7 @@ async function abandonRecording(recording: Recording): Promise<void> {
   showRecordingMenu(null);
   await browser.storage.session.remove([RECORDING_KEY, TRAIL_KEY]).catch(() => undefined);
   const saved = recording.captures.length;
-  const text = `Recording stopped: ClipGrail could not keep track of it. ${plural(saved, 'page')} ${saved === 1 ? 'was' : 'were'} saved before that.`;
+  const text = `Recording stopped unexpectedly. ${plural(saved, 'page')} ${saved === 1 ? 'was' : 'were'} saved.`;
   try {
     await publishNotice({ window_id: recording.window_id, level: 'error', text, capture_id: null });
   } catch {

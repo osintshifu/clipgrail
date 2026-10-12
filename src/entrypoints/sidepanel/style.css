@@ -4,6 +4,12 @@
 body { display: flex; flex-direction: column; height: 100vh; min-width: 280px; overflow: hidden; background: var(--surface); }
 /* The toolbar popup has no size of its own; Chrome allows up to 800 × 600. */
 html.popup body { width: 400px; height: 600px; }
+/* A thin edge sets the popup apart from a page of the same colour behind it. */
+html.popup { --popup-edge: #b9c1cc; }
+@media (prefers-color-scheme: dark) {
+  html.popup { --popup-edge: #3d4450; }
+}
+html.popup::after { content: ''; position: fixed; inset: 0; z-index: 2147483647; border: 1px solid var(--popup-edge); pointer-events: none; }
 
 /* Header */
 .top { flex: none; background: var(--surface); position: relative; z-index: 3; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -189,6 +195,10 @@ button.back:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field.tight { gap: 5px; }
 .field textarea { font-size: 13px; padding: 8px 10px; }
+/* The popup cannot grow past the browser's limit, so Create job is tighter there to show more sources; the prompt opens up while it is edited. */
+html.popup .stage-row { padding-top: 10px; }
+html.popup .prepare { gap: 12px; padding-top: 10px; }
+html.popup #prompt:not(:focus) { height: calc(2lh + 18px); }
 #presets-button { gap: 2px; }
 #presets-button .ic { width: 12px; height: 12px; }
 .small-links { font-size: 12px; }

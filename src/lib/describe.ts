@@ -113,21 +113,21 @@ export function statusSentence(entry: SourceEntry): string {
   const later = laterFailureOf(entry, choice);
   const laterText = later ? ` Latest attempt ${fmtTime(later.captured_at)} failed: ${describeFailure(later)}.` : '';
   if (ok && choice.status === 'ok') {
-    const fallback = ok.extraction_method === 'page-text' ? ' · from visible page text, no article found' : '';
+    const fallback = ok.extraction_method === 'page-text' ? ' · visible page text, no article' : '';
     const which = choice.total > 1 ? ` · capture ${choice.position} of ${choice.total}` : '';
     return `Readable text saved ${fmtTime(ok.captured_at)} · ${fmtNumber(ok.character_count)} characters${fallback}${which}.${laterText}`;
   }
   if (ok) {
-    return `Partial text: cut at capture to ${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} characters. Saved ${fmtTime(ok.captured_at)}.${laterText}`;
+    return `Partial text: ${fmtNumber(ok.character_count)} of ${fmtNumber(ok.original_character_count)} characters, saved ${fmtTime(ok.captured_at)}.${laterText}`;
   }
   if (choice.status === 'pending') {
     return choice.entry?.capture.kind === 'tab'
-      ? 'The tab address was saved without reading the page, so there is no text yet. Clip page saves its text.'
-      : 'The link was saved without opening the page, so there is no text yet. Clip page saves its text.';
+      ? 'Tab address only, page not read. Clip page saves its text.'
+      : 'Link only, page not opened. Clip page saves its text.';
   }
-  if (failed) return `Capture ${fmtTime(failed.captured_at)} failed: ${describeFailure(failed)}. No text was saved; the address is kept.`;
+  if (failed) return `Capture ${fmtTime(failed.captured_at)} failed: ${describeFailure(failed)}. Address kept, no text.`;
   const selections = selectionCount(entry);
-  return `No page text. Only ${plural(selections, 'selection')} ${selections === 1 ? 'was' : 'were'} clipped from this page.`;
+  return `No page text, only ${plural(selections, 'selection')}.`;
 }
 
 export function captureHead(capture: Capture, index: number): string {
@@ -347,7 +347,7 @@ export const VALUE_LABELS: Record<PageValueKind, string> = {
 export const PAGE_PLACE_WORDS: Record<PagePlace, string> = { link: 'link', page_text: 'page text', schema_org: 'schema.org' };
 
 export const PAGE_CODE_NOTE =
-  "Read from the page when it was clipped: its code, its links and the text it shows; not part of the saved text or its SHA-256. A tracker that loads only after cookie consent, or runs on the website's server, is not seen: no tracker listed does not mean the page does not track.";
+  'Not part of the saved text or its SHA-256. Trackers loaded after cookie consent or run on the server are not seen.';
 
 export interface PageCodeRow {
   label: string;
@@ -366,6 +366,8 @@ export interface PageCodeView {
   /** Contacts, accounts and payment addresses in the page's links and text; null when they were not read for the capture. */
   values: PageCodeRow[] | null;
   valuesTitle: string;
+  /** True when the page had more contacts and addresses than a capture keeps. */
+  valuesCut: boolean;
   note: string;
 }
 
@@ -383,6 +385,7 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
       trackers: code.trackers.map((t) => ({ label: TRACKER_LABELS[t.kind], value: t.id, from: t.where.map((w) => PLACE_WORDS[w]).join(', '), mono: true })),
       values: code.values?.map((v) => ({ label: VALUE_LABELS[v.kind], value: v.value, from: v.where.map((w) => PAGE_PLACE_WORDS[w]).join(', '), mono: false })) ?? null,
       valuesTitle: code.values_cut ? `Contacts and addresses in the page: the first ${code.values?.length}` : 'Contacts and addresses in the page',
+      valuesCut: !!code.values_cut,
       note: PAGE_CODE_NOTE,
     };
   }
@@ -401,7 +404,8 @@ export function pageCodeView(capture: Capture, snapshot: SnapshotMeta | undefine
     trackers: null,
     values: null,
     valuesTitle: '',
-    note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
+    valuesCut: false,
+    note: 'Page code not read for this capture.',
   };
 }
 
@@ -429,7 +433,7 @@ export interface DeletionText {
   small: string[];
 }
 
-export const NOT_AFFECTED = 'Copies you exported, pasted into a chat or saved in a backup are not affected.';
+export const NOT_AFFECTED = 'Exported, pasted and backed-up copies are not affected.';
 
 /** "Last backup: …" or "No backup yet"; the date is when the backup file was handed to Chrome. */
 export function backupLine(lastBackupAt: string | null): string {
@@ -437,13 +441,13 @@ export function backupLine(lastBackupAt: string | null): string {
 }
 
 export function sourceDeletionText(label: string, name: string, counts: DeletionCounts, lastBackupAt: string | null): DeletionText {
-  const what = counts.captures === 1 ? 'its capture, saved text and notes' : `its ${counts.captures} captures, saved texts and notes`;
+  const what = counts.captures === 1 ? 'its capture, text and notes' : `its ${counts.captures} captures, texts and notes`;
   const jobs =
     counts.jobs === 1
       ? `1 Research Job that includes ${label} is deleted too.`
       : `${counts.jobs} Research Jobs that include ${label} are deleted too.`;
   return {
-    main: [`"${name}" is deleted with ${what}. ${label} is not given to another source.`, counts.jobs ? jobs : '', 'Its label, title and address stay in the deletion log.'].filter(Boolean),
+    main: [`"${name}" is deleted with ${what}.`, counts.jobs ? jobs : '', `Label, title and address stay in the deletion log; ${label} is not reused.`].filter(Boolean),
     small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`],
   };
 }
@@ -459,9 +463,9 @@ function labelList(labels: string[]): string {
 /** Several sources: their labels when they share a session, else how many sessions they come from. */
 export function sourcesDeletionText(labels: string[], sessionCount: number, counts: DeletionCounts, lastBackupAt: string | null): DeletionText {
   const who = sessionCount === 1 ? labelList(labels) : `${plural(labels.length, 'source')} from ${plural(sessionCount, 'session')}`;
-  const main = [`${who} are deleted with their ${plural(counts.captures, 'capture')}, saved texts and notes. Their labels are not given to other sources.`];
+  const main = [`${who} are deleted with their ${plural(counts.captures, 'capture')}, texts and notes.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job that includes them is deleted too.' : `${counts.jobs} Research Jobs that include them are deleted too.`);
-  main.push('Their labels, titles and addresses stay in the deletion log.');
+  main.push('Labels, titles and addresses stay in the deletion log; labels are not reused.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
 }
 
@@ -469,19 +473,19 @@ export function sessionDeletionText(name: string, counts: DeletionCounts, active
   const main =
     counts.sources === 0
       ? [`Session "${name}" is empty. Deleting it removes its prompt and notes.`]
-      : [`It is deleted with its ${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')}, their saved texts and notes, and the session prompt.`];
+      : [`Deleted with its ${plural(counts.sources, 'source')}, ${plural(counts.captures, 'capture')}, texts, notes and prompt.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? 'Its 1 Research Job is deleted too.' : `Its ${counts.jobs} Research Jobs are deleted too.`);
-  if (counts.sources) main.push('The labels, titles and addresses of its sources stay in the deletion log.');
+  if (counts.sources) main.push('Source labels, titles and addresses stay in the deletion log.');
   if (active) main.push('New clips will go to the Inbox.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
 }
 
 export function inboxEmptyingText(counts: DeletionCounts, nextNumber: number, lastBackupAt: string | null): DeletionText {
   const all = counts.sources > 1 ? 'All ' : '';
-  const main = [`${all}${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')} in the Inbox are deleted with their saved texts and notes.`];
+  const main = [`${all}${plural(counts.sources, 'source')} and ${plural(counts.captures, 'capture')} in the Inbox are deleted with their texts and notes.`];
   if (counts.jobs) main.push(counts.jobs === 1 ? '1 Research Job is deleted too.' : `${counts.jobs} Research Jobs are deleted too.`);
   main.push(`The Inbox stays. New sources continue from S${nextNumber}.`);
-  if (counts.sources) main.push('The labels, titles and addresses of its sources stay in the deletion log.');
+  if (counts.sources) main.push('Source labels, titles and addresses stay in the deletion log.');
   return { main, small: [NOT_AFFECTED, `${backupLine(lastBackupAt)}.`] };
 }
 
@@ -498,7 +502,7 @@ const REMOVAL_VERBS: Record<RemovalAction, string> = {
 };
 
 export const REMOVAL_NOTE =
-  "ClipGrail never gives a label to another source, so a source that is deleted, undone, moved or replaced by a restore leaves a gap in its session's labels. The log keeps the label, title and address of each deleted or replaced source and how many captures it had; its saved texts and notes are gone. A source removed with Undo or after a recording keeps only its label. Removing an entry from the log cannot be undone.";
+  'Labels are never reused, so each removal leaves a gap. The log keeps the label, title, address and capture count; texts and notes are gone. Undo and the review after recording keep only the label. Removing an entry cannot be undone.';
 
 export interface RemovalView {
   verb: string;
@@ -521,17 +525,17 @@ export function removalView(removal: Removal): RemovalView {
     delete: () => ({ heading: `${one ?? plural(sources.length, 'source')} deleted`, summary: `Deleted with ${captures}, ${one ? 'its' : 'their'} saved texts and notes.${deletedJobs}` }),
     delete_session: () => ({ heading: `Session "${session}" deleted`, summary: `Deleted with ${plural(sources.length, 'source')} and ${captures}, their saved texts and notes.${sessionJobs}` }),
     empty_inbox: () => ({ heading: 'Inbox emptied', summary: `${plural(sources.length, 'source')} and ${captures} were deleted with their saved texts and notes.${sessionJobs}` }),
-    undo: () => ({ heading: `${one ?? plural(sources.length, 'source')} undone`, summary: 'Removed with Undo, which keeps no title or address.' }),
-    review: () => ({ heading: `${one ?? plural(sources.length, 'source')} removed after recording`, summary: 'Removed in the review after a recording, which keeps no title or address.' }),
+    undo: () => ({ heading: `${one ?? plural(sources.length, 'source')} undone`, summary: 'Removed with Undo; no title or address kept.' }),
+    review: () => ({ heading: `${one ?? plural(sources.length, 'source')} removed after recording`, summary: 'Removed after recording; no title or address kept.' }),
     move: () => ({
       heading: `${one} moved to ${to!.session_name}`,
       summary: to!.joined
-        ? `Moved with ${captures} to ${to!.session_name}, where it joined S${to!.number}, which had the same address.`
+        ? `Moved with ${captures} to ${to!.session_name}, joined S${to!.number} (same address).`
         : `Moved with ${captures} to ${to!.session_name} as S${to!.number}.`,
     }),
     restore: () => ({
       heading: `${one ?? plural(sources.length, 'source')} replaced by a restore`,
-      summary: `Removed when a backup without ${one ? 'it' : 'them'} was restored, with ${captures}, ${one ? 'its' : 'their'} saved texts and notes.`,
+      summary: `Replaced by a restore, with ${captures}, texts and notes.`,
     }),
   };
   return { verb: REMOVAL_VERBS[action], target: to ? `${to.session_name} S${to.number}` : null, ...views[action]() };

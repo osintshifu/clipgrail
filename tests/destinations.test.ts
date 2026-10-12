@@ -29,7 +29,7 @@ describe('deliverJob', () => {
     const e = env({ copyText: vi.fn(async () => Promise.reject(new Error('Document is not focused.'))) });
     const result = await deliverJob('chatgpt', job, e);
     expect(result.ok).toBe(false);
-    expect(result.message).toContain('ChatGPT was not opened');
+    expect(result.message).toContain('ChatGPT not opened');
     expect(e.openUrl).not.toHaveBeenCalled();
   });
 

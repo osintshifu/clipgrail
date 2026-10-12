@@ -119,7 +119,7 @@ export async function deliverJob(
       ok: false,
       message:
         adapter.kind === 'chat'
-          ? `Could not copy to the clipboard (${reason(error)}), so ${adapter.name} was not opened. Select the text in the preview or use Export Markdown.`
+          ? `Not copied (${reason(error)}), ${adapter.name} not opened. Copy from the preview or export Markdown.`
           : `Could not copy to the clipboard (${reason(error)}). Select the text in the preview or use Export Markdown.`,
     };
   }

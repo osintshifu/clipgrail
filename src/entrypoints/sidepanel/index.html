@@ -15,12 +15,12 @@
           <span id="session-archived" class="chip pending" hidden>Archived</span>
           <span class="caret" data-icon="caret-down"></span>
         </button>
-        <button id="record-button" class="icon record-button" type="button" aria-pressed="false" aria-label="Record" title="Record the address of every page you open in this window"><span class="rec-start" aria-hidden="true"></span><span class="rec-stop" aria-hidden="true"></span></button>
-        <button id="library-button" class="lib-btn" type="button" title="All sessions and sources in a browser tab">Library<span data-icon="arrow-up-right"></span></button>
+        <button id="record-button" class="icon record-button" type="button" aria-pressed="false" aria-label="Record" title="Record pages you open in this window"><span class="rec-start" aria-hidden="true"></span><span class="rec-stop" aria-hidden="true"></span></button>
+        <button id="library-button" class="lib-btn" type="button" title="Open the library in a tab">Library<span data-icon="arrow-up-right"></span></button>
         <div class="menu-wrap">
           <button id="menu-button" class="icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="Data and more"><span data-icon="dots-three"></span></button>
           <div id="menu" class="menu" role="menu" hidden>
-            <p class="menu-note">Research data is stored only in this browser profile. Uninstalling ClipGrail deletes it.</p>
+            <p class="menu-note">Data stays in this browser profile. Uninstalling deletes it.</p>
             <p id="storage-summary" class="menu-note storage-summary"></p>
             <button id="backup-button" role="menuitem" type="button"><span data-icon="download-simple"></span>Back up all data (JSON)</button>
             <button id="restore-button" role="menuitem" type="button"><span data-icon="upload-simple"></span>Restore from backup…</button>
@@ -52,14 +52,14 @@
           <ul id="source-list" class="sources"></ul>
           <div id="sources-empty" class="empty" hidden>
             <p class="empty-title">No sources yet</p>
-            <p>Clip the page you are reading, select text and clip it, or right-click a link to save it without opening it. Everything goes to <b id="empty-session"></b>.</p>
-            <p id="empty-shortcut" class="small" hidden><kbd id="empty-shortcut-key"></kbd> clips the current page from anywhere.</p>
+            <p>Clip a page, a selection or a link (right-click). Clips go to <b id="empty-session"></b>.</p>
+            <p id="empty-shortcut" class="small" hidden><kbd id="empty-shortcut-key"></kbd> clips the current page.</p>
           </div>
           <div class="notes">
             <button id="notes-toggle" class="notes-toggle" type="button" aria-expanded="false" aria-controls="session-notes">
               <span class="row"><span data-icon="note-pencil"></span><span id="notes-label">Session notes</span></span><span id="notes-chevron" class="chevron" data-icon="caret-down"></span>
             </button>
-            <textarea id="session-notes" rows="4" aria-label="Session notes" placeholder="Private notes for this session. Left out of Research Jobs unless you include notes." hidden></textarea>
+            <textarea id="session-notes" rows="4" aria-label="Session notes" placeholder="Private session notes. Not in jobs unless included." hidden></textarea>
           </div>
         </div>
         <div id="detail-panel" class="detail" hidden></div>
@@ -82,7 +82,7 @@
                 <div id="presets-menu" class="menu presets-menu" role="menu" hidden></div>
               </div>
             </div>
-            <textarea id="prompt" rows="4" placeholder="What should be done with these sources? This becomes the TASK section."></textarea>
+            <textarea id="prompt" rows="4" placeholder="What to do with these sources (the TASK section)"></textarea>
           </section>
 
           <section class="field">
@@ -100,7 +100,7 @@
               <div id="job-sources-heading" class="section-title">Sources</div>
               <span class="small-links"><button id="select-all" class="link" type="button">All</button> <span class="muted">·</span> <button id="select-none" class="link" type="button">None</button></span>
             </div>
-            <p id="job-sources-empty" class="small" hidden>This session has no sources yet. Clip a page first.</p>
+            <p id="job-sources-empty" class="small" hidden>No sources yet. Clip a page first.</p>
             <ul id="job-sources" class="checklist" aria-labelledby="job-sources-heading"></ul>
           </section>
 
@@ -110,13 +110,13 @@
             </button>
             <div id="options-body" class="options-body" hidden>
               <label class="limit-row">
-                <span>Max characters per source<br /><span class="small">Text over the limit is cut and marked in the job.</span></span>
+                <span>Max characters per source<br /><span class="small">Longer text is cut and marked.</span></span>
                 <input id="limit" type="number" min="1" step="1000" placeholder="No limit" inputmode="numeric" />
               </label>
               <fieldset class="private">
                 <legend class="section-title">Include private data</legend>
-                <label class="check"><input id="inc-notes" type="checkbox" /><span>Notes<br /><span class="small">Session, source and capture notes, marked as written by you.</span></span></label>
-                <label class="check"><input id="inc-links" type="checkbox" /><span>Where sources were found<br /><span class="small">The page a saved link, a recorded page or an embedded frame was found on, and the link text.</span></span></label>
+                <label class="check"><input id="inc-notes" type="checkbox" /><span>Notes<br /><span class="small">Session, source and capture notes, marked as yours.</span></span></label>
+                <label class="check"><input id="inc-links" type="checkbox" /><span>Where sources were found<br /><span class="small">Page where a link, recorded page or frame was found, and the link text.</span></span></label>
                 <label class="check"><input id="inc-times" type="checkbox" /><span>Capture timestamps<br /><span class="small">When each capture and snapshot was taken.</span></span></label>
                 <label class="check"><input id="inc-urls" type="checkbox" /><span>Original URLs<br /><span class="small">Addresses as visited; may contain tracking or personal parameters.</span></span></label>
               </fieldset>
@@ -132,7 +132,7 @@
             <span id="job-result-meta" class="muted"></span>
           </div>
           <div id="job-stale" class="stale" role="status" hidden>
-            <span>Prompt, settings or sources changed since this was generated. Copy and export use the generated text, so generate again first.</span>
+            <span>Changed since generated. Generate again before copying or exporting.</span>
             <button id="generate-again" type="button">Generate again</button>
           </div>
           <pre id="job-preview" class="job-preview" tabindex="0" aria-label="Job preview"></pre>

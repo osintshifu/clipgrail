@@ -75,17 +75,17 @@ async function notSaved(reason: NotSavedReason, detail?: string): Promise<Captur
   const messages: Record<NotSavedReason, string> = {
     no_tab: 'No active tab found in this window.',
     // Without access Chrome hides the tab URL, so a browser page (chrome://) looks the same as an ungranted web page.
-    no_access: `ClipGrail can't read this tab yet. On a web page, ${await shortcutHint()} the ClipGrail toolbar icon, and clip again. Browser pages (chrome://) and the Chrome Web Store can't be clipped.`,
-    blocked_page: "This page can't be clipped. ClipGrail captures http and https pages; Chrome blocks extensions on browser pages and the Chrome Web Store.",
-    tab_gone: 'The tab was closed or navigated away before the capture finished. Nothing was saved.',
+    no_access: `Can't read this tab yet: on the page, ${await shortcutHint()} the ClipGrail icon and clip again. Browser pages and the Web Store can't be clipped.`,
+    blocked_page: 'Only http and https pages can be clipped.',
+    tab_gone: 'The tab closed or changed before the clip finished. Nothing saved.',
     empty_selection: 'Nothing is selected on this page.',
     unsupported_link: 'Only http and https links can be saved.',
-    page_changed: 'The page changed while it was being clipped, so nothing was saved. Clip it again.',
-    error_page: "This tab shows the browser's error page, not the page, so there is no selection to clip. Nothing was saved. Clip page saves the address as Capture failed.",
-    frame_error_page: "This embedded frame shows the browser's error page, not its page, so there is no selection to clip. Nothing was saved.",
+    page_changed: 'The page changed during the clip. Nothing saved; clip again.',
+    error_page: 'The tab shows an error page: no selection to clip. Clip page saves the address as Capture failed.',
+    frame_error_page: 'The frame shows an error page: no selection to clip.',
     not_opened: `The page could not be opened${detail ? ` (${detail})` : ''}. Nothing was saved.`,
-    not_a_page: `This address leads to a ${detail?.toUpperCase() ?? ''} file, not a web page, so it was not opened. Nothing was saved.`,
-    no_site_access: `ClipGrail may not read ${detail ?? 'this site'}, so nothing was saved. Allow the site when Chrome asks; a page that moves to another site needs that site too.`,
+    not_a_page: `This address is a ${detail?.toUpperCase() ?? ''} file, not a web page. Not opened.`,
+    no_site_access: `No access to ${detail ?? 'this site'}. Allow it when Chrome asks; a redirect to another site needs that site too.`,
     storage_error: `Capture not saved: the browser refused to store it${detail ? ` (${detail})` : ''}. Existing data is unchanged.`,
   };
   return { saved: false, reason, message: messages[reason] };

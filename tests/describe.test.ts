@@ -38,11 +38,11 @@ describe('source status texts', () => {
     ]);
     expect(sources.map(sourceMeta)).toEqual(['10 chars', '8 of 20 chars', '', 'HTTP 404', '1 selection', '']);
     const sentences = sources.map(statusSentence);
-    expect(sentences[1]).toMatch(/^Partial text: cut at capture to 8 of 20 characters\. Saved /);
-    expect(sentences[2]).toBe('The link was saved without opening the page, so there is no text yet. Clip page saves its text.');
-    expect(sentences[3]).toMatch(/failed: HTTP 404\. No text was saved; the address is kept\.$/);
-    expect(sentences[4]).toBe('No page text. Only 1 selection was clipped from this page.');
-    expect(sentences[5]).toMatch(/^The tab address was saved without reading the page/);
+    expect(sentences[1]).toMatch(/^Partial text: 8 of 20 characters, saved /);
+    expect(sentences[2]).toBe('Link only, page not opened. Clip page saves its text.');
+    expect(sentences[3]).toMatch(/failed: HTTP 404\. Address kept, no text\.$/);
+    expect(sentences[4]).toBe('No page text, only 1 selection.');
+    expect(sentences[5]).toMatch(/^Tab address only, page not read/);
   });
 
   it('mark a selection cut at the length limit as partial, without changing the status of the source', async () => {
@@ -119,7 +119,8 @@ describe('page code in details', () => {
       trackers: null,
       values: null,
       valuesTitle: '',
-      note: 'The page code was not read for this capture: it was made before ClipGrail read page code, or the page could not be read in time.',
+      valuesCut: false,
+      note: 'Page code not read for this capture.',
     });
 
     await commitCapture(db, {
@@ -141,6 +142,7 @@ describe('page code in details', () => {
       trackers: [{ label: 'Google Analytics 4', value: 'G-7QX2KF31PL', from: 'script address, inline script', mono: true }],
       values: [{ label: 'Email address', value: 'press@example.com', from: 'link, page text', mono: false }],
       valuesTitle: 'Contacts and addresses in the page',
+      valuesCut: false,
       note: PAGE_CODE_NOTE,
     });
   });

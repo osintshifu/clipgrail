@@ -67,13 +67,16 @@ describe('library page', () => {
     ]);
     expect(versions()[0]!.querySelector('.ver-meta')?.textContent).toContain('Text differs from capture\u00a01');
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
-    // Details show the trackers the viewed capture read from the page code.
-    expect($('reader').querySelector('.page-code dl')?.textContent).toBe('Google Tag ManagerGTM-5JX9ZQ · inline script, noscript frame');
+    // The box at the top shows the trackers the viewed capture read from the page code, and where on hover.
+    expect([$('reader').querySelector('.found dl')?.textContent, $('reader').querySelector('.found-value')?.getAttribute('title')]).toEqual([
+      'Google Tag ManagerGTM-5JX9ZQ',
+      'From inline script, noscript frame. Click to copy.',
+    ]);
 
     // An earlier version is shown for reading; the current text stays marked as the one Research Jobs use.
     versions()[1]!.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version one of the report.'));
-    expect($('reader').querySelector('.banner.earlier')?.textContent).toContain('Research Jobs use the current text from capture 2');
+    expect($('reader').querySelector('.banner.earlier')?.textContent).toContain('Jobs use capture 2');
     expect(versions()[0]!.querySelector('.current-tag')).not.toBeNull();
     $('show-current').click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Version two of the report.'));
@@ -117,7 +120,7 @@ describe('library page', () => {
     // A source of another session without text: clips go to the active session unless that session is made active.
     (document.querySelector<HTMLButtonElement>(`#rows [data-id="${link.source.id}"]`))!.click();
     expect($('reader').querySelector('.banner.info')?.textContent).toBe(
-      'Clip page saves to the active session, Inbox. To add the text to S1, make Port strike active, open the page and clip it.Make active',
+      'Clips go to Inbox. To add text to S1, make Port strike active and clip the page.Make active',
     );
     $('make-active').click();
     await vi.waitFor(() => expect($('reader').querySelector('.banner.info')).toBeNull());
@@ -214,10 +217,11 @@ describe('organizing in the library', () => {
 
   it('hides the sessions and expands the reader only while a source is open, and remembers the layout', async () => {
     await openExample('Layout');
-    $('hide-sessions').click();
-    expect(document.body.classList.contains('sessions-hidden')).toBe(true);
-    expect($('show-sessions').hidden).toBe(false);
-    expect(document.activeElement?.id).toBe('show-sessions');
+    $('toggle-sessions').click();
+    expect([document.body.classList.contains('sessions-hidden'), $('toggle-sessions').getAttribute('aria-label')]).toEqual([true, 'Show sessions']);
+    // The column of icons left shows a session by its initials and names it on hover.
+    const item = Array.from(document.querySelectorAll<HTMLElement>('#nav-list .nav-item')).find((n) => n.querySelector('.name')?.textContent === 'Layout')!;
+    expect([item.dataset.initials, item.title]).toEqual(['LA', 'Layout · 1']);
 
     const expand = () => $<HTMLButtonElement>('expand-reader');
     expect(expand().closest('.crumb')).not.toBeNull();
@@ -230,7 +234,7 @@ describe('organizing in the library', () => {
     location.hash = '#view=all';
     await vi.waitFor(() => expect(document.body.classList.contains('reader-expanded')).toBe(false));
     expect(document.getElementById('expand-reader')).toBeNull();
-    $('show-sessions').click();
+    $('toggle-sessions').click();
     expect(document.body.classList.contains('sessions-hidden')).toBe(false);
   });
 
@@ -357,6 +361,14 @@ describe('organizing in the library', () => {
     expect($('result-count').textContent).toMatch(/^1 of 2 sources$/);
     $('clear-filters').click();
     expect(location.hash).not.toContain('mode=timeline');
+    // Important in the sessions column lists the important sources of every session; another view turns it off.
+    const nav = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('#nav-list .nav-item')).find((n) => n.querySelector('.name')?.textContent === name)!;
+    nav('Important').click();
+    expect([$('list-title').textContent, nav('Important').getAttribute('aria-current'), $('important-filter').getAttribute('aria-pressed')]).toEqual(['Important', 'true', 'true']);
+    expect(document.querySelectorAll('#rows .src').length).toBe(Number(nav('Important').querySelector('.count')?.textContent));
+    expect(document.querySelector(`#rows [data-id="${capture.source.id}"]`)).not.toBeNull();
+    nav(session.name).click();
+    expect([$('list-title').textContent, $('important-filter').getAttribute('aria-pressed')]).toEqual([session.name, 'false']);
   });
 
   it('lists the values found in several sources, shows the sources of one, opens a source where it is, and lists those sources', async () => {
@@ -402,7 +414,7 @@ describe('organizing in the library', () => {
     kind.value = 'contact';
     kind.dispatchEvent(new Event('change'));
     expect([values().map((v) => v?.slice(0, 6)), $('result-count').textContent]).toEqual([['BTCbc1', 'GitHub'], '2 of 3 values']);
-    // A value read from the page's links opens its source with the value in Details.
+    // A value read from the page's links opens its source with the value in the box at the top.
     document.querySelectorAll<HTMLButtonElement>('#rows .pv-row')[1]!.click();
     expect([$('reader').querySelector('.status-line')?.textContent, $('reader').querySelector('.pv-use-meta')?.textContent]).toEqual([
       'In 1 source on 1 site. Found in the page when it was clipped.',
@@ -410,7 +422,7 @@ describe('organizing in the library', () => {
     ]);
     document.querySelector<HTMLButtonElement>('#reader .pv-use')!.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe(`Donate: ${wallet}.`));
-    expect([$('reader').querySelector<HTMLDetailsElement>('details')?.open, $('reader').querySelector('.page-code dl:last-of-type')?.textContent]).toEqual([true, 'GitHubgithub.com/harbour-desk · link']);
+    expect([$('reader').querySelector('.found dl')?.textContent, $('reader').querySelector('.found-value')?.getAttribute('title')]).toEqual(['GitHubgithub.com/harbour-desk', 'From link. Click to copy.']);
     $('mode-pivots').click();
     $('clear-filters').click();
     search.value = 'btc';
@@ -420,17 +432,17 @@ describe('organizing in the library', () => {
     search.dispatchEvent(new Event('input'));
     await vi.waitFor(() => expect(values().map((v) => v?.slice(0, 15))).toEqual(['GA4G-PIV0T2K9QX']));
 
-    // The open value lists its sources; one opens at the capture where the value was found, with Details open for page code.
+    // The open value lists its sources; one opens at the capture where the value was found, with the value in the box at the top.
     document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
     expect($('reader').querySelector('h3')?.textContent).toBe('G-PIV0T2K9QX');
     expect($('reader').querySelector('.status-line')?.textContent).toBe('In 2 sources on 2 sites. Read from the page code when the pages were clipped.');
     expect(Array.from(document.querySelectorAll('#reader .pv-use .pv-use-meta'), (m) => m.textContent)).toEqual(['a.example.test · script address', 'b.example.test · script address']);
     document.querySelector<HTMLButtonElement>(`#reader .pv-use[data-id="${b.source.id}"]`)!.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe(`Fund ${wallet}`));
-    expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
+    expect(Array.from($('reader').querySelectorAll('.found-value'), (b) => b.textContent)).toContain('G-PIV0T2K9QX');
     expect(document.querySelector('#rows .pv-row')?.getAttribute('aria-current')).toBe('true');
 
-    // Copy puts the value on the clipboard: from the open value, from its row, from Details, and the list as a table.
+    // Copy puts the value on the clipboard: from the open value, from its row, from the box at the top, and the list as a table.
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     document.querySelector<HTMLButtonElement>('#rows .pv-row')!.click();
@@ -440,8 +452,9 @@ describe('organizing in the library', () => {
     document.querySelector<HTMLButtonElement>('#rows .pv-copy')!.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     document.querySelector<HTMLButtonElement>('#reader .pv-use')!.click();
-    await vi.waitFor(() => expect($('reader').querySelector('.page-code .copy-value')).not.toBeNull());
-    $('reader').querySelector<HTMLButtonElement>('.page-code .copy-value')!.click();
+    const found = () => Array.from($('reader').querySelectorAll<HTMLButtonElement>('.found-value')).find((b) => b.textContent === 'G-PIV0T2K9QX');
+    await vi.waitFor(() => expect(found()).toBeDefined());
+    found()!.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
     expect(writeText.mock.calls.map(([text]) => text)).toEqual(['G-PIV0T2K9QX', 'G-PIV0T2K9QX', 'G-PIV0T2K9QX']);
     // Copy list copies the values the search left.
@@ -508,7 +521,7 @@ describe('organizing in the library', () => {
     document.querySelector<HTMLButtonElement>('#rows .src')!.click();
     await vi.waitFor(() => expect($('reader').querySelector('pre')?.textContent).toBe('Harbour cranes were repaired.'));
 
-    // A tracker ID is found in the page code; the source opens with Details showing it.
+    // A tracker ID is found in the page code; the source opens with it in the box at the top.
     await commitCapture(db, {
       ...(await pageDraft('https://example.test/search-code', 'Berth notice.', '2026-10-04T10:00:00.000Z', session.id)),
       page_code: { declared: [], trackers: [{ kind: 'gtm', id: 'GTM-K7Q2P9', where: ['inline_script'] }] },
@@ -519,7 +532,7 @@ describe('organizing in the library', () => {
     await vi.waitFor(() => expect(document.querySelector('#rows .src .src-snippet')?.textContent).toBe('Page codeGTM-K7Q2P9'));
     document.querySelector<HTMLButtonElement>('#rows .src')!.click();
     await vi.waitFor(() => expect($('reader').querySelector('h3')?.textContent).toBe('Example article'));
-    expect($('reader').querySelector<HTMLDetailsElement>('details')?.open).toBe(true);
+    expect($('reader').querySelector('.found dl')?.textContent).toBe('Google Tag ManagerGTM-K7Q2P9');
   });
 
   it('notes a deleted source in the deletion log, shows what its label was, and removes entries from the log', async () => {
@@ -530,7 +543,7 @@ describe('organizing in the library', () => {
     fake.refresh();
     await vi.waitFor(() => expect(document.querySelector(`#rows [data-id="${second.source.id}"]`)).not.toBeNull());
     $('delete-source').click();
-    await vi.waitFor(() => expect($('library-dialog').textContent).toContain('Its label, title and address stay in the deletion log.'));
+    await vi.waitFor(() => expect($('library-dialog').textContent).toContain('Label, title and address stay in the deletion log; S'));
     $('confirm-delete').click();
     await vi.waitFor(() => expect($('library-notice').textContent).toBe('S1 deleted.'));
     // S2 moves to the Inbox.

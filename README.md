@@ -40,7 +40,7 @@ ClipGrail is a **Chrome web clipper and research workspace**. Capture web conten
 | --- | --- |
 | **Browsing session recording** | Automatically save visited page URLs, titles, and available navigation context. |
 | **Web clipping** | Save readable page text, selected passages, links, or tab addresses. |
-| **Page code** | Record the trackers in a clipped page (Google Analytics, Google tag, Tag Manager, Meta Pixel, AdSense), what it declares about itself, and the contacts, accounts and payment addresses in its links and text, each with where it was found; search finds the pages that share them. |
+| **Page code** | Record the trackers in a clipped page (Google Analytics, Google tag, Tag Manager, Meta Pixel, AdSense), what it declares about itself, and the contacts, accounts and payment addresses in its links and text, each with where it was found, shown at the top of the source in the library; search finds the pages that share them. |
 | **Pivots** | List the tracker IDs, declared names, email addresses, phone numbers, social media accounts, crypto addresses and IBANs of your sources, those on several sites first, and open the sources each is in. |
 | **Text snapshots** | Keep earlier captures, timestamps, extraction details, and SHA-256 hashes, see which captures saved the same text, and compare two of them word by word. |
 | **Research library** | Organize sources into sessions; follow a session on its timeline, mark important sources, search saved text, notes and selections, and add notes. |
@@ -79,7 +79,7 @@ Click **Record** in ClipGrail, browse normally in that Chrome window, then click
 | **Clip URL** (right-click a link) | URL without opening or downloading the destination; **Clip page** saves its text later. |
 | **Save tabs** | URLs and titles of selected or current-window tabs. |
 
-ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones. **Pivots** lists values such as a tracker ID, an email address, a social media account or a crypto address, with the sources each is in, those on several sites first. The **Deletion log** says what each label no longer in use was: a deleted source keeps its title and address there, so a missing S4 can be explained.
+ClipGrail extracts readable text with Mozilla Readability, retains earlier versions, and marks incomplete or failed captures. The **Library** opens in a browser tab, with sessions, source notes, and saved text snapshots. Search covers saved text, notes, selections, titles, URLs, and labels; `site:`, `after:`, and `before:` narrow the results. A session's **Timeline** shows its captures and recorded visits in time order, each source lists the sources it led to, and a star marks the important ones, which **Important** lists from every session. **Pivots** lists values such as a tracker ID, an email address, a social media account or a crypto address, with the sources each is in, those on several sites first. The **Deletion log** says what each label no longer in use was: a deleted source keeps its title and address there, so a missing S4 can be explained.
 
 ### Research Jobs
 
@@ -94,7 +94,7 @@ Copy the job, export it as **Markdown** or **JSON**, or open ChatGPT, Claude, Ge
 ### Privacy
 
 - **Local by default:** research data stays in your Chrome profile. No ClipGrail account, backend, telemetry, or cloud sync.
-- **Controlled access:** page text is read after a direct action on that tab. Saving tabs and recording request additional browser permissions.
+- **Controlled access:** page text is read after a direct action on that tab, or for a saved URL after you allow its site. Saving tabs, recording, clipping a saved URL and **Open in** from the right-click menu ask for browser permissions when first used.
 - **Your data:** export a JSON backup regularly. Uninstalling the extension removes locally stored research data; restoring a backup replaces existing data.
 - **Privacy policy:** [PRIVACY.md](PRIVACY.md).
 

@@ -695,7 +695,7 @@ export async function restoreBackup(backup: Backup, steps: RestoreSteps): Promis
     return {
       ok: false,
       dataReplaced: true,
-      message: `Research data was restored from the backup, but its settings were not (${reason(error)}). Presets, Research Job settings or the active session may differ from the backup.`,
+      message: `Data restored, settings not (${reason(error)}). Presets, job settings or the active session may differ.`,
     };
   }
   return { ok: true, message: 'Backup restored.' };

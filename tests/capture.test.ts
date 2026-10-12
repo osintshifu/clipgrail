@@ -82,7 +82,7 @@ describe('selection on an error page the browser shows', () => {
     vi.spyOn(browser.scripting, 'executeScript').mockRejectedValue(new Error('Frame with ID 0 is showing error page'));
     const fromPanel = await captureSelection(db, tab, INBOX_SESSION_ID);
     expect(fromPanel).toMatchObject({ saved: false, reason: 'error_page' });
-    expect(fromPanel.message).toContain("browser's error page");
+    expect(fromPanel.message).toContain('The tab shows an error page');
     expect(await captureSelection(db, tab, INBOX_SESSION_ID, { frameId: 0, menuSelectionText: "This site can't be reached" })).toMatchObject({ saved: false, reason: 'error_page' });
     expect(await captureSelection(db, tab, INBOX_SESSION_ID, { frameId: 4, menuSelectionText: 'refused to connect' })).toMatchObject({ saved: false, reason: 'frame_error_page' });
     expect((await loadSessionView(db, INBOX_SESSION_ID)).sources).toHaveLength(0);
@@ -181,7 +181,7 @@ describe('clipping a source saved as a URL only', () => {
     expect(refused).toMatchObject({ saved: false, reason: 'no_site_access' });
     expect(remove).toHaveBeenCalledWith(41);
     expect(clipSummary([{ target: target!, outcome: clipped }, { target: second!, outcome: refused }])).toBe(
-      'Clipped 1 of 2 pages. S2: ClipGrail may not read harbour.example.net, so nothing was saved. Allow the site when Chrome asks; a page that moves to another site needs that site too.',
+      'Clipped 1 of 2 pages. S2: No access to harbour.example.net. Allow it when Chrome asks; a redirect to another site needs that site too.',
     );
   });
 });

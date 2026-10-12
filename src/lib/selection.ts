@@ -94,4 +94,4 @@ export function frameSourceUnestablished(frame: CaptureFrame | null): boolean {
 }
 
 /** Shown with such a selection wherever it appears, Research Jobs included, whatever their private options. */
-export const FRAME_UNESTABLISHED_NOTE = 'Selected in an embedded frame. Its source URL could not be established; the parent page is recorded as context.';
+export const FRAME_UNESTABLISHED_NOTE = 'From an embedded frame with an unknown address; the parent page is recorded.';

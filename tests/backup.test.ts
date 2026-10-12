@@ -234,7 +234,7 @@ describe('backup and restore', () => {
     });
     const settingsFailed = await restoreBackup(backup, { replaceData: ok, applySettings: fail });
     expect(settingsFailed).toMatchObject({ ok: false, dataReplaced: true });
-    expect(settingsFailed.message).toContain('Research data was restored');
+    expect(settingsFailed.message).toContain('Data restored, settings not');
     expect(settingsFailed.message).not.toContain('unchanged');
   });
 

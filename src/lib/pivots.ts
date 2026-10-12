@@ -65,10 +65,9 @@ export const PIVOT_GROUPS: Record<PivotGroup, string> = { tracker: 'Trackers', d
 
 /** What a value shared by several sources can and cannot show, by group. */
 export const PIVOT_NOTES: Record<PivotGroup, string> = {
-  tracker: 'The same ID on different sites often means a common operator, but an agency, a template or a copied page can share one too. Check before you conclude.',
-  declared: 'Pages declare these about themselves and nothing checks them: the same name on several pages shows they declare it, not who made them.',
-  contact:
-    "The same value in several sources shows they give or mention it. A page can link to someone else's account, and sites made by one agency or from one template can share one: it does not show who controls it or that the sources are connected.",
+  tracker: 'A shared ID often means one operator, but agencies, templates and copied pages share them too.',
+  declared: 'Self-declared and unchecked: a shared name does not show who made the pages.',
+  contact: 'Shows the sources mention it, not who controls it or that they are connected.',
 };
 
 /** A value found in a saved text or a selection: where it first appears, with the passage around it. */

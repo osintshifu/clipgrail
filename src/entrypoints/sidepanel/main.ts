@@ -445,7 +445,7 @@ async function openSessionsSheet(): Promise<void> {
       archive,
       remove,
     ]),
-    h('p', { class: 'small' }, ['New captures go to the selected session. Archived sessions stay available here and still accept captures.']),
+    h('p', { class: 'small' }, ['New clips go to the selected session. Archived sessions still accept clips.']),
   ]);
 }
 
@@ -502,7 +502,7 @@ async function setArchived(archived: boolean): Promise<void> {
     closeSheet();
     if (archived) {
       await switchSession(INBOX_SESSION_ID);
-      showToast(`Session "${session.name}" archived. Find it under Archived in the session list.`);
+      showToast(`Session "${session.name}" archived.`);
     } else {
       await loadActiveSession();
       showToast(`Session "${session.name}" unarchived.`);
@@ -721,7 +721,7 @@ async function explainLostSource(lost: SourceEntry): Promise<void> {
   const moved = captureId !== undefined && (await loadNote(db, 'capture', captureId).catch(() => undefined)) !== undefined;
   showToast(
     moved
-      ? `${label} is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.`
+      ? `${label} was moved or undone in another window.`
       : `${label} was deleted in another ClipGrail window.`,
   );
 }
@@ -855,7 +855,7 @@ function textSection(entry: SourceEntry): Child[] {
   if (!ok && !selections.length) {
     blocks.push(
       h('div', { class: 'no-text' }, [
-        choice.status === 'failed' ? 'No text was saved. Open the page and clip it again to retry.' : 'No text yet. Clip page saves its text.',
+        choice.status === 'failed' ? 'No text saved. Clip the page again to retry.' : 'No text yet. Clip page saves its text.',
       ]),
     );
   }
@@ -956,7 +956,7 @@ function detailsSection(entry: SourceEntry): Child[] {
       ]),
     ),
     h('p', { class: 'small' }, [
-      'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
+      'SHA-256 of the saved text: shows if a copy changed, not what the page showed or who published it.',
     ]),
     pageCodeOf(entry),
   ];
@@ -1064,7 +1064,7 @@ async function openMoveSheet(entry: SourceEntry): Promise<void> {
   const targets = [...others.filter((s) => s.archived_at === null), ...others.filter((s) => s.archived_at !== null)];
   openSheet('move', `Move ${label} to another session`, [
     h('p', {}, [
-      `All captures of ${label} move with it. It gets the next free label in the target session; ${label} is not reused here. If the target already has this address, the captures join that source.`,
+      `All captures move. ${label} gets a new label there or joins the same address; ${label} is not reused here.`,
     ]),
     targets.length
       ? h(
@@ -1079,7 +1079,7 @@ async function openMoveSheet(entry: SourceEntry): Promise<void> {
             ]),
           ),
         )
-      : h('p', {}, ['There is no other session yet. Create one in the session list first.']),
+      : h('p', {}, ['No other session yet. Create one first.']),
   ]);
 }
 
@@ -1154,9 +1154,9 @@ function openTabsSheet(): void {
   };
   openSheet('tabs', 'Save tabs as addresses', [
     h('p', {}, [
-      'Saves the address and title of open tabs as sources marked ',
+      'Saves the address and title of open tabs as ',
       h('b', {}, ['URL only']),
-      '. Pages are not read; open a tab and clip it to save its text. Chrome asks once for permission to read tab addresses.',
+      ', without reading them. Chrome asks once for access to tab addresses.',
     ]),
     h('button', { class: 'option-button', attrs: { id: 'save-selected', type: 'button' }, on: { click: save('selected') } }, [
       h('span', { class: 'name', attrs: { id: 'save-selected-label' } }, [selectedTabsLabel()]),
@@ -1217,8 +1217,8 @@ async function saveTabs(which: 'selected' | 'all'): Promise<void> {
 
 const MODE_HINTS: Record<ContextMode, string> = {
   links: 'Title, address and basic page metadata only. No page text is sent.',
-  selections: 'Only the text you selected on each page. Sources without a selection are listed as missing.',
-  full: 'Saved page text plus selections. Sources without text are listed as missing, partial text is marked.',
+  selections: 'Only selected text; sources without one are marked missing.',
+  full: 'Page text and selections; missing or partial text is marked.',
 };
 const modeButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"] [data-mode]'));
 
@@ -1534,7 +1534,7 @@ function deliverFromSheet(id: DestinationId): () => void {
 
 function exportSheet(): void {
   openSheet('export', 'Export the job', [
-    h('p', {}, ['Both files contain the job exactly as shown in the preview. This is not a backup of your data; use Back up all data for that.']),
+    h('p', {}, ['The job as shown in the preview. Not a backup: use Back up all data.']),
     h('button', { class: 'option-button', attrs: { type: 'button', 'data-destination': 'markdown' }, on: { click: deliverFromSheet('markdown') } }, [
       h('span', { class: 'name' }, ['Markdown']),
       h('span', { class: 'file' }, ['clipgrail-session.md']),
@@ -1611,7 +1611,7 @@ async function checkRestoreFile(file: File): Promise<void> {
   const s = check.summary;
   showRestoreSheet(
     `Backup from ${fmtTime(s.created_at)} is valid: ${plural(s.sessions, 'session')}, ${plural(s.sources, 'source')}, ${plural(s.captures, 'capture')}, ${plural(s.jobs, 'job')}; all texts match their SHA-256.\n` +
-      `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). The deletion log keeps its entries and notes the sources the backup does not have. Back up the current data first if you may need it.`,
+      `Restoring replaces all current data (${plural(current.sessions, 'session')}, ${plural(current.sources, 'source')}, ${plural(current.captures, 'capture')}). The deletion log keeps its entries. Back up first if you may need it.`,
     true,
   );
 }
@@ -1649,7 +1649,7 @@ async function turnOffTabAccess(): Promise<void> {
     // Also ends a recording, which needs both.
     const removed = await browser.permissions.remove({ permissions: ['tabs', 'webNavigation'] });
     // Chrome keeps the earlier consent, so the next Save tabs or Record gets the permission back without a prompt.
-    if (removed) showToast('Tab access turned off. Save tabs and Record turn it on again.');
+    if (removed) showToast('Tab access off. Save tabs and Record ask again.');
     else showToast('Tab access could not be turned off.', { level: 'error' });
   } catch (error) {
     showToast(`Tab access could not be turned off: ${errorText(error)}`, { level: 'error' });
@@ -1675,20 +1675,20 @@ function helpSheet(): void {
     h('dl', { class: 'help' }, [
       ...item(
         'Clip page',
-        'Saves the readable text of the current page with the time, extraction method and SHA-256. ',
+        "Saves the page's readable text with time and SHA-256. Also ",
         shortcut ? h('kbd', {}, [shortcut]) : null,
-        shortcut ? ' or right-click › ClipGrail › Clip page does the same.' : 'Right-click › ClipGrail › Clip page does the same.',
+        shortcut ? ' and right-click › ClipGrail.' : 'right-click › ClipGrail.',
       ),
-      ...item('Selection', 'Saves the text you selected on the page. Also in the right-click menu.'),
-      ...item('Links', 'Right-click a link › ClipGrail › Clip URL. The address is saved as URL only; the page is not visited. Clip page in its details saves the text later.'),
+      ...item('Selection', 'Saves the selected text. Also in the right-click menu.'),
+      ...item('Links', 'Right-click a link › ClipGrail › Clip URL saves the address without opening it. Clip page in its details saves the text later.'),
       ...item('Tabs', 'Saves addresses and titles of open tabs without reading them.'),
       ...item(
         'Record',
-        'Also right-click › ClipGrail › Start recording, which saves the page you are on first. While recording, every page you open in this window is saved as URL only, with the page whose link led to it and how you reached it. The pages are not read; clip the ones you need. After Stop, you can remove the pages you do not need, mark the important ones and clip the ones you keep. A page the session already has is noted as visited again when a new page load returns to it 30 minutes or more after it was last saved or visited; reloads, Back and Forward are not. Addresses with a sign-in or access token, such as a password-reset link, are skipped. Pages on sites listed under ··· › Sites not recorded are skipped too. Recording runs in one window at a time: starting it in another window moves it there.',
+        'Saves every page you open in this window as URL only, with the page that led to it; pages are not read. Right-click › ClipGrail › Start recording also saves the current page. After Stop, remove, mark or clip the pages. A return after 30 minutes or more counts as a visit; reloads, Back and Forward do not. Skips addresses with sign-in tokens and sites under ··· › Sites not recorded. One window at a time.',
       ),
       ...item(
         "Can't read this tab?",
-        "Chrome lets ClipGrail read a tab only after you act on it: click the toolbar icon, press the shortcut or use the right-click menu on that tab. Browser pages and the Chrome Web Store can't be clipped.",
+        "Chrome allows reading a tab only after you click the toolbar icon, press the shortcut or use the right-click menu on it. Browser pages and the Web Store can't be clipped.",
       ),
     ]),
   ]);
@@ -1725,7 +1725,7 @@ async function excludedSitesSheet(): Promise<void> {
     'excluded-sites',
     'Sites not recorded',
     [
-      h('p', {}, ['Recording skips pages on these sites and their subdomains, and never saves them as the page where another was found. One site per line.']),
+      h('p', {}, ['Recording skips these sites and their subdomains, also as the page a link was found on. One site per line.']),
       h('label', { class: 'preset-field' }, [h('span', {}, ['Sites']), area]),
       h('p', { class: 'small' }, ['Kept in this browser. Not part of backups.']),
       h('div', { class: 'sheet-actions' }, [
@@ -1746,7 +1746,7 @@ function renderRecording(): void {
     ? `Recording: ${plural(recording!.captures.length, 'page')} saved${recording!.failed ? `, ${recording!.failed} could not be saved` : ''}. Click to stop.`
     : recording
       ? 'Recording in another window; record this window instead'
-      : 'Record the address of every page you open in this window';
+      : 'Record pages you open in this window';
 }
 
 async function startRecording(): Promise<void> {
@@ -1773,8 +1773,8 @@ async function startRecording(): Promise<void> {
   const moved = response.moved;
   showToast(
     moved
-      ? `Recording moved to this window from another one${moved.saved ? `, where it saved ${plural(moved.saved, 'page')}` : ''}. Pages you open here are saved to ${target} as addresses.`
-      : `Recording. Pages you open in this window are saved to ${target} as addresses.`,
+      ? `Recording moved here${moved.saved ? ` (${plural(moved.saved, 'page')} saved in the other window)` : ''}. Pages you open are saved to ${target}.`
+      : `Recording to ${target}: pages you open here are saved as addresses.`,
   );
 }
 
@@ -1867,7 +1867,7 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
     );
   };
   const all = h('input', { attrs: { type: 'checkbox' } });
-  const clip = h('button', { class: 'primary', attrs: { type: 'button', title: 'Save the text of the checked pages and remove the unchecked ones' } });
+  const clip = h('button', { class: 'primary', attrs: { type: 'button', title: "Save the checked pages' text, remove the unchecked" } });
   const remove = h('button', { attrs: { type: 'button' } });
   const unchecked = () => rows.filter((row) => !row.box.checked);
   const update = () => {
@@ -1949,10 +1949,10 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
     'Review recorded pages',
     [
       h('p', {}, [
-        `${plural(n, 'page')} ${n === 1 ? 'was' : 'were'} saved to ${where} as ${n === 1 ? 'an address' : 'addresses'}${lost}. `,
-        earlier ? `${plural(earlier, 'page')} the session already had ${earlier === 1 ? 'was' : 'were'} visited again. ` : '',
-        n === 1 ? 'Uncheck it if you do not need it; it is removed when you click Remove.' : 'Uncheck the ones you do not need; they are removed when you click Remove.',
-        ' Pages you mark important stay.',
+        `${plural(n, 'page')} saved to ${where} as ${n === 1 ? 'an address' : 'addresses'}${lost}. `,
+        earlier ? `${plural(earlier, 'page')} already there ${earlier === 1 ? 'was' : 'were'} visited again. ` : '',
+        n === 1 ? 'Uncheck it to remove it.' : 'Uncheck the ones to remove.',
+        ' Important pages stay.',
       ]),
       h('p', { class: 'small' }, ['↑ ↓ move · Space keeps or removes · I marks important · O opens the page in a new tab']),
       h('label', { class: 'review-all' }, [all, 'All pages']),
@@ -1962,7 +1962,7 @@ async function reviewRecording(saved: SavedCapture[], visits: SavedCapture[], fa
         remove,
         h('button', { attrs: { type: 'button' }, on: { click: () => closeSheet() } }, ['Keep all']),
       ]),
-      h('p', { class: 'small' }, ["Clip saves the text of the checked pages and removes the unchecked ones. Chrome asks once to let ClipGrail read their sites."]),
+      h('p', { class: 'small' }, ["Clip saves the checked pages' text and removes the unchecked. Chrome asks for access to their sites."]),
     ],
     rows[0]!.box,
   );

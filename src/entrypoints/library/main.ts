@@ -33,7 +33,7 @@ import { faviconTile, faviconUrl } from '../../lib/favicon';
 import { hydrateIcons, icon } from '../../lib/icons';
 import type { Child } from '../../lib/dom';
 import { compareTexts } from '../../lib/diff';
-import { pageCodeBlock } from '../../lib/page-code-block';
+import { foundInPageBlock } from '../../lib/page-code-block';
 import { clipAddressOf, sitePatterns } from '../../lib/clip-address';
 import type { ClipCancelRequest, ClipSourcesRequest } from '../../lib/messages';
 import type { Notice } from '../../lib/notice';
@@ -79,6 +79,8 @@ const finds = new Map<string, TextFind[]>();
 let readingFinds = false;
 /** The deletion log is shown as a view of its own, like a session; the entry open in the reader, and the filters of the list. */
 const DELETION_LOG = 'deletion-log';
+/** Important in the sessions column: All sources with only the sources marked important. */
+const IMPORTANT = 'important';
 let removalId: string | null = null;
 const logFilter = { query: '', session: 'all' };
 let selectedId: string | null = null;
@@ -129,7 +131,7 @@ const sessionOf = (id: string): Session | undefined => data.sessions.find((s) =>
 const logShown = () => filter.view === DELETION_LOG;
 /** The timeline is one session's; All sources, also reached when the session shown was deleted, lists sources. */
 const timelineShown = () => mode === 'timeline' && filter.view !== ALL_SOURCES && !logShown();
-const viewName = () => (filter.view === ALL_SOURCES ? 'All sources' : logShown() ? 'Deletion log' : (sessionOf(filter.view)?.name ?? 'All sources'));
+const viewName = () => (filter.view === ALL_SOURCES ? (filter.important ? 'Important' : 'All sources') : logShown() ? 'Deletion log' : (sessionOf(filter.view)?.name ?? 'All sources'));
 const selectedRow = () => rows.find((r) => r.entry.source.id === selectedId);
 
 // ---------- Address: #view=<session ID, all or deletion-log>&mode=timeline|pivots&source=<source ID>&entry=<log entry ID> (identifiers only) ----------
@@ -189,7 +191,11 @@ function applyLayout(): void {
   const expanded = layout.reader_expanded && !!selectedRow();
   document.body.classList.toggle('sessions-hidden', layout.sessions_hidden);
   document.body.classList.toggle('reader-expanded', expanded);
-  $('show-sessions').hidden = !layout.sessions_hidden;
+  // Hidden sessions leave a column of icons, with this button at its top.
+  const sessions = $('toggle-sessions');
+  sessions.title = layout.sessions_hidden ? 'Show sessions' : 'Hide sessions';
+  sessions.setAttribute('aria-label', sessions.title);
+  sessions.setAttribute('aria-expanded', String(!layout.sessions_hidden));
   const label = expanded ? 'Show all columns' : 'Expand reader';
   expandButton.title = label;
   expandButton.setAttribute('aria-label', label);
@@ -273,6 +279,13 @@ function readerThumb(entry: { captures: { capture: { id: string } }[] }, viewedI
 
 // ---------- Sessions ----------
 
+/** The first letters of the first two words of a session name, or its first two letters. */
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/);
+  const letters = words.length > 1 ? words.slice(0, 2).map((w) => Array.from(w)[0]!) : Array.from(words[0] ?? '').slice(0, 2);
+  return letters.join('').toUpperCase();
+}
+
 function renderNav(): void {
   const counts = new Map<string, number>();
   for (const row of rows) counts.set(row.session.id, (counts.get(row.session.id) ?? 0) + 1);
@@ -280,10 +293,15 @@ function renderNav(): void {
   const archived = data.sessions.filter((s) => s.archived_at !== null);
   if (archived.some((s) => s.id === filter.view)) archivedOpen = true;
   const item = (key: string, name: string, n: number, session?: Session) => {
-    const button = h('button', { class: 'nav-item', attrs: { type: 'button', 'aria-current': String(filter.view === key) }, on: { click: () => setView(key) } }, [
-      icon(key === ALL_SOURCES ? 'stack' : key === INBOX_SESSION_ID ? 'tray' : key === DELETION_LOG ? 'clock-counter-clockwise' : 'folder-simple'),
-      h('span', { class: 'name', attrs: { title: name } }, [name]),
-      session?.id === activeId ? h('span', { class: 'active-tag', attrs: { title: 'Active session: new clips go here' } }, ['Active']) : null,
+    const active = session?.id === activeId;
+    const title = `${name} · ${fmtNumber(n)}${active ? ' · active session: new clips go here' : ''}`;
+    // With the sessions hidden, a session other than the Inbox shows its initials instead of its icon.
+    const attrs: Record<string, string> = { type: 'button', title, 'data-view': key };
+    if (session && key !== INBOX_SESSION_ID) attrs['data-initials'] = initials(name);
+    const button = h('button', { class: 'nav-item', attrs, on: { click: () => openView(key) } }, [
+      icon(key === ALL_SOURCES ? 'stack' : key === IMPORTANT ? 'star' : key === INBOX_SESSION_ID ? 'tray' : key === DELETION_LOG ? 'clock-counter-clockwise' : 'folder-simple'),
+      h('span', { class: 'name' }, [name]),
+      active ? h('span', { class: 'active-tag' }, ['Active']) : null,
       h('span', { class: 'count' }, [fmtNumber(n)]),
     ]);
     if (!session) return button;
@@ -295,7 +313,7 @@ function renderNav(): void {
     'button',
     {
       class: 'nav-item',
-      attrs: { type: 'button', 'aria-expanded': String(archivedOpen) },
+      attrs: { type: 'button', title: `Archived · ${fmtNumber(archived.length)}`, 'aria-expanded': String(archivedOpen) },
       on: {
         click: () => {
           archivedOpen = !archivedOpen;
@@ -305,8 +323,10 @@ function renderNav(): void {
     },
     [icon('archive'), h('span', { class: 'name' }, ['Archived']), h('span', { class: 'chevron' }, [icon('caret-right')]), h('span', { class: 'count' }, [fmtNumber(archived.length)])],
   );
+  const important = rows.filter((r) => r.entry.source.important).length;
   fill($('nav-list'), [
     item(ALL_SOURCES, 'All sources', rows.length),
+    item(IMPORTANT, 'Important', important),
     h('div', { class: 'nav-group section-title' }, ['Sessions']),
     ...current.map((s) => item(s.id, s.name, counts.get(s.id) ?? 0, s)),
     archived.length ? toggle : null,
@@ -318,11 +338,25 @@ function renderNav(): void {
   const select = $<HTMLSelectElement>('view-select');
   fill(select, [
     h('option', { attrs: { value: ALL_SOURCES } }, [`All sources (${fmtNumber(rows.length)})`]),
+    h('option', { attrs: { value: IMPORTANT } }, [`Important (${fmtNumber(important)})`]),
     ...current.map(option),
     archived.length ? h('optgroup', { attrs: { label: 'Archived' } }, archived.map(option)) : null,
     h('option', { attrs: { value: DELETION_LOG } }, [`Deletion log (${fmtNumber(data.removals.length)})`]),
   ]);
-  select.value = filter.view;
+  markNav();
+}
+
+/** Marks the view shown in the sessions column and in the narrow window's menu. */
+function markNav(): void {
+  const shown = filter.view === ALL_SOURCES && filter.important ? IMPORTANT : filter.view;
+  for (const item of document.querySelectorAll<HTMLElement>('#nav-list .nav-item[data-view]')) item.setAttribute('aria-current', String(item.dataset.view === shown));
+  $<HTMLSelectElement>('view-select').value = shown;
+}
+
+/** Opens a view from the sessions column; Important turns on the filter of important sources, any other view turns it off. */
+function openView(key: string): void {
+  filter.important = key === IMPORTANT;
+  setView(key === IMPORTANT ? ALL_SOURCES : key);
 }
 
 function setView(view: string): void {
@@ -595,6 +629,7 @@ function renderList(): void {
   const pivotsShown = mode === 'pivots' && !logList;
   const timeline = timelineShown();
   $('list-title').textContent = viewName();
+  markNav();
   // Pivots are found in all sources too; the timeline is one session's.
   $('mode-switch').hidden = logList;
   $('mode-timeline').hidden = filter.view === ALL_SOURCES;
@@ -637,7 +672,7 @@ function renderSourceList(timeline: boolean): void {
   pivotFilterButton.hidden = !filter.pivot;
   if (filter.pivot) {
     fill(pivotFilterButton, [icon('x'), h('span', { class: 'pv-filter-value' }, [filter.pivot.value])]);
-    pivotFilterButton.title = `Only the sources with ${filter.pivot.value}. Click to show all sources.`;
+    pivotFilterButton.title = `Only sources with ${filter.pivot.value}. Click to show all.`;
     pivotFilterButton.setAttribute('aria-label', `Remove filter: sources with ${filter.pivot.value}`);
   }
   const empty = $('list-empty');
@@ -664,7 +699,7 @@ function renderSourceList(timeline: boolean): void {
     if (!events.length) {
       fill(empty, [
         all === 0
-          ? h('p', {}, ['No activity yet. Clip or record pages in the side panel and they appear here in the order they happened.'])
+          ? h('p', {}, ['No activity yet. Clips and recorded pages appear here in order.'])
           : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No activity matches the search and filters.']),
         all > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
       ]);
@@ -678,7 +713,7 @@ function renderSourceList(timeline: boolean): void {
     if (!shown.length) {
       fill(empty, [
         inView === 0
-          ? h('p', {}, [filter.view === ALL_SOURCES ? 'No sources yet. Clip pages from the side panel and they appear here.' : 'This session has no sources yet.'])
+          ? h('p', {}, [filter.view === ALL_SOURCES ? 'No sources yet. Clip pages from the side panel.' : 'This session has no sources yet.'])
           : h('p', {}, [readingFor !== null ? 'Searching saved text…' : 'No sources match the search and filters.']),
         inView > 0 ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
       ]);
@@ -690,7 +725,7 @@ function renderSourceList(timeline: boolean): void {
 const SEARCH_LABELS = {
   sources: { placeholder: $<HTMLInputElement>('search').placeholder, title: $<HTMLInputElement>('search').title },
   values: { placeholder: 'Search values', title: 'All words must be in the value or its kind. Use quotes for a phrase.' },
-  log: { placeholder: 'Search labels, titles and addresses', title: 'All words must be in the entry: labels such as S3, sessions, titles and addresses. Use quotes for a phrase.' },
+  log: { placeholder: 'Search labels, titles and addresses', title: 'All words must match a label, session, title or address.' },
 };
 
 /** Shows the search of the list shown: of log entries, of values in Pivots, else of sources. */
@@ -751,8 +786,6 @@ function openSource(id: string, userAction: boolean): void {
   const row = rows.find((r) => r.entry.source.id === id);
   const found = row && query.terms.length ? searchSnippet(row, query, textSearch.hits) : null;
   if (selectedId !== id || (userAction && found)) viewedCaptureId = found?.capture_id ?? null;
-  // Words found in the page code are in Details, which then opens.
-  if (userAction && found?.where === 'Page code') detailsOpen = true;
   if (selectedId !== id) $('reader-col').scrollTop = 0;
   scrollToMatch = userAction && query.terms.length > 0;
   if (scrollToMatch) setComparing(null);
@@ -805,7 +838,8 @@ function readFinds(entries: LibraryEntry[]): void {
 
 function renderPivotList(): void {
   shown = [];
-  const inView = filter.view === ALL_SOURCES ? rows : rows.filter((r) => r.session.id === filter.view);
+  // Important lists the values of the important sources; a session lists all its sources' values.
+  const inView = filter.view === ALL_SOURCES ? rows.filter((r) => !filter.important || r.entry.source.important) : rows.filter((r) => r.session.id === filter.view);
   const entries = inView.map((r) => r.entry);
   readFinds(entries);
   pivots = collectPivots(entries, (id) => finds.get(id));
@@ -847,7 +881,7 @@ function renderPivotList(): void {
       : !pivots.length
         ? [
             h('p', {}, [
-              "No values yet. They are read when you clip a page or a selection: trackers and what the page declares about itself from its code, and contacts, accounts and payment addresses from its links and text.",
+              "No values yet. Clipping a page reads its trackers, declared names and contacts.",
             ]),
           ]
         : pivotFilter.shared && !narrowed
@@ -931,7 +965,7 @@ function renderPivot(reader: HTMLElement): void {
       h('span', {}, [kind.label]),
       h('span', { class: 'pv-actions' }, [
         h('button', { class: 'btn-sm', attrs: { id: 'copy-pivot', type: 'button' }, on: { click: () => void copyPivot(pivot.value) } }, [icon('copy'), 'Copy']),
-        h('button', { class: 'btn-sm', attrs: { id: 'show-pivot-sources', type: 'button', title: 'List these sources to read them one after another' }, on: { click: () => showPivotSources(pivot) } }, ['Show sources']),
+        h('button', { class: 'btn-sm', attrs: { id: 'show-pivot-sources', type: 'button', title: 'List these sources' }, on: { click: () => showPivotSources(pivot) } }, ['Show sources']),
       ]),
     ]),
     h('h3', { class: `pv-title${kind.mono ? ' mono' : ''}` }, [pivot.value]),
@@ -955,9 +989,8 @@ function pivotUseButton(use: PivotUse, mixed: boolean): HTMLButtonElement {
   ]);
 }
 
-/** Opens a source the value is in at the capture where it was found, with the value marked; a value read from the page is in Details. */
+/** Opens a source the value is in at the capture where it was found, with the value marked in its text or in what was found in the page. */
 function openPivotUse(use: PivotUse): void {
-  if (!use.snippet) detailsOpen = true;
   openSource(use.entry.source.id, true);
   pivotMark = use.raw;
   scrollToMatch = true;
@@ -1058,7 +1091,7 @@ function renderLogList(): void {
     fill(empty, [
       all.length
         ? h('p', {}, ['No entries match the search and session.'])
-        : h('p', {}, ["Nothing removed yet. When you delete a source, undo a clip or move a source to another session, its label is noted here, so a gap in a session's labels can be explained."]),
+        : h('p', {}, ['Nothing removed yet. Deleted, undone and moved sources are noted here.']),
       all.length ? h('button', { class: 'link', attrs: { type: 'button' }, on: { click: clearFilters } }, ['Clear filters']) : null,
     ]);
   }
@@ -1291,8 +1324,9 @@ async function loadText(snapshotId: string, box: HTMLElement): Promise<void> {
 function highlightMatches(): void {
   const terms = mode === 'pivots' ? (pivotMark ? [fold(searchable(pivotMark))] : []) : parseSearch(filter.query).terms;
   const ranges: Range[] = [];
-  const shown = '#reader .text-box:not([aria-busy]):not(.diff-box), #reader .page-code dd .dd-text > span:first-child';
-  for (const box of terms.length ? document.querySelectorAll<HTMLElement>(shown) : []) {
+  // The text first, so a source opened for words in its text scrolls there and not to a value found in the page above it.
+  const shown = [...document.querySelectorAll<HTMLElement>('#reader .text-box:not([aria-busy]):not(.diff-box)'), ...document.querySelectorAll<HTMLElement>('#reader .found-value')];
+  for (const box of terms.length ? shown : []) {
     const node = box.firstChild;
     if (!(node instanceof Text)) continue;
     for (const [start, end] of storedRanges(node.data, terms, MAX_HIGHLIGHTS)) {
@@ -1376,7 +1410,7 @@ function viewedSection(viewed: Version, current: Version | undefined, versions: 
 
 function earlierBanner(current: Version): HTMLElement {
   return h('div', { class: 'banner earlier', attrs: { role: 'note' } }, [
-    h('span', {}, [`Earlier version, for reading only. Research Jobs use the current text from capture ${current.number} (${fmtTime(current.capture.capture.captured_at)}).`]),
+    h('span', {}, [`Earlier version, read only. Jobs use capture ${current.number} (${fmtTime(current.capture.capture.captured_at)}).`]),
     h('button', { attrs: { id: 'show-current', type: 'button' }, on: { click: () => viewCapture(current.capture.capture.id) } }, ['Show current text']),
   ]);
 }
@@ -1504,7 +1538,7 @@ function compareMessage(older: Version, newer: Version, diff: TextDiff | null | 
   if (error) return `The saved texts could not be read: ${error}`;
   if (diff === null) {
     const [a, b] = [okSnapshotOfVersion(older)!, okSnapshotOfVersion(newer)!];
-    return `The texts differ in too many places to mark the changes. Capture ${older.number} has ${count(a.character_count, 'character')}, capture ${newer.number} has ${fmtNumber(b.character_count)}.`;
+    return `Too many differences to mark. Capture ${older.number}: ${count(a.character_count, 'character')}, capture ${newer.number}: ${fmtNumber(b.character_count)}.`;
   }
   return diff && !diff.changes ? 'The saved texts are the same.' : null;
 }
@@ -1520,10 +1554,10 @@ function compareBody(older: Version, newer: Version, diff: TextDiff | null | und
       h('ins', {}, ['Added']),
       ` since capture ${older.number} · `,
       h('del', {}, ['Removed']),
-      ' · Every difference in the saved text is marked, including a date or a counter that changes on every visit.',
+      ' · Dates and counters that change on every visit are marked too.',
       ...cut
         .filter(([, s]) => s.truncated)
-        .map(([v, s]) => ` Capture ${v.number} kept only the first ${fmtNumber(s.character_count)} characters of the page; text past that point shows as added or removed even where the page did not change.`),
+        .map(([v, s]) => ` Capture ${v.number} kept only the first ${fmtNumber(s.character_count)} characters; changes past that point may not be real.`),
     ]),
   ];
 }
@@ -1575,11 +1609,11 @@ function activeSessionBanner(row: LibraryRow): Child {
   const active = sessionOf(activeId)?.name ?? 'Inbox';
   return h('div', { class: 'banner info' }, [
     h('span', {}, [
-      'Clip page saves to the active session, ',
+      'Clips go to ',
       h('b', {}, [active]),
-      `. To add the text to ${row.label}, make `,
+      `. To add text to ${row.label}, make `,
       h('b', {}, [row.session.name]),
-      ' active, open the page and clip it.',
+      ' active and clip the page.',
     ]),
     h('button', { attrs: { id: 'make-active', type: 'button' }, on: { click: () => void makeActive(row.session.id) } }, ['Make active']),
   ]);
@@ -1625,8 +1659,8 @@ function renderReaderContents(): void {
       h('div', { class: 'empty' }, [
         h('p', {}, [
           selectedId
-            ? 'This source is no longer in the library. It was deleted, joined another source when it was moved, or its only capture was undone.'
-            : 'Select a source to read its saved text and earlier versions.',
+            ? 'This source is gone: deleted, joined another by a move, or undone.'
+            : 'Select a source.',
         ]),
       ]),
     );
@@ -1670,9 +1704,8 @@ function renderReaderContents(): void {
       ]),
     ),
     h('p', { class: 'small' }, [
-      'The SHA-256 identifies the exact saved text, so a copy can be checked for changes. It does not prove what the page showed or who published it.',
+      'SHA-256 of the saved text: shows if a copy changed, not what the page showed or who published it.',
     ]),
-    pageCode ? pageCodeBlock(pageCode, reportCopy) : null,
   ]);
   details.open = detailsOpen;
   fill(reader, [
@@ -1695,7 +1728,6 @@ function renderReaderContents(): void {
       expandButton,
     ]),
     h('h3', { class: row.title ? '' : 'untitled' }, [row.title ?? '(title not captured)']),
-    readerThumb(entry, viewed.capture.capture.id),
     h('div', { class: 'url-row' }, [
       h('img', { class: 'fav-sm', attrs: { src: faviconUrl(url), alt: '' } }),
       h('span', { class: 'url' }, [url]),
@@ -1710,6 +1742,8 @@ function renderReaderContents(): void {
     ]),
     h('div', { class: 'status-line' }, [chip(row.status), h('span', {}, [statusSentence(entry)])]),
     activeSessionBanner(row),
+    pageCode ? foundInPageBlock(pageCode, reportCopy, versions.length > 1 ? `capture ${viewed.number}` : undefined) : null,
+    readerThumb(entry, viewed.capture.capture.id),
     editNote('source', entry.source.id, entry.source.note, 'Source note'),
     h('div', { class: 'versions' }, [
       h('div', { class: 'versions-head' }, [
@@ -1763,6 +1797,7 @@ async function toggleImportant(row: LibraryRow): Promise<void> {
     notice(`Not saved: ${errorText(error)}`);
   }
   const restore = keepListFocus();
+  renderNav();
   renderList();
   restore();
   renderReader();
@@ -1998,7 +2033,7 @@ async function confirmEmptyInbox(opener: HTMLElement): Promise<void> {
 function openMove(row: LibraryRow): void {
   const targets = data.sessions.filter((s) => s.id !== row.session.id);
   openDialog(`Move ${row.label} to another session`, [
-    h('p', {}, [`All captures move. ${row.label} is retired here. The target assigns a label or joins the same address.`]),
+    h('p', {}, [`All captures move. ${row.label} gets a new label there or joins the same address; ${row.label} is not reused here.`]),
     h('div', { class: 'move-targets' }, targets.map((s) => h('button', {
       attrs: { type: 'button', 'data-target': s.id }, on: { click: () => void moveSelected(row, s) },
     }, [h('span', {}, [`${s.name}${s.archived_at ? ' (archived)' : ''}`]), h('span', { class: 'small' }, [count(rows.filter((r) => r.session.id === s.id).length, 'source')])]))),
@@ -2150,12 +2185,11 @@ function bind(): void {
   });
   $('delete-selected').addEventListener('click', () => void confirmDeleteSelected());
   $('clip-selected').addEventListener('click', () => clipSources(shown.filter((r) => picked.has(r.entry.source.id))));
-  $('hide-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: true }, $('show-sessions')));
-  $('show-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: false }, $('hide-sessions')));
+  $('toggle-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: !layout.sessions_hidden }));
   bindResize($('resize-nav'), 'nav_width', NAV_WIDTH, () => 0);
-  bindResize($('resize-list'), 'list_width', LIST_WIDTH, () => (layout.sessions_hidden ? 0 : layout.nav_width));
+  bindResize($('resize-list'), 'list_width', LIST_WIDTH, () => $('list-col').getBoundingClientRect().left);
   expandButton.addEventListener('click', () => changeLayout({ reader_expanded: !document.body.classList.contains('reader-expanded') }));
-  $<HTMLSelectElement>('view-select').addEventListener('change', (event) => setView((event.target as HTMLSelectElement).value));
+  $<HTMLSelectElement>('view-select').addEventListener('change', (event) => openView((event.target as HTMLSelectElement).value));
   $('back-button').addEventListener('click', () => {
     setReading(false);
     selectedButton()?.focus();

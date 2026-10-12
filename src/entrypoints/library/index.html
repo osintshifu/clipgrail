@@ -16,7 +16,7 @@
     <nav id="nav" class="col nav" aria-label="Sessions">
       <div class="brand">
         <span data-mark></span><h1>Library</h1>
-        <button id="hide-sessions" class="icon-btn" type="button" title="Hide sessions" aria-label="Hide sessions" aria-controls="nav"><span data-icon="sidebar-simple"></span></button>
+        <button id="toggle-sessions" class="icon-btn" type="button" title="Hide sessions" aria-label="Hide sessions" aria-expanded="true" aria-controls="nav"><span data-icon="sidebar-simple"></span></button>
       </div>
       <div id="nav-list" class="nav-list"></div>
     </nav>
@@ -24,16 +24,15 @@
     <section id="list-col" class="col list-col" aria-labelledby="list-title">
       <div class="list-top">
         <div class="list-head">
-          <button id="show-sessions" class="icon-btn" type="button" title="Show sessions" aria-label="Show sessions" aria-controls="nav" hidden><span data-icon="sidebar-simple"></span></button>
           <h2 id="list-title"></h2>
           <span id="result-count" class="count" role="status"></span>
           <div id="mode-switch" class="mode-switch" role="group" aria-label="Show">
             <button id="mode-sources" type="button" aria-pressed="true">Sources</button>
-            <button id="mode-timeline" type="button" aria-pressed="false" title="Every capture and recorded visit of this session in time order">Timeline</button>
-            <button id="mode-pivots" type="button" aria-pressed="false" title="Trackers, what pages declare, and contacts, accounts and payment addresses, with the sources each is in">Pivots</button>
+            <button id="mode-timeline" type="button" aria-pressed="false" title="Captures and visits in time order">Timeline</button>
+            <button id="mode-pivots" type="button" aria-pressed="false" title="Values shared across sources">Pivots</button>
           </div>
         </div>
-        <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search text, notes, title or address" aria-label="Search text, notes, title or address" title="All words must match: title, address, label, notes, selections and saved text. Use quotes for a phrase; site:example.org, after:2026-10-01 and before:2026-10-31 narrow the results." autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
+        <label class="search"><span data-icon="magnifying-glass"></span><input id="search" type="search" placeholder="Search text, notes, title or address" aria-label="Search text, notes, title or address" title="All words must match. Use &quot;quotes&quot; for a phrase, or site:example.org, after:2026-10-01, before:2026-10-31." autocomplete="off" /><kbd aria-hidden="true">/</kbd></label>
         <div class="filters">
           <select id="status-filter" aria-label="Status">
             <option value="any">All statuses</option>
@@ -44,10 +43,10 @@
             <option value="none">Selections only</option>
           </select>
           <select id="sort" aria-label="Sort"></select>
-          <button id="important-filter" class="btn-sm" type="button" aria-pressed="false" title="Show only sources marked important"><span data-icon="star"></span>Important</button>
+          <button id="important-filter" class="btn-sm icon-only" type="button" aria-pressed="false" aria-label="Show only sources marked important" title="Show only sources marked important"><span data-icon="star"></span></button>
           <select id="pivot-kind" aria-label="Kind" hidden></select>
           <button id="shared-only" class="btn-sm" type="button" aria-pressed="true" title="Show only values found in two or more sources" hidden>Shared only</button>
-          <button id="copy-pivots" class="btn-sm" type="button" title="Copy the values shown as a table: kind, value, sources and sites, separated by tabs" hidden><span data-icon="copy"></span>Copy list</button>
+          <button id="copy-pivots" class="btn-sm" type="button" title="Copy as a tab-separated table" hidden><span data-icon="copy"></span>Copy list</button>
           <button id="pivot-filter" class="btn-sm filter-on" type="button" hidden></button>
           <select id="log-session" aria-label="Session" hidden></select>
           <button id="clear-log" class="btn-sm" type="button" aria-haspopup="dialog" hidden>Clear log…</button>
@@ -57,7 +56,7 @@
           <input id="select-all" type="checkbox" title="Select all shown sources" aria-label="Select all shown sources" />
           <b id="selection-count" role="status"></b>
           <span class="grow"></span>
-          <button id="clip-selected" class="btn-sm" type="button" title="Open the selected pages saved as a URL only in background tabs and save their text" hidden></button>
+          <button id="clip-selected" class="btn-sm" type="button" title="Save the text of the selected URL-only pages" hidden></button>
           <button id="delete-selected" class="btn-sm delete icon-only" type="button" aria-haspopup="dialog" title="Delete selected sources" aria-label="Delete selected sources"><span data-icon="trash"></span></button>
           <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection"><span data-icon="x"></span></button>
         </div>
@@ -76,8 +75,8 @@
       <span class="icon-collapse" data-icon="arrows-in-simple"></span>
     </button>
     <!-- Column borders: drag, or use the arrow keys, to change a column's width; double-click restores it. -->
-    <div id="resize-nav" class="resize-handle" role="separator" aria-orientation="vertical" aria-controls="nav" aria-label="Width of the sessions column" title="Drag to change the width; double-click to restore it" tabindex="0"></div>
-    <div id="resize-list" class="resize-handle" role="separator" aria-orientation="vertical" aria-controls="list-col" aria-label="Width of the sources column" title="Drag to change the width; double-click to restore it" tabindex="0"></div>
+    <div id="resize-nav" class="resize-handle" role="separator" aria-orientation="vertical" aria-controls="nav" aria-label="Width of the sessions column" title="Drag to resize; double-click to reset" tabindex="0"></div>
+    <div id="resize-list" class="resize-handle" role="separator" aria-orientation="vertical" aria-controls="list-col" aria-label="Width of the sources column" title="Drag to resize; double-click to reset" tabindex="0"></div>
     <dialog id="library-dialog" aria-label="Organize research"></dialog>
     <div id="library-notice" class="library-notice" role="status" hidden></div>
     <p id="compare-said" class="visually-hidden" aria-live="polite"></p>

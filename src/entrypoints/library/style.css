@@ -46,8 +46,13 @@ body.resizing { cursor: col-resize; user-select: none; }
   position: sticky; top: 0; z-index: 1; background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(10px);
   padding: 14px 14px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px;
 }
-.list-head { display: flex; align-items: center; gap: 6px; min-height: 28px; }
-.list-top h2 { flex: 0 1 auto; min-width: 0; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+/* When the title, the count and the view switch do not fit on one line, the switch goes under them; in a narrow list it takes the whole line. */
+.list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 6px; min-height: 28px; container-type: inline-size; }
+.list-top h2 { flex: 0 1 auto; min-width: 0; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@container (max-width: 340px) {
+  .list-head .mode-switch { flex-basis: 100%; margin-left: 0; }
+  .list-head .mode-switch button { flex: 1; }
+}
 /* The count sits beside the title and pushes the view switch to the right. */
 .list-head .count { flex: none; margin-right: auto; font-size: 13px; font-weight: 500; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .search { position: relative; display: flex; align-items: center; }
@@ -91,8 +96,8 @@ select:focus { background-color: var(--surface); }
   background: var(--sunken); box-shadow: 0 0 0 1px var(--line); margin-bottom: 2px;
 }
 .reader-thumb {
-  width: 100%; max-width: 760px; aspect-ratio: 16 / 6; object-fit: cover; object-position: top; border-radius: var(--r-lg);
-  background: var(--sunken); box-shadow: 0 0 0 1px var(--line); margin-bottom: -4px;
+  width: 100%; aspect-ratio: 16 / 6; object-fit: cover; object-position: top; border-radius: var(--r-lg);
+  background: var(--sunken); box-shadow: 0 0 0 1px var(--line);
 }
 .src-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .src-title {
@@ -287,10 +292,22 @@ details summary:hover { color: var(--fg); }
 #expand-reader .icon-collapse, body.reader-expanded #expand-reader .icon-expand { display: none; }
 body.reader-expanded #expand-reader .icon-collapse { display: grid; }
 @media (min-width: 901px) {
-  body.sessions-hidden { grid-template-columns: var(--list-w, 412px) minmax(0, 1fr); }
+  /* Hidden sessions leave a column of icons: the button that shows them again, then a button for each view, named on hover. */
+  body.sessions-hidden { grid-template-columns: 52px var(--list-w, 412px) minmax(0, 1fr); }
   body.sessions-hidden #resize-nav, body.reader-expanded .resize-handle { display: none; }
-  body.sessions-hidden #resize-list { left: var(--list-w, 412px); }
-  body.sessions-hidden .nav { display: none; }
+  body.sessions-hidden #resize-list { left: calc(52px + var(--list-w, 412px)); }
+  body.sessions-hidden .nav { padding: 12px 7px; align-items: center; }
+  body.sessions-hidden .brand { padding: 0 0 10px; }
+  body.sessions-hidden .brand h1, body.sessions-hidden .brand .mark { display: none; }
+  body.sessions-hidden .nav-list { align-items: center; gap: 4px; }
+  body.sessions-hidden .nav-row { display: block; }
+  body.sessions-hidden .nav-item { position: relative; width: 36px; height: 36px; padding: 0; justify-content: center; }
+  body.sessions-hidden .nav-item :is(.name, .count, .active-tag) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  body.sessions-hidden :is(.session-actions, .nav-item .chevron, .nav-item[data-initials] > .ic) { display: none; }
+  body.sessions-hidden .nav-item[data-initials]::before { content: attr(data-initials) / ''; font-size: 11.5px; font-weight: 650; letter-spacing: 0.02em; }
+  body.sessions-hidden .nav-item[data-initials][aria-current='true']::before { color: var(--accent); }
+  body.sessions-hidden .nav-item:has(.active-tag)::after { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  body.sessions-hidden .nav-group { width: 24px; height: 1px; margin: 7px 0; padding: 0; overflow: hidden; color: transparent; background: var(--line); }
   body.reader-expanded { grid-template-columns: minmax(0, 1fr); }
   body.reader-expanded .nav, body.reader-expanded .list-col { display: none; }
 }
@@ -350,6 +367,24 @@ body.reader-expanded #expand-reader .icon-collapse { display: grid; }
 
 /* Page code: what the page declared and the trackers in its code, each with where it was read. */
 .page-code { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+/* What the page showed, at the top of the reader: a row for each kind, each value a button that copies it. */
+.found { border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--raised); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.found-head { display: flex; align-items: baseline; gap: 8px; }
+.found-head .copy-all { margin-left: auto; }
+.found-group { display: flex; flex-direction: column; gap: 4px; }
+.found-group + .found-group { border-top: 1px solid var(--line); padding-top: 8px; }
+.found-group-title { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.found-list { display: grid; grid-template-columns: 10em minmax(0, 1fr); gap: 2px 10px; margin: 0; font-size: 12.5px; }
+.found-list dt { color: var(--muted); padding-top: 3px; }
+.found-list dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+button.found-value {
+  padding: 1px 7px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--sunken); color: var(--fg);
+  font-size: 12.5px; font-weight: 400; line-height: 1.5; text-align: left; overflow-wrap: anywhere; white-space: normal; cursor: copy;
+}
+button.found-value.mono { font-family: var(--mono); font-size: 11.5px; }
+button.found-value:hover:not(:disabled) { border-color: var(--accent-line); background: var(--hover); }
+button.found-value.copied { border-color: var(--ok); color: var(--ok); }
+.found-note { margin: 0; }
 .page-code .section-title { display: block; margin-top: 6px; }
 .page-code .from { color: var(--muted); }
 .page-code dd .mono { font-family: var(--mono); font-size: 11.5px; }

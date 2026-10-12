@@ -248,7 +248,7 @@ describe('side panel', () => {
     const second = (await listSessions(db)).find((s) => s.name === 'Second')!;
     await moveSource(db, open.source.id, second.id);
     changedElsewhere();
-    await vi.waitFor(() => expect($('toast-text').textContent).toBe('S1 is no longer in this session. It was moved, or its capture was undone, in another ClipGrail window.'));
+    await vi.waitFor(() => expect($('toast-text').textContent).toBe('S1 was moved or undone in another window.'));
     expect($('detail-panel').hidden).toBe(true);
     elsewhere.close();
   });
@@ -307,7 +307,7 @@ describe('side panel', () => {
     // Cancel has focus and keeps the source.
     $('delete-source').click();
     await vi.waitFor(() => expect($('sheet-title').textContent).toBe(`Delete ${label}?`));
-    expect($('sheet-body').textContent).toContain(`${label} is not given to another source.`);
+    expect($('sheet-body').textContent).toContain(`${label} is not reused.`);
     expect(document.activeElement?.textContent).toBe('Cancel');
     (document.activeElement as HTMLButtonElement).click();
     expect((await loadSessionView(db, second.id)).sources).toHaveLength(before.length);
@@ -370,7 +370,7 @@ describe('side panel', () => {
     await vi.waitFor(() => expect($('toast-text').textContent).toBe('Recording not started: Session storage is full.'));
     fake.response = { captures: [], failed: 0 };
     $('record-button').click();
-    await vi.waitFor(() => expect($('toast-text').textContent).toContain('Recording. Pages you open'));
+    await vi.waitFor(() => expect($('toast-text').textContent).toMatch(/^Recording to .+: pages you open here are saved as addresses\.$/));
     expect(fake.messages).toEqual([1, 2].map(() => ({ type: 'record', action: 'start', windowId: 1 })));
     // The background saves the pages opened in this window and reports them in session storage.
     const db = await openDb();
@@ -402,7 +402,7 @@ describe('side panel', () => {
     backgroundStores('recording', undefined);
     expect($('record-button').getAttribute('aria-pressed')).toBe('false');
     expect($('sheet-body').querySelector('p')!.textContent).toBe(
-      '2 pages were saved to Inbox as addresses; 1 could not be saved. 1 page the session already had was visited again. Uncheck the ones you do not need; they are removed when you click Remove. Pages you mark important stay.',
+      '2 pages saved to Inbox as addresses; 1 could not be saved. 1 page already there was visited again. Uncheck the ones to remove. Important pages stay.',
     );
     const rows = Array.from(document.querySelectorAll<HTMLLabelElement>('.review-list label'));
     expect(rows.map((row) => row.textContent)).toEqual([
@@ -496,7 +496,7 @@ describe('side panel', () => {
     fake.response = { captures: [], failed: 0, moved: { saved: 12 } };
     $('record-button').click();
     await vi.waitFor(() =>
-      expect($('toast-text').textContent).toMatch(/^Recording moved to this window from another one, where it saved 12 pages\. Pages you open here are saved to .+ as addresses\.$/),
+      expect($('toast-text').textContent).toMatch(/^Recording moved here \(12 pages saved in the other window\)\. Pages you open are saved to .+\.$/),
     );
 
     // This window records a page, then a start in window 2 takes the recording there.
