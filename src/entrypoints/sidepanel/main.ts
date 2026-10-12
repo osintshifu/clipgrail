@@ -2188,12 +2188,29 @@ function bind(): void {
   });
 }
 
+/** The popup height in style.css. */
+const POPUP_HEIGHT = 600;
+
+/**
+ * Chrome makes a toolbar popup at most 600 pixels high on the screen, so with
+ * page zoom above 100% the popup shows less than its 600 pixels and the bottom
+ * bar is cut off. When the popup appears, it takes the height Chrome shows.
+ * This runs once: the popup follows the height of its page, so fitting again
+ * after a resize could shrink it a pixel at a time.
+ */
+function fitPopup(): void {
+  const shown = Math.floor(visualViewport?.height ?? innerHeight);
+  if (shown < POPUP_HEIGHT) document.body.style.height = `${shown}px`;
+}
+
 async function init(): Promise<void> {
   hydrateIcons();
   // The same page serves as the side panel and as the toolbar popup.
   const popup = new URLSearchParams(location.search).get('view') === 'popup';
   document.documentElement.classList.toggle('popup', popup);
   if (popup) {
+    if (document.visibilityState === 'visible') fitPopup();
+    else addEventListener('visibilitychange', fitPopup, { once: true });
     closeWithToast = true;
     for (const type of ['pointerdown', 'keydown']) addEventListener(type, () => (closeWithToast = false), { capture: true, once: true });
   }
