@@ -377,7 +377,7 @@ body.reader-expanded #expand-reader .icon-collapse { display: grid; }
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2; background: var(--toast); color: var(--toast-fg);
   border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 14px; max-width: calc(100vw - 24px); font-size: 12.5px; box-shadow: var(--shadow-lg);
 }
-@media (max-width: 900px) { .reader-actions { margin-left: 0; } #narrow-session-actions { font-size: 12px; padding: 4px 6px; } #hide-sessions, #show-sessions, #expand-reader { display: none; } }
+@media (max-width: 900px) { .reader-actions { margin-left: 0; } #narrow-session-actions { font-size: 12px; padding: 4px 6px; } #expand-reader { display: none; } }
 
 /* Page code: what the page declared and the trackers in its code, each with where it was read. */
 .page-code { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
