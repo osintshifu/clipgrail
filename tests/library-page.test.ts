@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { commitCapture, createSession, openDb, loadNote, loadSessionView, updateSourceNote, listSessions } from '../src/lib/db';
 import { linkDraft, pageDraft } from './helpers';
 
-const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, refresh: () => undefined as void, requests: [] as unknown[], messages: [] as unknown[] }));
+const fake = vi.hoisted(() => ({ local: {} as Record<string, unknown>, refresh: () => undefined as void, requests: [] as unknown[], messages: [] as unknown[], tabs: [] as unknown[] }));
 
 vi.mock('../src/lib/changes', () => ({ announceDataChange: () => undefined, onDataChange: (fn: () => void) => { fake.refresh = fn; } }));
 
@@ -28,6 +28,7 @@ vi.mock('wxt/browser', () => ({
     },
     permissions: { request: async (request: unknown) => (fake.requests.push(request), true) },
     windows: { getCurrent: async () => ({ id: 5 }) },
+    tabs: { getCurrent: async () => ({ id: 9, index: 2, windowId: 5 }), create: async (props: unknown) => (fake.tabs.push(props), {}) },
   },
 }));
 
@@ -307,6 +308,48 @@ describe('organizing in the library', () => {
     expect(boxes().every((b) => b.checked)).toBe(true);
     document.querySelector<HTMLButtonElement>('#nav-list > .nav-item')!.click();
     expect($('selection-bar').hidden).toBe(true);
+  });
+
+  it('opens the selected pages in background tabs after the library in list order, asking first for more than 15', async () => {
+    const { db, session } = await openExample('Open');
+    for (let n = 2; n <= 16; n++) await commitCapture(db, await pageDraft(`https://example.test/open-${n}`, `Text ${n}.`, new Date(Date.now() + n * 1000).toISOString(), session.id));
+    fake.refresh();
+    document.querySelector<HTMLButtonElement>(`[data-session="${session.id}"]`)!.closest('.nav-row')!.querySelector<HTMLButtonElement>('.nav-item')!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll('#rows .src')).toHaveLength(16));
+    const boxes = Array.from(document.querySelectorAll<HTMLInputElement>('#rows .pick-box'));
+    boxes[2]!.click();
+    boxes[0]!.click();
+    $('open-selected').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Opened 2 pages.'));
+    expect(fake.tabs).toEqual([
+      { url: 'https://example.test/open-16', active: false, windowId: 5, index: 3 },
+      { url: 'https://example.test/open-14', active: false, windowId: 5, index: 4 },
+    ]);
+
+    // Sixteen pages open only after confirmation.
+    fake.tabs.length = 0;
+    $<HTMLInputElement>('select-all').click();
+    $('open-selected').click();
+    expect($('library-dialog').querySelector('h2')?.textContent).toBe('Open 16 pages in new tabs?');
+    expect(fake.tabs).toHaveLength(0);
+    $('confirm-open').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Opened 16 pages.'));
+    expect(fake.tabs.map((tab) => (tab as { index: number }).index)).toEqual(Array.from({ length: 16 }, (_, i) => 3 + i));
+  });
+
+  it('creates a session from the sessions column, makes it active and shows it', async () => {
+    const db = await openDb();
+    fake.local.activeSessionId = 'inbox';
+    $('new-session').click();
+    expect($('library-dialog').querySelector('h2')?.textContent).toBe('New session');
+    $<HTMLInputElement>('new-session-name').value = 'Port closures';
+    $('create-session').click();
+    await vi.waitFor(() => expect($('library-notice').textContent).toBe('Session "Port closures" created. New clips go here.'));
+    const created = (await listSessions(db)).find((s) => s.name === 'Port closures')!;
+    expect(fake.local.activeSessionId).toBe(created.id);
+    expect(location.hash).toBe(`#view=${created.id}`);
+    const item = document.querySelector<HTMLButtonElement>(`#nav-list [data-view="${created.id}"]`)!;
+    expect([$<HTMLDialogElement>('library-dialog').open, item.getAttribute('aria-current'), item.querySelector('.active-tag')?.textContent, document.activeElement]).toEqual([false, 'true', 'Active', item]);
   });
 
   it('shows a session as a timeline, opens the capture an event names, and marks and filters important sources', async () => {

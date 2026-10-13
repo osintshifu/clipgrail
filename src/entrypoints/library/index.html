@@ -8,6 +8,7 @@
   <body>
     <div id="narrow-top" class="narrow-top">
       <select id="view-select" aria-label="Show sources of"></select>
+      <button id="narrow-new-session" class="icon-btn" type="button" title="New session" aria-label="New session" aria-haspopup="dialog"><span data-icon="plus"></span></button>
       <button id="back-button" class="link back" type="button" hidden></button>
       <span id="narrow-position" class="small"></span>
       <button id="narrow-session-actions" type="button" aria-haspopup="dialog" hidden>Session ···</button>
@@ -55,10 +56,12 @@
         <div id="selection-bar" class="selection-bar" hidden>
           <input id="select-all" type="checkbox" title="Select all shown sources" aria-label="Select all shown sources" />
           <b id="selection-count" role="status"></b>
-          <span class="grow"></span>
-          <button id="clip-selected" class="btn-sm" type="button" title="Save the text of the selected URL-only pages" hidden></button>
-          <button id="delete-selected" class="btn-sm delete icon-only" type="button" aria-haspopup="dialog" title="Delete selected sources" aria-label="Delete selected sources"><span data-icon="trash"></span></button>
-          <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection"><span data-icon="x"></span></button>
+          <span class="selection-actions">
+            <button id="clip-selected" class="btn-sm" type="button" title="Save the text of the selected URL-only pages" hidden></button>
+            <button id="open-selected" class="btn-sm icon-only" type="button" title="Open the selected pages in new tabs" aria-label="Open the selected pages in new tabs"><span data-icon="arrow-square-out"></span></button>
+            <button id="delete-selected" class="btn-sm delete icon-only" type="button" aria-haspopup="dialog" title="Delete selected sources" aria-label="Delete selected sources"><span data-icon="trash"></span></button>
+            <button id="clear-selection" class="icon-btn" type="button" title="Clear selection" aria-label="Clear selection"><span data-icon="x"></span></button>
+          </span>
         </div>
       </div>
       <ul id="rows" class="rows" aria-labelledby="list-title"></ul>
@@ -66,9 +69,11 @@
       <p id="list-note" class="list-note" hidden></p>
     </section>
 
-    <section id="reader-col" class="col reader-col" aria-label="Source">
+    <section id="reader-col" class="col reader-col" aria-label="Source" tabindex="-1">
       <div id="reader" class="reader"></div>
     </section>
+    <!-- Shown once the open source is scrolled down more than its column's height. -->
+    <button id="back-to-top" class="back-to-top" type="button" title="Back to top" aria-label="Back to top" hidden><span data-icon="arrow-up"></span></button>
     <!-- Shown next to Move to… while a source is open. -->
     <button id="expand-reader" class="icon-btn" type="button" data-id="expand-reader" aria-pressed="false" hidden>
       <span class="icon-expand" data-icon="arrows-out-simple"></span>

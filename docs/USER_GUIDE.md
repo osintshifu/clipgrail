@@ -57,7 +57,7 @@ The page code read when the page was clipped shows in the library in **Found in 
 
 ## Organizing sessions
 
-- Click the session name at the top of the panel to switch sessions, create one with **New session** or **Rename** the active one. The Inbox can't be renamed or archived.
+- Click the session name at the top of the panel to switch sessions, create one with **New session** or **Rename** the active one. In the library, **New session** under the sessions (**+** in a narrow window) creates one too. A new session becomes the active session, so new clips go to it. The Inbox can't be renamed or archived.
 - **Archive session** in the same list moves the active session to the Archived group and switches to the Inbox. An archived session keeps all its data and can still be opened; while it is open, its name shows **Archived** and new captures go to it. **Unarchive** returns it to the main list.
 - **Move to…** in the source details moves a source with all its captures, snapshots and notes to another session. There it gets the next free label, or joins the source with the same address if the session already has one. Its old label is not given to another source.
 - Each source has a private note in the source details, next to the notes on the session and on each capture.
@@ -84,10 +84,12 @@ The page code read when the page was clipped shows in the library in **Found in 
 - **Compare with…** above a saved text shows what changed between it and another capture of the source, from the older text to the newer: added words in green, removed words struck through in red, and unchanged paragraphs away from the changes folded. **Previous** and **Next** move between the changes. Every difference in the saved text is marked, including a date or a counter that changes on every visit. Texts that differ in too many places are not marked.
 - When you clip a page or a selection, ClipGrail also saves a picture of the visible part of the page. The library shows it under **Found in the page**. Links saved without opening and saved tab addresses have no picture.
 - **Open page** opens the original page. Clips always go to the active session, so for a source from another session the library offers **Make active** first.
+- The arrow button in the selection bar opens the pages of the selected sources in background tabs after the library's tab, in the order of the list. More than 15 pages open only after you confirm.
+- Once you scroll an open source down more than a screen, the arrow button in the corner takes you back to its top.
 - When a source has earlier text versions, its details in the side panel link to them with **Open in library**.
 - Drag the border between two columns to change their width, or focus the border and use the arrow keys; a double-click restores the usual width. The icon at the top of the sessions column narrows it to a column of icons, one for each view, named when you point at it: All sources, Important, the Inbox and the deletion log have their own icons, other sessions show their initials, and a green dot marks the active session. The same icon shows the sessions again, and the arrows next to an open source widen the reader to the whole window.
 
-The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins.
+The library and side panel refresh when research data changes in another ClipGrail view. In the library, you can edit source and capture notes, move and delete sources, and create, archive, unarchive or delete sessions. Notes save as you type; if the same note is edited in both views, the last committed write wins.
 
 ## Preparing a Research Job
 

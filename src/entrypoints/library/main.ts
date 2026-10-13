@@ -1,7 +1,7 @@
 import './style.css';
 import { browser } from 'wxt/browser';
 import { announceDataChange, onDataChange } from '../../lib/changes';
-import { countForDeletion, countSourcesForDeletion, deleteRemovals, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setSourceImportant, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
+import { countForDeletion, countSourcesForDeletion, createSession, deleteRemovals, deleteSession, deleteSource, deleteSources, emptyInbox, loadLibrary, loadSnapshotText, loadThumbnail, thumbnailIds, openDb, loadNote, moveSource, setSessionArchived, setSourceImportant, setWriteListener, updateSourceNote, updateCaptureNote, visitSnapshotTexts } from '../../lib/db';
 import type { LibraryData } from '../../lib/db';
 import type { DeletionText } from '../../lib/describe';
 import {
@@ -174,6 +174,13 @@ function setReading(reading: boolean): void {
   document.body.classList.toggle('reading', reading);
   $('back-button').hidden = !reading;
   $('narrow-position').hidden = !reading;
+  showBackToTop();
+}
+
+/** Back to top shows once the open source is scrolled down more than the height of its column. */
+function showBackToTop(): void {
+  const column = $('reader-col');
+  $('back-to-top').hidden = column.scrollTop <= column.clientHeight;
 }
 
 // ---------- Hidden columns (wide windows) ----------
@@ -329,6 +336,10 @@ function renderNav(): void {
     item(IMPORTANT, 'Important', important),
     h('div', { class: 'nav-group section-title' }, ['Sessions']),
     ...current.map((s) => item(s.id, s.name, counts.get(s.id) ?? 0, s)),
+    h('button', { class: 'nav-item new-session', attrs: { type: 'button', id: 'new-session', title: 'New session', 'aria-haspopup': 'dialog' }, on: { click: (event) => openNewSession(event.currentTarget as HTMLElement) } }, [
+      icon('plus'),
+      h('span', { class: 'name' }, ['New session']),
+    ]),
     archived.length ? toggle : null,
     ...(archivedOpen ? archived.map((s) => item(s.id, s.name, counts.get(s.id) ?? 0, s)) : []),
     h('div', { class: 'nav-group section-title' }, ['Removed']),
@@ -1873,6 +1884,49 @@ function openSessionActions(session: Session, opener: HTMLElement): void {
   ], opener, true);
 }
 
+/** A new session from the sessions column; as in the side panel, it becomes the active session, so new clips go to it. */
+function openNewSession(opener: HTMLElement): void {
+  const input = h('input', { attrs: { id: 'new-session-name', type: 'text', maxlength: '120', required: '', autocomplete: 'off', placeholder: 'New session name' } });
+  const submit = (event: Event) => {
+    event.preventDefault();
+    void createNewSession(input.value);
+  };
+  openDialog('New session', [
+    h('form', { on: { submit } }, [
+      h('label', { class: 'form-field' }, [h('span', {}, ['Session name']), input]),
+      h('p', { class: 'small' }, ['New clips go to it.']),
+      h('div', { class: 'row' }, [
+        h('button', { class: 'primary', attrs: { type: 'submit', id: 'create-session' } }, ['Create']),
+        h('button', { attrs: { type: 'button' }, on: { click: () => dialog.close() } }, ['Cancel']),
+      ]),
+    ]),
+  ], opener);
+  input.focus();
+}
+
+async function createNewSession(name: string): Promise<void> {
+  const button = $<HTMLButtonElement>('create-session');
+  button.disabled = true;
+  let session: Session | null = null;
+  try {
+    session = await createSession(db, name);
+    await setActiveSessionId(session.id);
+    activeId = session.id;
+    await reload();
+    restoreDialogFocus = false;
+    dialog.close();
+    openView(session.id);
+    // The new session takes focus in the sessions column, or the menu of sessions in a narrow window.
+    (wide.matches ? document.querySelector<HTMLElement>(`#nav-list [data-view="${CSS.escape(session.id)}"]`) : $('view-select'))?.focus();
+    notice(`Session "${session.name}" created. New clips go here.`);
+  } catch (error) {
+    if (!session) return dialogFailure(`Session not created: ${errorText(error)}`);
+    // Created already: the dialog closes, so Create cannot make a second session.
+    dialog.close();
+    notice(`Session "${session.name}" created, but not opened: ${errorText(error)}`);
+  } finally { button.disabled = false; }
+}
+
 async function archiveSession(session: Session, archive: boolean): Promise<void> {
   const button = $<HTMLButtonElement>('archive-session');
   button.disabled = true;
@@ -1934,6 +1988,40 @@ async function confirmDeleteSource(row: LibraryRow, opener: HTMLElement = $('del
     await dropExcludedSources(row.session.id, [row.entry.source.id]).catch(() => undefined);
     return `${row.label} deleted.`;
   }, `${row.label} not deleted`, `${row.label} deleted; refresh failed`), opener);
+}
+
+/** More pages than this open only after the user confirms, as in Chrome when it opens all bookmarks of a folder. */
+const OPEN_WITHOUT_ASKING = 15;
+
+/** Opens the pages of the selected sources, asking first when there are many. */
+function openSelected(): void {
+  const chosen = shown.filter((r) => picked.has(r.entry.source.id));
+  if (chosen.length <= OPEN_WITHOUT_ASKING) return void openPages(chosen);
+  const pages = count(chosen.length, 'page');
+  const cancel = h('button', { attrs: { type: 'button' }, on: { click: () => dialog.close() } }, ['Cancel']);
+  const open = () => {
+    dialog.close();
+    void openPages(chosen);
+  };
+  openDialog(`Open ${pages} in new tabs?`, [
+    h('div', { class: 'row' }, [h('button', { class: 'primary', attrs: { type: 'button', id: 'confirm-open' }, on: { click: open } }, [`Open ${pages}`]), cancel]),
+  ], $('open-selected'));
+  cancel.focus();
+}
+
+/** Opens the saved addresses in new background tabs after the library's tab, in the order of the list. */
+async function openPages(chosen: LibraryRow[]): Promise<void> {
+  let opened = 0;
+  try {
+    const tab = await browser.tabs.getCurrent();
+    for (const row of chosen) {
+      await browser.tabs.create({ url: row.entry.source.dedup_url, active: false, ...(tab ? { windowId: tab.windowId, index: tab.index + 1 + opened } : {}) });
+      opened++;
+    }
+    notice(`Opened ${count(opened, 'page')}.`);
+  } catch (error) {
+    notice(`Opened ${fmtNumber(opened)} of ${count(chosen.length, 'page')}: ${errorText(error)}`);
+  }
 }
 
 /** This tab's window, where clips the library asks for open their pages and report back. */
@@ -2037,7 +2125,7 @@ function openMove(row: LibraryRow): void {
     h('div', { class: 'move-targets' }, targets.map((s) => h('button', {
       attrs: { type: 'button', 'data-target': s.id }, on: { click: () => void moveSelected(row, s) },
     }, [h('span', {}, [`${s.name}${s.archived_at ? ' (archived)' : ''}`]), h('span', { class: 'small' }, [count(rows.filter((r) => r.session.id === s.id).length, 'source')])]))),
-    targets.length ? null : h('p', { class: 'small' }, ['Create another session in the side panel first.']),
+    targets.length ? null : h('p', { class: 'small' }, ['Create another session first.']),
     h('button', { attrs: { type: 'button' }, on: { click: () => dialog.close() } }, ['Cancel']),
   ], $('move-source'));
 }
@@ -2185,6 +2273,14 @@ function bind(): void {
   });
   $('delete-selected').addEventListener('click', () => void confirmDeleteSelected());
   $('clip-selected').addEventListener('click', () => clipSources(shown.filter((r) => picked.has(r.entry.source.id))));
+  $('open-selected').addEventListener('click', openSelected);
+  $('narrow-new-session').addEventListener('click', (event) => openNewSession(event.currentTarget as HTMLElement));
+  $('reader-col').addEventListener('scroll', showBackToTop, { passive: true });
+  $('back-to-top').addEventListener('click', () => {
+    const column = $('reader-col');
+    column.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    column.focus({ preventScroll: true });
+  });
   $('toggle-sessions').addEventListener('click', () => changeLayout({ sessions_hidden: !layout.sessions_hidden }));
   bindResize($('resize-nav'), 'nav_width', NAV_WIDTH, () => 0);
   bindResize($('resize-list'), 'list_width', LIST_WIDTH, () => $('list-col').getBoundingClientRect().left);
